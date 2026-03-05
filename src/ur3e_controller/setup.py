@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 import os
 from glob import glob
 
-package_name = "rs2_jenga"
+package_name = "ur3e_controller"
 
 setup(
     name=package_name,
