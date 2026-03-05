@@ -25,6 +25,9 @@ setup(
         "console_scripts": [
             "move_ur3e_demo = ur3e_controller.demo_node:main",
             "initials_demo = ur3e_controller.demo_node:main",
+            "pose_goal_node = ur3e_controller.pose_goal_node:main",
+            "exclusion_zones_node = ur3e_controller.exclusion_zones_loader:main",
+            "robot_gui = ur3e_controller.robot_gui:main",
         ],
     },
 )

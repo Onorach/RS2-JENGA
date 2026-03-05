@@ -85,3 +85,61 @@ client.send_trajectory(trajectory)
 ```
 
 Joint order: `shoulder_pan_joint`, `shoulder_lift_joint`, `elbow_joint`, `wrist_1_joint`, `wrist_2_joint`, `wrist_3_joint`.
+
+---
+
+## Motion planning and control (MoveIt2)
+
+This package can plan **collision-free Cartesian motions** and handle **inverse kinematics** via MoveIt2, then execute on the same joint trajectory controller (sim or hardware).
+
+### Pose goals and trajectory planning
+
+1. Start the robot and **MoveIt2** (e.g. `ur3e_sim_moveit.launch.py` or `ur_moveit_config` with real robot).
+2. Start the motion planning stack:
+
+```bash
+ros2 launch ur3e_controller motion_planning.launch.py
+```
+
+3. Send a goal pose (frame_id must match your planning frame, e.g. `base_link`):
+
+```bash
+ros2 topic pub --once /goal_pose geometry_msgs/msg/PoseStamped "{header: {frame_id: 'base_link'}, pose: {position: {x: 0.3, y: 0.0, z: 0.4}, orientation: {w: 1.0}}}"
+```
+
+The node will plan a collision-free path to that pose and execute it. Alternatively, set a pose on `/goal_pose` and call the service to execute:
+
+```bash
+ros2 service call /execute_last_goal_pose std_srvs/srv/Trigger
+```
+
+**Parameters:**
+
+- `plan_only` (default: false): if true, only plans and does not execute.
+- `move_action_name` (default: `/move_action`): MoveGroup action name from MoveIt2.
+
+### Exclusion zones (no-go regions)
+
+To keep the robot (or any part of it) out of certain regions (sim or hardware), add **exclusion zones** as collision objects to the planning scene. MoveIt2 will then plan around them.
+
+- **From YAML at startup:** copy `config/exclusion_zones_example.yaml`, edit boxes/spheres (frame, position, size/radius), then:
+
+```bash
+ros2 launch ur3e_controller motion_planning.launch.py exclusion_zones_file:=/path/to/your/exclusion_zones.yaml
+```
+
+- **From code:** use `MoveItPlanningInterface.add_exclusion_zone_box()` and `add_exclusion_zone_sphere()`, or the helper in `exclusion_zones_loader.py` (`apply_exclusion_zones_to_scene()`).
+
+Standalone loader node (e.g. if you don’t use `motion_planning.launch.py`):
+
+```bash
+ros2 run ur3e_controller exclusion_zones_node --ros-args -p exclusion_zones_file:=/path/to/zones.yaml
+```
+
+### Force/torque feedback
+
+When the UR3e (or sim) exposes force/torque at the tool (e.g. via `force_torque_sensor_broadcaster` with `topic_name: ft_data`), the **pose goal node** subscribes to that topic and caches the latest wrench. You can use it for monitoring or compliance:
+
+- **Topic:** default `/ft_data` (configurable via `ft_topic` parameter on the pose goal node).
+- **Message type:** `geometry_msgs/WrenchStamped`.
+- In code, the node’s `get_latest_wrench()` returns the latest reading (or use the topic directly from other nodes).

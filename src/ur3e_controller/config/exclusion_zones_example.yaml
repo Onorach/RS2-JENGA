@@ -1,0 +1,21 @@
+# Example exclusion zones (no-go regions) for the robot.
+# Load these at startup via exclusion_zones_node or by calling the loader from your node.
+# Frame is typically "base_link" or "world". Sizes in metres.
+#
+# Box zones: id, frame_id, position [x,y,z], size [x,y,z]
+# Sphere zones: id, frame_id, center [x,y,z], radius
+
+exclusion_zones:
+  # Example: keep-out box in front of the table (e.g. human zone)
+  - type: box
+    id: human_zone
+    frame_id: base_link
+    position: [0.4, 0.0, 0.3]
+    size: [0.2, 0.5, 0.6]
+
+  # Example: spherical keep-out around a fragile object
+  # - type: sphere
+  #   id: fragile_object
+  #   frame_id: base_link
+  #   center: [0.35, 0.2, 0.1]
+  #   radius: 0.08
