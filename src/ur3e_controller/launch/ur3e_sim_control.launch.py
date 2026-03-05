@@ -205,7 +205,7 @@ def generate_launch_description():
     declared_arguments.append(
         DeclareLaunchArgument(
             "runtime_config_package",
-            default_value="rs2_jenga",
+            default_value="ur3e_controller",
             description='Package with the controller\'s configuration in "config" folder.',
         )
     )
@@ -259,7 +259,7 @@ def generate_launch_description():
         )
     )
     declared_arguments.append(
-        DeclareLaunchArgument("launch_rviz", default_value="true", description="Launch RViz?")
+        DeclareLaunchArgument("launch_rviz", default_value="false", description="Launch RViz?")
     )
     declared_arguments.append(
         DeclareLaunchArgument(

@@ -20,7 +20,7 @@ def launch_setup(context, *args, **kwargs):
 
     ur_control_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            [FindPackageShare("rs2_jenga"), "/launch", "/ur3e_sim_control.launch.py"]
+            [FindPackageShare("ur3e_controller"), "/launch", "/ur3e_sim_control.launch.py"]
         ),
         launch_arguments={
             "ur_type": ur_type,
@@ -94,7 +94,7 @@ def generate_launch_description():
     declared_arguments.append(
         DeclareLaunchArgument(
             "runtime_config_package",
-            default_value="rs2_jenga",
+            default_value="ur3e_controller",
             description='Package with the controller\'s configuration in "config" folder.',
         )
     )

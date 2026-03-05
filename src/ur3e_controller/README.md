@@ -1,4 +1,4 @@
-# rs2_jenga
+# ur3e_controller
 
 ROS2 package to send joint trajectory commands to a UR3e robot. Works with:
 
@@ -19,7 +19,7 @@ From your workspace (e.g. `~/ros2_ws`):
 
 ```bash
 source /opt/ros/humble/setup.bash
-colcon build --packages-select rs2_jenga
+colcon build --packages-select ur3e_controller
 source install/setup.bash
 ```
 
@@ -31,10 +31,10 @@ source install/setup.bash
 
 ```bash
 # Basic Gazebo sim with RViz
-ros2 launch rs2_jenga ur3e_sim_control.launch.py
+ros2 launch ur3e_controller ur3e_sim_control.launch.py
 
 # Gazebo + MoveIt (planning in RViz)
-ros2 launch rs2_jenga ur3e_sim_moveit.launch.py
+ros2 launch ur3e_controller ur3e_sim_moveit.launch.py
 ```
 
 **Real robot:**
@@ -50,16 +50,16 @@ In another terminal (after sourcing the workspace):
 
 ```bash
 source install/setup.bash
-ros2 run rs2_jenga move_ur3e_demo
+ros2 run ur3e_controller move_ur3e_demo
 # Or the same demo under the alias:
-ros2 run rs2_jenga initials_demo
+ros2 run ur3e_controller initials_demo
 ```
 
 Optional launch file (with custom action name if your controller is namespaced):
 
 ```bash
-ros2 launch rs2_jenga demo.launch.py
-ros2 launch rs2_jenga demo.launch.py action_name:=/my_ns/joint_trajectory_controller/follow_joint_trajectory
+ros2 launch ur3e_controller demo.launch.py
+ros2 launch ur3e_controller demo.launch.py action_name:=/my_ns/joint_trajectory_controller/follow_joint_trajectory
 ```
 
 ## Using the client in your own nodes
