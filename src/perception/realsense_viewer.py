@@ -1,11 +1,17 @@
 #!/usr/bin/env python3
 """
-RealSense .bag file viewer for Mac.
+RealSense .bag file viewer.
 Plays back recorded RGB and depth streams from an Intel RealSense .bag file.
 """
 
 import argparse
 import sys
+from pathlib import Path
+
+try:
+    import tkinter as tk
+except ImportError:  # pragma: no cover - tkinter might not be available in some envs
+    tk = None
 
 try:
     import pyrealsense2 as rs
@@ -60,9 +66,28 @@ def main():
     args = parser.parse_args()
 
     if not args.bag_file:
-        parser.print_help()
-        print("\nExample: python realsense_viewer.py recording.bag")
-        sys.exit(1)
+        # If no bag file is provided, automatically select the first file
+        # in the default rgbd_raw directory.
+        default_dir = Path(__file__).resolve().parents[0] / "camera_files" / "rgbd_raw"
+
+        if not default_dir.is_dir():
+            print(
+                "Error: No bag file argument provided and default directory "
+                f"'{default_dir}' does not exist."
+            )
+            sys.exit(1)
+
+        # Find the first .bag file in the directory (sorted for determinism)
+        bag_files = sorted(default_dir.glob("*.bag"))
+        if not bag_files:
+            print(
+                "Error: No bag file argument provided and no .bag files found in "
+                f"'{default_dir}'."
+            )
+            sys.exit(1)
+
+        args.bag_file = str(bag_files[0])
+        print(f"No bag_file argument provided. Using first file: {args.bag_file}")
 
     pipeline = rs.pipeline()
     config = rs.config()
@@ -85,7 +110,28 @@ def main():
         print("Playing .bag file. Press 'q' to quit, 's' to save a snapshot.")
         print("Close the window or press Ctrl+C to exit.")
 
+        # Create a resizable window and size it to ~1/3 of the screen
+        window_name = "RealSense .bag playback"
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+
+        if tk is not None:
+            try:
+                root = tk.Tk()
+                root.withdraw()  # hide the root window
+                screen_w = root.winfo_screenwidth()
+                screen_h = root.winfo_screenheight()
+                root.destroy()
+
+                target_w = max(200, screen_w // 3)
+                target_h = max(150, screen_h // 3)
+                cv2.resizeWindow(window_name, target_w, target_h)
+            except Exception:
+                # If anything goes wrong getting screen size, just use OpenCV defaults
+                pass
+
         frame_count = 0
+        target_fps = 60
+        frame_delay_ms = max(1, int(1000 / target_fps))
         while True:
             try:
                 frames = pipeline.wait_for_frames(timeout_ms=1000)
@@ -122,10 +168,10 @@ def main():
                 (255, 255, 255),
                 2,
             )
-            cv2.imshow("RealSense .bag playback", display)
+            cv2.imshow(window_name, display)
             frame_count += 1
 
-            key = cv2.waitKey(1) & 0xFF
+            key = cv2.waitKey(frame_delay_ms) & 0xFF
             if key == ord("q"):
                 break
             if key == ord("s"):
