@@ -17,7 +17,7 @@ def generate_launch_description():
             description="FollowJointTrajectory action name (for namespaced controllers).",
         ),
         Node(
-            package="ur3e_controller",
+            package="rs2_jenga",
             executable="move_ur3e_demo",
             name="ur3e_demo",
             output="screen",

@@ -88,9 +88,9 @@ ros2 launch ur_simulation_gazebo ur_sim_moveit.launch.py
     In a new terminal, repeat step 1, then finally, run your package
 
 '''
-    ros2 run ur3e_controller initials_demo
+    ros2 run rs2_jenga initials_demo
 '''
-    (Or: ros2 run ur3e_controller move_ur3e_demo)
+    (Or: ros2 run rs2_jenga move_ur3e_demo)
 
 ## Running Simulation
 ---
