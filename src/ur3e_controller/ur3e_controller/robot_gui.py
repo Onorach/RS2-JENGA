@@ -32,6 +32,7 @@ from tkinter import messagebox, scrolledtext, ttk
 from typing import Optional
 
 import rclpy
+import rclpy.time
 from builtin_interfaces.msg import Duration
 from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import Pose, PoseStamped, WrenchStamped
@@ -41,8 +42,11 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from shape_msgs.msg import SolidPrimitive
-from std_msgs.msg import Header
+from action_msgs.srv import CancelGoal as CancelGoalSrv
+from std_msgs.msg import Bool, Header
+from std_srvs.srv import Trigger
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
+import tf2_ros
 
 from ur3e_controller.exclusion_zones_loader import (
     publish_floor_plane,
@@ -99,6 +103,22 @@ def euler_to_quaternion(roll_rad: float, pitch_rad: float, yaw_rad: float) -> tu
     )
 
 
+def quaternion_to_euler(qx: float, qy: float, qz: float, qw: float) -> tuple:
+    """Quaternion → (roll, pitch, yaw) in radians."""
+    # Roll (rotation around X)
+    sinr_cosp = 2.0 * (qw * qx + qy * qz)
+    cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+    # Pitch (rotation around Y) — clamped for numerical safety
+    sinp = 2.0 * (qw * qy - qz * qx)
+    pitch = math.copysign(math.pi / 2, sinp) if abs(sinp) >= 1.0 else math.asin(sinp)
+    # Yaw (rotation around Z)
+    siny_cosp = 2.0 * (qw * qz + qx * qy)
+    cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+    return roll, pitch, yaw
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # ROS2 node (runs in background thread)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -106,16 +126,26 @@ def euler_to_quaternion(roll_rad: float, pitch_rad: float, yaw_rad: float) -> tu
 class RobotControlNode(Node):
     """All ROS2 I/O for the GUI: publishers, subscribers, action client."""
 
+    # TF frames to track for live Cartesian pose display
+    BASE_FRAME = "base_link"
+    EE_FRAME   = "tool0"
+
     def __init__(self, log_queue: queue.Queue):
         super().__init__("robot_gui_node")
         self._log_q = log_queue
         self._lock = threading.Lock()
         self._joint_positions: dict[str, float] = {}
         self._ft: Optional[WrenchStamped] = None
+        self._estop_active = False
+        # Tracks the most recent GUI-originated FollowJointTrajectory goal handle
+        # so we can cancel it immediately if e-stop fires.
+        self._goal_handle = None
+        self._goal_handle_lock = threading.Lock()
 
         # Publishers
         self._goal_pose_pub = self.create_publisher(PoseStamped, "/goal_pose", 10)
         self._scene_pub = self.create_publisher(PlanningScene, "/planning_scene", 10)
+        self._estop_pub = self.create_publisher(Bool, "/estop", 1)
 
         # Action client (joint space)
         self._joint_ac = ActionClient(
@@ -124,9 +154,27 @@ class RobotControlNode(Node):
             "/joint_trajectory_controller/follow_joint_trajectory",
         )
 
+        # E-stop service clients
+        self._estop_client = self.create_client(Trigger, "/estop")
+        self._estop_resume_client = self.create_client(Trigger, "/estop_resume")
+
+        # Direct cancel client for the trajectory controller's action server.
+        # Sending CancelGoal with an all-zero goal_id cancels ALL in-flight goals
+        # (including those sent by RViz's MotionPlanning plugin or any other node).
+        _joint_action = "/joint_trajectory_controller/follow_joint_trajectory"
+        self._traj_cancel_client = self.create_client(
+            CancelGoalSrv,
+            f"{_joint_action}/_action/cancel_goal",
+        )
+
+        # TF2 buffer + listener for live EE Cartesian pose
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+
         # Subscribers
         self.create_subscription(JointState, "/joint_states", self._on_joint_state, 10)
         self.create_subscription(WrenchStamped, "/ft_data", self._on_ft, 10)
+        self.create_subscription(Bool, "/estop_active", self._on_estop_active, 1)
 
     # ── callbacks ──────────────────────────────────────────────────────────
 
@@ -139,7 +187,11 @@ class RobotControlNode(Node):
         with self._lock:
             self._ft = msg
 
-    # ── state getters (thread-safe) ────────────────────────────────────────
+    def _on_estop_active(self, msg: Bool) -> None:
+        with self._lock:
+            self._estop_active = msg.data
+
+    # ── state getters (thread-safe) ───────────────────────────────────────
 
     def get_joint_positions(self) -> dict[str, float]:
         with self._lock:
@@ -149,7 +201,113 @@ class RobotControlNode(Node):
         with self._lock:
             return self._ft
 
-    # ── commands ───────────────────────────────────────────────────────────
+    def get_estop_active(self) -> bool:
+        with self._lock:
+            return self._estop_active
+
+    def get_ee_pose(
+        self,
+        base_frame: str = BASE_FRAME,
+        ee_frame: str = EE_FRAME,
+    ) -> Optional[tuple]:
+        """
+        Look up the latest TF transform and return
+        (x_m, y_m, z_m, roll_deg, pitch_deg, yaw_deg), or None if unavailable.
+        Uses the latest available transform (no blocking wait).
+        """
+        try:
+            t = self._tf_buffer.lookup_transform(
+                base_frame,
+                ee_frame,
+                rclpy.time.Time(),   # latest available
+            )
+            tr = t.transform.translation
+            ro = t.transform.rotation
+            roll, pitch, yaw = quaternion_to_euler(ro.x, ro.y, ro.z, ro.w)
+            return (
+                tr.x, tr.y, tr.z,
+                math.degrees(roll), math.degrees(pitch), math.degrees(yaw),
+            )
+        except Exception:
+            return None
+
+    # ── commands ──────────────────────────────────────────────────────────
+
+    def trigger_estop(self) -> None:
+        """Engage the e-stop: cancel all in-flight goals on the controller."""
+        # 1. Cancel any goal this node sent directly (Joint / Presets tabs)
+        with self._goal_handle_lock:
+            handle = self._goal_handle
+            self._goal_handle = None
+        if handle is not None:
+            try:
+                handle.cancel_goal_async()
+                self._log("GUI trajectory goal cancel requested.")
+            except Exception as exc:
+                self._log(f"Could not cancel GUI trajectory goal: {exc}")
+
+        # 2. Cancel ALL in-flight goals on the controller via the built-in cancel
+        #    service (zero goal_id = cancel every goal, from any client including
+        #    RViz MotionPlanning plugin).
+        if self._traj_cancel_client.service_is_ready():
+            self._traj_cancel_client.call_async(CancelGoalSrv.Request()).add_done_callback(
+                self._on_traj_cancel_done
+            )
+        else:
+            self._log("WARNING: trajectory controller cancel service not reachable.")
+
+        # 3. Publish the /estop Bool topic so pose_goal_node cancels its own handles too
+        msg = Bool()
+        msg.data = True
+        self._estop_pub.publish(msg)
+        with self._lock:
+            self._estop_active = True
+
+        # 4. Forward to estop_node service if it is running (keeps its state in sync)
+        if self._estop_client.service_is_ready():
+            self._estop_client.call_async(Trigger.Request()).add_done_callback(
+                self._on_estop_service_done
+            )
+
+    def resume_estop(self) -> None:
+        """Clear the e-stop: publish topic and call service (best-effort)."""
+        msg = Bool()
+        msg.data = False
+        self._estop_pub.publish(msg)
+        with self._lock:
+            self._estop_active = False
+
+        if self._estop_resume_client.service_is_ready():
+            self._estop_resume_client.call_async(Trigger.Request()).add_done_callback(
+                self._on_resume_service_done
+            )
+        else:
+            self._log("E-stop cleared via topic.")
+
+    def _on_traj_cancel_done(self, future) -> None:
+        try:
+            result = future.result()
+            n = len(result.goals_canceling)
+            if n > 0:
+                self._log(f"E-stop: controller cancelling {n} goal(s).")
+            else:
+                self._log("E-stop: no active goals found on controller.")
+        except Exception as exc:
+            self._log(f"E-stop cancel service error: {exc}")
+
+    def _on_estop_service_done(self, future) -> None:
+        try:
+            res = future.result()
+            self._log(f"E-stop service: {res.message}")
+        except Exception as exc:
+            self._log(f"E-stop service call error: {exc}")
+
+    def _on_resume_service_done(self, future) -> None:
+        try:
+            res = future.result()
+            self._log(f"E-stop resume: {res.message}")
+        except Exception as exc:
+            self._log(f"E-stop resume call error: {exc}")
 
     def publish_goal_pose(
         self,
@@ -184,6 +342,9 @@ class RobotControlNode(Node):
         duration_sec: float = DEFAULT_DURATION_SEC,
     ) -> None:
         """Send a FollowJointTrajectory action goal directly."""
+        if self.get_estop_active():
+            self._log("ERROR: E-stop is active — clear it before sending goals.")
+            return
         if not self._joint_ac.wait_for_server(timeout_sec=3.0):
             self._log("ERROR: joint_trajectory_controller action server not available.")
             return
@@ -204,20 +365,31 @@ class RobotControlNode(Node):
         self._log(f"Joint goal sent ({duration_sec:.1f}s): [{deg_str}]")
 
     def _on_goal_accepted(self, future) -> None:
-        goal_handle = future.result()
+        try:
+            goal_handle = future.result()
+        except Exception as exc:
+            self._log(f"Exception getting joint goal handle: {exc}")
+            return
         if not goal_handle or not goal_handle.accepted:
             self._log("Joint goal rejected by controller.")
             return
+        with self._goal_handle_lock:
+            self._goal_handle = goal_handle
         self._log("Joint goal accepted — executing…")
         goal_handle.get_result_async().add_done_callback(self._on_goal_done)
 
     def _on_goal_done(self, future) -> None:
-        result = future.result()
-        if result is not None and result.result.error_code == 0:
-            self._log("Joint goal completed successfully.")
-        else:
-            err = result.result.error_code if result else "timeout"
-            self._log(f"Joint goal finished with error code: {err}")
+        with self._goal_handle_lock:
+            self._goal_handle = None
+        try:
+            result = future.result()
+            if result is not None and result.result.error_code == 0:
+                self._log("Joint goal completed successfully.")
+            else:
+                err = result.result.error_code if result else "timeout"
+                self._log(f"Joint goal finished with error code: {err}")
+        except Exception as exc:
+            self._log(f"Exception receiving joint goal result: {exc}")
 
     def add_floor_plane(self, floor_z: float = 0.0, frame_id: str = "base_link") -> None:
         """Add 10 m × 10 m slab to block all robot motion below floor_z."""
@@ -269,17 +441,20 @@ class RobotGUI:
     def _build_ui(self) -> None:
         root = self._root
         root.columnconfigure(0, weight=1)
-        root.rowconfigure(1, weight=1)  # notebook expands
-        root.rowconfigure(3, weight=1)  # log expands
+        root.rowconfigure(2, weight=1)  # notebook expands
+        root.rowconfigure(4, weight=1)  # log expands
 
-        # 0 – state strip
+        # 0 – e-stop strip (always visible at the top)
+        self._build_estop_strip(root)
+
+        # 1 – state strip
         state_frame = ttk.LabelFrame(root, text="Live Robot State", padding=self.PAD)
-        state_frame.grid(row=0, column=0, sticky="ew", padx=self.PAD, pady=(self.PAD, 4))
+        state_frame.grid(row=1, column=0, sticky="ew", padx=self.PAD, pady=(4, 4))
         self._build_state_strip(state_frame)
 
-        # 1 – control notebook
+        # 2 – control notebook
         nb_outer = ttk.Frame(root, padding=(self.PAD, 0))
-        nb_outer.grid(row=1, column=0, sticky="nsew")
+        nb_outer.grid(row=2, column=0, sticky="nsew")
         nb_outer.columnconfigure(0, weight=1)
         nb_outer.rowconfigure(0, weight=1)
 
@@ -297,14 +472,14 @@ class RobotGUI:
         self._build_joint_tab(joint_tab)
         self._build_presets_tab(preset_tab)
 
-        # 2 – planning scene strip
+        # 3 – planning scene strip
         scene_frame = ttk.LabelFrame(root, text="Planning Scene — Exclusion Zones", padding=self.PAD)
-        scene_frame.grid(row=2, column=0, sticky="ew", padx=self.PAD, pady=(4, 4))
+        scene_frame.grid(row=3, column=0, sticky="ew", padx=self.PAD, pady=(4, 4))
         self._build_scene_strip(scene_frame)
 
-        # 3 – log
+        # 4 – log
         log_frame = ttk.LabelFrame(root, text="Log", padding=self.PAD)
-        log_frame.grid(row=3, column=0, sticky="nsew", padx=self.PAD, pady=(0, self.PAD))
+        log_frame.grid(row=4, column=0, sticky="nsew", padx=self.PAD, pady=(0, self.PAD))
         log_frame.columnconfigure(0, weight=1)
         log_frame.rowconfigure(0, weight=1)
 
@@ -313,32 +488,111 @@ class RobotGUI:
         )
         self._log_text.grid(row=0, column=0, sticky="nsew")
 
+    # ── e-stop strip ───────────────────────────────────────────────────────
+
+    def _build_estop_strip(self, root: tk.Tk) -> None:
+        """Prominent e-stop bar pinned to row 0 of the root window."""
+        frame = tk.Frame(root, bg="#cc0000", padx=6, pady=4)
+        frame.grid(row=0, column=0, sticky="ew", padx=0, pady=0)
+        frame.columnconfigure(1, weight=1)
+
+        # Large E-STOP button
+        self._estop_btn = tk.Button(
+            frame,
+            text="⏹  E-STOP",
+            font=("", 13, "bold"),
+            bg="#ff0000",
+            fg="white",
+            activebackground="#aa0000",
+            activeforeground="white",
+            relief="raised",
+            bd=3,
+            width=14,
+            command=self._on_estop,
+        )
+        self._estop_btn.grid(row=0, column=0, padx=(4, 10), pady=2)
+
+        # Status label
+        self._estop_status_var = tk.StringVar(value="READY")
+        self._estop_status_lbl = tk.Label(
+            frame,
+            textvariable=self._estop_status_var,
+            font=("", 12, "bold"),
+            bg="#cc0000",
+            fg="#aaffaa",
+            width=18,
+        )
+        self._estop_status_lbl.grid(row=0, column=1, padx=4)
+
+        # Resume button (insensitive until e-stop is active)
+        self._resume_btn = tk.Button(
+            frame,
+            text="▶  Resume",
+            font=("", 11, "bold"),
+            bg="#555555",
+            fg="#cccccc",
+            activebackground="#228822",
+            activeforeground="white",
+            relief="raised",
+            bd=3,
+            width=12,
+            state="disabled",
+            command=self._on_estop_resume,
+        )
+        self._resume_btn.grid(row=0, column=2, padx=(10, 4), pady=2)
+
     # ── state strip ────────────────────────────────────────────────────────
 
     def _build_state_strip(self, parent: ttk.Frame) -> None:
-        parent.columnconfigure(list(range(20)), weight=0)
+        parent.columnconfigure(0, weight=1)
+        parent.columnconfigure(1, weight=1)
 
-        # Joint positions
-        jf = ttk.LabelFrame(parent, text="Joints (°)", padding=(4, 2))
-        jf.grid(row=0, column=0, sticky="w", padx=(0, 12))
+        # ── Row 0, col 0: Joint angles ──
+        jf = ttk.LabelFrame(parent, text="Joint Angles (°)", padding=(4, 2))
+        jf.grid(row=0, column=0, sticky="nsew", padx=(0, 6), pady=(0, 4))
         self._joint_sv: dict[str, tk.StringVar] = {}
         for i, (full, short) in enumerate(zip(UR3E_JOINT_NAMES, JOINT_SHORT_NAMES)):
             ttk.Label(jf, text=short + ":").grid(row=0, column=i * 2, sticky="e", padx=(6, 1))
-            sv = tk.StringVar(value="  ---  ")
-            ttk.Label(jf, textvariable=sv, width=7, anchor="e",
+            sv = tk.StringVar(value="   ---  ")
+            ttk.Label(jf, textvariable=sv, width=8, anchor="e",
                       font=("Courier", 9)).grid(row=0, column=i * 2 + 1, sticky="w")
             self._joint_sv[full] = sv
 
-        # F/T
+        # ── Row 0, col 1: Live EE Cartesian pose ──
+        eef = ttk.LabelFrame(
+            parent,
+            text=f"EE Pose  ({RobotControlNode.BASE_FRAME} → {RobotControlNode.EE_FRAME})",
+            padding=(4, 2),
+        )
+        eef.grid(row=0, column=1, sticky="nsew", padx=(6, 0), pady=(0, 4))
+        self._ee_sv: dict[str, tk.StringVar] = {}
+        # Position row
+        for i, name in enumerate(["X (m)", "Y (m)", "Z (m)"]):
+            ttk.Label(eef, text=name + ":").grid(row=0, column=i * 2, sticky="e", padx=(6, 1))
+            sv = tk.StringVar(value="   ---  ")
+            ttk.Label(eef, textvariable=sv, width=8, anchor="e",
+                      font=("Courier", 9)).grid(row=0, column=i * 2 + 1, sticky="w")
+            self._ee_sv[name] = sv
+        # Orientation row
+        for i, name in enumerate(["Roll°", "Pitch°", "Yaw°"]):
+            ttk.Label(eef, text=name + ":").grid(row=1, column=i * 2, sticky="e", padx=(6, 1))
+            sv = tk.StringVar(value="   ---  ")
+            ttk.Label(eef, textvariable=sv, width=8, anchor="e",
+                      font=("Courier", 9)).grid(row=1, column=i * 2 + 1, sticky="w")
+            self._ee_sv[name] = sv
+
+        # ── Row 1: Force/Torque, spanning both columns ──
         ftf = ttk.LabelFrame(parent, text="Force/Torque (N, N·m)", padding=(4, 2))
-        ftf.grid(row=0, column=1, sticky="w")
+        ftf.grid(row=1, column=0, columnspan=2, sticky="ew")
         self._ft_sv: dict[str, tk.StringVar] = {}
-        labels = [("Fx", 0, 0), ("Fy", 0, 2), ("Fz", 0, 4),
-                  ("Tx", 1, 0), ("Ty", 1, 2), ("Tz", 1, 4)]
-        for name, row, col in labels:
-            ttk.Label(ftf, text=name + ":").grid(row=row, column=col, sticky="e", padx=(6, 1))
-            sv = tk.StringVar(value="  --  ")
-            ttk.Label(ftf, textvariable=sv, width=7, anchor="e",
+        ft_labels = [
+            ("Fx", 0, 0), ("Fy", 0, 2), ("Fz", 0, 4),
+            ("Tx", 0, 6), ("Ty", 0, 8), ("Tz", 0, 10),
+        ]
+        for name, row, col in ft_labels:
+            ttk.Label(ftf, text=name + ":").grid(row=row, column=col, sticky="e", padx=(8, 1))
+            sv = tk.StringVar(value="   --  ")
+            ttk.Label(ftf, textvariable=sv, width=8, anchor="e",
                       font=("Courier", 9)).grid(row=row, column=col + 1, sticky="w")
             self._ft_sv[name] = sv
 
@@ -402,6 +656,9 @@ class RobotGUI:
         ttk.Button(btn_f, text="Plan & Execute", command=self._on_cart_send, width=16).pack(
             side="left", padx=(0, 6)
         )
+        ttk.Button(
+            btn_f, text="Copy Current EE Pose", command=self._on_cart_use_current, width=20
+        ).pack(side="left", padx=(0, 6))
 
         row += 1
         ttk.Label(
@@ -559,6 +816,25 @@ class RobotGUI:
             return
         self._node.publish_goal_pose(x, y, z, roll, pitch, yaw, frame)
 
+    def _on_cart_use_current(self) -> None:
+        """Copy the live EE pose (from TF2) into the Cartesian goal-pose input fields."""
+        ee = self._node.get_ee_pose()
+        if ee is None:
+            messagebox.showwarning(
+                "TF Not Available",
+                "Could not read the end-effector pose from TF2.\n\n"
+                "Make sure robot_state_publisher and the joint_state_broadcaster "
+                "are running (sim or hardware).",
+            )
+            return
+        x, y, z, roll, pitch, yaw = ee
+        self._cart_sv["X"].set(f"{x:.4f}")
+        self._cart_sv["Y"].set(f"{y:.4f}")
+        self._cart_sv["Z"].set(f"{z:.4f}")
+        self._cart_sv["Roll"].set(f"{roll:.2f}")
+        self._cart_sv["Pitch"].set(f"{pitch:.2f}")
+        self._cart_sv["Yaw"].set(f"{yaw:.2f}")
+
     def _on_joint_send(self) -> None:
         try:
             positions_rad = [math.radians(sv.get()) for sv in self._joint_slider_vars]
@@ -579,6 +855,26 @@ class RobotGUI:
         for sv, name in zip(self._joint_slider_vars, UR3E_JOINT_NAMES):
             if name in positions:
                 sv.set(math.degrees(positions[name]))
+
+    def _on_estop(self) -> None:
+        self._node.trigger_estop()
+        self._set_estop_ui(active=True)
+
+    def _on_estop_resume(self) -> None:
+        self._node.resume_estop()
+        self._set_estop_ui(active=False)
+
+    def _set_estop_ui(self, active: bool) -> None:
+        if active:
+            self._estop_status_var.set("⛔  STOPPED")
+            self._estop_status_lbl.configure(fg="#ffff00")
+            self._estop_btn.configure(state="disabled", bg="#880000")
+            self._resume_btn.configure(state="normal", bg="#228822", fg="white")
+        else:
+            self._estop_status_var.set("READY")
+            self._estop_status_lbl.configure(fg="#aaffaa")
+            self._estop_btn.configure(state="normal", bg="#ff0000")
+            self._resume_btn.configure(state="disabled", bg="#555555", fg="#cccccc")
 
     def _on_add_floor(self) -> None:
         try:
@@ -601,11 +897,32 @@ class RobotGUI:
         self._root.after(100, self._schedule_updates)
 
     def _update_state_display(self) -> None:
+        # Sync e-stop button state with ROS-reported state (handles external triggers)
+        ros_estop = self._node.get_estop_active()
+        ui_stopped = self._estop_status_var.get().startswith("⛔")
+        if ros_estop and not ui_stopped:
+            self._set_estop_ui(active=True)
+        elif not ros_estop and ui_stopped:
+            self._set_estop_ui(active=False)
+
+        # Joint angles
         positions = self._node.get_joint_positions()
         for name, sv in self._joint_sv.items():
             if name in positions:
                 sv.set(f"{math.degrees(positions[name]):+7.2f}")
 
+        # Live EE Cartesian pose from TF2
+        ee = self._node.get_ee_pose()
+        if ee is not None:
+            x, y, z, roll, pitch, yaw = ee
+            self._ee_sv["X (m)"].set(f"{x:+7.4f}")
+            self._ee_sv["Y (m)"].set(f"{y:+7.4f}")
+            self._ee_sv["Z (m)"].set(f"{z:+7.4f}")
+            self._ee_sv["Roll°"].set(f"{roll:+7.2f}")
+            self._ee_sv["Pitch°"].set(f"{pitch:+7.2f}")
+            self._ee_sv["Yaw°"].set(f"{yaw:+7.2f}")
+
+        # Force/torque
         ft = self._node.get_ft()
         if ft is not None:
             self._ft_sv["Fx"].set(f"{ft.wrench.force.x:+7.2f}")

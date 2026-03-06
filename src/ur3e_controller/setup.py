@@ -28,6 +28,7 @@ setup(
             "pose_goal_node = ur3e_controller.pose_goal_node:main",
             "exclusion_zones_node = ur3e_controller.exclusion_zones_loader:main",
             "robot_gui = ur3e_controller.robot_gui:main",
+            "estop_node = ur3e_controller.estop_node:main",
         ],
     },
 )
