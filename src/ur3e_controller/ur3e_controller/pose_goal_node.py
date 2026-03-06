@@ -41,6 +41,7 @@ from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import PoseStamped, WrenchStamped
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import PlanningOptions
+from std_msgs.msg import Bool
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from ur3e_controller.move_client import UR3E_JOINT_NAMES
@@ -94,6 +95,20 @@ class PoseGoalNode(Node):
         self._busy = False
         self._busy_lock = threading.Lock()
 
+        # In-flight goal handles (set when goals are accepted, cleared on completion/cancel)
+        self._plan_goal_handle = None
+        self._exec_goal_handle = None
+        self._handle_lock = threading.Lock()
+
+        # E-stop subscription — reacts to /estop_active broadcast from estop_node
+        # Also subscribes directly to /estop Bool so it works without estop_node running
+        self.create_subscription(
+            Bool, "/estop_active", self._on_estop, 1, callback_group=self._cbg
+        )
+        self.create_subscription(
+            Bool, "/estop", self._on_estop_direct, 1, callback_group=self._cbg
+        )
+
         self.get_logger().info(
             "PoseGoalNode started.  Publish geometry_msgs/PoseStamped to '/goal_pose'."
         )
@@ -107,6 +122,44 @@ class PoseGoalNode(Node):
     def get_latest_wrench(self) -> WrenchStamped | None:
         with self._ft_lock:
             return self._ft
+
+    # ── E-stop ───────────────────────────────────────────────────────────────
+
+    def _on_estop(self, msg: Bool) -> None:
+        """Reacts to /estop_active state broadcast from estop_node."""
+        if msg.data:
+            self._cancel_in_flight_goals()
+
+    def _on_estop_direct(self, msg: Bool) -> None:
+        """Reacts to direct /estop Bool topic (True = engage)."""
+        if msg.data:
+            self._cancel_in_flight_goals()
+
+    def _cancel_in_flight_goals(self) -> None:
+        """Cancel any currently active planning or execution goal and free the busy flag."""
+        self.get_logger().warn("E-stop received — cancelling in-flight goals.")
+
+        with self._handle_lock:
+            plan_handle = self._plan_goal_handle
+            exec_handle = self._exec_goal_handle
+            self._plan_goal_handle = None
+            self._exec_goal_handle = None
+
+        if plan_handle is not None:
+            try:
+                plan_handle.cancel_goal_async()
+                self.get_logger().info("Planning goal cancel requested.")
+            except Exception as exc:
+                self.get_logger().warn(f"Could not cancel planning goal: {exc}")
+
+        if exec_handle is not None:
+            try:
+                exec_handle.cancel_goal_async()
+                self.get_logger().info("Execution goal cancel requested.")
+            except Exception as exc:
+                self.get_logger().warn(f"Could not cancel execution goal: {exc}")
+
+        self._set_free()
 
     # ── Step 1: receive goal ─────────────────────────────────────────────────
 
@@ -165,12 +218,18 @@ class PoseGoalNode(Node):
             self._set_free()
             return
 
+        with self._handle_lock:
+            self._plan_goal_handle = goal_handle
+
         self.get_logger().info("Planning goal accepted — waiting for result…")
         goal_handle.get_result_async().add_done_callback(self._on_plan_result)
 
     # ── Step 4: plan result callback ─────────────────────────────────────────
 
     def _on_plan_result(self, future) -> None:
+        with self._handle_lock:
+            self._plan_goal_handle = None
+
         try:
             wrapped = future.result()
         except Exception as exc:
@@ -245,12 +304,18 @@ class PoseGoalNode(Node):
             self._set_free()
             return
 
+        with self._handle_lock:
+            self._exec_goal_handle = goal_handle
+
         self.get_logger().info("Execution accepted — robot is moving…")
         goal_handle.get_result_async().add_done_callback(self._on_exec_result)
 
     # ── Step 7: execution result callback ────────────────────────────────────
 
     def _on_exec_result(self, future) -> None:
+        with self._handle_lock:
+            self._exec_goal_handle = None
+
         try:
             wrapped = future.result()
         except Exception as exc:
