@@ -1,5 +1,3 @@
-# Copyright 2025 RS2-JENGA
-# BSD-3-Clause
 
 """
 Pose-goal node: accepts geometry_msgs/PoseStamped on /goal_pose,
