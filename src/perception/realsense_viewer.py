@@ -1,196 +1,152 @@
 #!/usr/bin/env python3
 """
-RealSense .bag file viewer.
-Plays back recorded RGB and depth streams from an Intel RealSense .bag file.
+Simple RealSense .bag RGB viewer (with optional depth view)
+- Looks in camera_files/rgbd_raw/
+- Auto-picks first .bag if no argument given
+- q = quit,  s = save RGB snapshot
+- Use --depth or -d to show color | depth side-by-side
 """
 
-import argparse
 import sys
 from pathlib import Path
-
-try:
-    import tkinter as tk
-except ImportError:  # pragma: no cover - tkinter might not be available in some envs
-    tk = None
+import cv2
+import numpy as np
 
 try:
     import pyrealsense2 as rs
 except ImportError:
-    try:
-        import pyrealsense2_macosx as rs
-    except ImportError:
-        print("Error: RealSense Python bindings not found.")
-        print("On Mac, install with: pip install pyrealsense2-macosx")
-        print("On Linux/Windows: pip install pyrealsense2")
-        sys.exit(1)
-
-try:
-    import numpy as np
-    import cv2
-except ImportError:
-    print("Error: numpy and opencv-python are required.")
-    print("Install with: pip install numpy opencv-python")
+    print("Error: pyrealsense2 not found.")
+    print("Install with: pip install pyrealsense2")
     sys.exit(1)
 
 
-def colorize_depth(depth_frame, clip_max: float = None):
-    """Convert depth frame to colormap for visualization."""
+def colorize_depth(depth_frame, clip_max=4000.0):
+    """Convert depth frame to JET colormap for visualization."""
     depth_image = np.asanyarray(depth_frame.get_data())
-    if clip_max is not None and clip_max > 0:
-        depth_image = np.clip(depth_image, 0, clip_max)
+    depth_image = np.clip(depth_image, 0, clip_max)
     depth_colormap = cv2.applyColorMap(
-        cv2.convertScaleAbs(depth_image, alpha=0.03), cv2.COLORMAP_JET
+        cv2.convertScaleAbs(depth_image, alpha=0.03),
+        cv2.COLORMAP_JET
     )
     return depth_colormap
 
 
 def main():
-    parser = argparse.ArgumentParser(description="View RealSense .bag recording")
-    parser.add_argument(
-        "bag_file",
-        nargs="?",
-        default=None,
-        help="Path to the .bag file (e.g. recording.bag)",
-    )
-    parser.add_argument(
-        "--depth-clip",
-        type=float,
-        default=4000.0,
-        help="Max depth in mm for colormap (default: 4000)",
-    )
-    parser.add_argument(
-        "--no-depth",
-        action="store_true",
-        help="Only show RGB stream (useful if bag has no depth)",
-    )
+    import argparse
+
+    parser = argparse.ArgumentParser(description="View RealSense .bag file (RGB + optional depth)")
+    parser.add_argument("bag_file", nargs="?", default=None,
+                        help="Filename of .bag in camera_files/rgbd_raw/ (e.g. 3.bag)")
+    parser.add_argument("--depth", "-d", action="store_true",
+                        help="Show color image | depth colormap side-by-side")
     args = parser.parse_args()
 
-    if not args.bag_file:
-        # If no bag file is provided, automatically select the first file
-        # in the default rgbd_raw directory.
-        default_dir = Path(__file__).resolve().parents[0] / "camera_files" / "rgbd_raw"
+    # Where .bag files live
+    BAG_DIR = Path(__file__).resolve().parent / "camera_files" / "rgbd_raw"
 
-        if not default_dir.is_dir():
-            print(
-                "Error: No bag file argument provided and default directory "
-                f"'{default_dir}' does not exist."
-            )
+    if not BAG_DIR.is_dir():
+        print(f"Error: Directory not found: {BAG_DIR}")
+        sys.exit(1)
+
+    # Get filename from command line or auto-select
+    if args.bag_file:
+        bag_path = (BAG_DIR / args.bag_file).resolve()
+        if not bag_path.is_file():
+            print(f"Error: File not found: {bag_path}")
+            print(f"(looked in: {BAG_DIR})")
             sys.exit(1)
-
-        # Find the first .bag file in the directory (sorted for determinism)
-        bag_files = sorted(default_dir.glob("*.bag"))
+    else:
+        bag_files = sorted(BAG_DIR.glob("*.bag"))
         if not bag_files:
-            print(
-                "Error: No bag file argument provided and no .bag files found in "
-                f"'{default_dir}'."
-            )
+            print(f"Error: No .bag files found in {BAG_DIR}")
             sys.exit(1)
+        bag_path = bag_files[0]
+        print(f"No file specified → using: {bag_path.name}")
 
-        args.bag_file = str(bag_files[0])
-        print(f"No bag_file argument provided. Using first file: {args.bag_file}")
+    print(f"Opening: {bag_path}")
+    if args.depth:
+        print("Showing: RGB | Depth colormap")
+    else:
+        print("Showing: RGB only  (use --depth to show depth too)")
 
+    # ────────────────────────────────────────
+    #  Playback setup
+    # ────────────────────────────────────────
     pipeline = rs.pipeline()
     config = rs.config()
-    config.enable_device_from_file(args.bag_file, repeat_playback=False)
-
-    # Enable streams that are in the bag (we don't set resolution; bag defines it)
+    config.enable_device_from_file(str(bag_path), repeat_playback=False)
     config.enable_stream(rs.stream.color)
-    if not args.no_depth:
+    if args.depth:
         config.enable_stream(rs.stream.depth)
 
     try:
         profile = pipeline.start(config)
-        device = profile.get_device()
-        playback = device.as_playback()
-        playback.set_real_time(False)  # Play as fast as we can read
+    except RuntimeError as e:
+        print(f"Failed to open bag file: {e}")
+        sys.exit(1)
 
-        use_align = not args.no_depth
-        align = rs.align(rs.stream.color) if use_align else None
+    print("Controls:  q = quit,  s = save RGB snapshot")
 
-        print("Playing .bag file. Press 'q' to quit, 's' to save a snapshot.")
-        print("Close the window or press Ctrl+C to exit.")
+    cv2.namedWindow("RealSense Playback", cv2.WINDOW_NORMAL)
 
-        # Create a resizable window and size it to ~1/3 of the screen
-        window_name = "RealSense .bag playback"
-        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+    frame_count = 0
 
-        if tk is not None:
-            try:
-                root = tk.Tk()
-                root.withdraw()  # hide the root window
-                screen_w = root.winfo_screenwidth()
-                screen_h = root.winfo_screenheight()
-                root.destroy()
+    while True:
+        try:
+            frames = pipeline.wait_for_frames(timeout_ms=500)
+        except RuntimeError:
+            print("Reached end of bag file.")
+            break
 
-                target_w = max(200, screen_w // 3)
-                target_h = max(150, screen_h // 3)
-                cv2.resizeWindow(window_name, target_w, target_h)
-            except Exception:
-                # If anything goes wrong getting screen size, just use OpenCV defaults
-                pass
+        color_frame = frames.get_color_frame()
+        if not color_frame:
+            continue
 
-        frame_count = 0
-        target_fps = 60
-        frame_delay_ms = max(1, int(1000 / target_fps))
-        while True:
-            try:
-                frames = pipeline.wait_for_frames(timeout_ms=1000)
-            except RuntimeError:
-                print("End of recording or timeout.")
-                break
+        color_image = np.asanyarray(color_frame.get_data())
+        color_image = cv2.cvtColor(color_image, cv2.COLOR_RGB2BGR)
 
-            if use_align and align:
-                frames = align.process(frames)
-            color_frame = frames.get_color_frame()
-            depth_frame = frames.get_depth_frame() if not args.no_depth else None
-
-            if not color_frame:
-                continue
-
-            color_image = np.asanyarray(color_frame.get_data())
-            color_image = cv2.cvtColor(color_image, cv2.COLOR_RGB2BGR)
-
-            if depth_frame and not args.no_depth:
-                depth_colormap = colorize_depth(depth_frame, clip_max=args.depth_clip)
-                # Stack side by side: RGB | Depth
+        if args.depth:
+            depth_frame = frames.get_depth_frame()
+            if depth_frame:
+                depth_colormap = colorize_depth(depth_frame, clip_max=4000.0)
+                # Resize depth to match color if needed
                 h, w = color_image.shape[:2]
                 depth_resized = cv2.resize(depth_colormap, (w, h))
                 display = np.hstack((color_image, depth_resized))
             else:
-                display = color_image
+                display = color_image  # fallback if depth missing in this frame
+        else:
+            display = color_image
 
-            cv2.putText(
-                display,
-                f"Frame {frame_count}",
-                (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                1,
-                (255, 255, 255),
-                2,
-            )
-            cv2.imshow(window_name, display)
-            frame_count += 1
+        cv2.imshow("RealSense Playback", display)
+        frame_count += 1
 
-            key = cv2.waitKey(frame_delay_ms) & 0xFF
-            if key == ord("q"):
-                break
-            if key == ord("s"):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            print("Quit requested.")
+            break
+
+        if key == ord('s'):
+            save_dir = Path(__file__).resolve().parent / "camera_files" / "snapshots"
+            save_dir.mkdir(parents=True, exist_ok=True)
+
+            if args.depth:
+                # Save only left half (RGB)
                 h, w = display.shape[:2]
+                rgb_only = display[:, :w//2]
+                save_img = rgb_only
+            else:
+                save_img = display
 
-                # crop left half (RGB image)
-                rgb_only = display[:, : w // 2]
+            filename = f"{bag_path.stem}_frame_{frame_count:03d}.png"
+            save_path = save_dir / filename
 
-                out_name = f"snapshot_{frame_count}.png"
-                cv2.imwrite(out_name, rgb_only)
+            cv2.imwrite(str(save_path), save_img)
+            print(f"Saved RGB snapshot: {save_path}")
 
-                print(f"Saved RGB snapshot {out_name}")
-
-        pipeline.stop()
-        cv2.destroyAllWindows()
-
-    except Exception as e:
-        print(f"Error: {e}")
-        sys.exit(1)
+    pipeline.stop()
+    cv2.destroyAllWindows()
+    print("Done.")
 
 
 if __name__ == "__main__":

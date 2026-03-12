@@ -1,3 +1,5 @@
 **/.DS_Store
-**/rgbd_raw
+**/rgbd_large
 **/.vscode
+**/log
+**/__pycache__
