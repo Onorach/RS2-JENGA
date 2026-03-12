@@ -1,0 +1,20 @@
+#Pass Goals
+
+- End-effector Override command (Override_open , Override_closed) 
+
+#Credit Goals
+
+- Camera Feed Displayed in GUI
+- Display robot state on GUI e.g. “Picking Up, Releasing, Moving to Block”
+
+#Distinction Goals
+
+- User input in GUI to change future block placement goal positions (1 of 3 of top level)
+
+#High Distinction Goals
+
+- GUI togglable E-stop (engaged, Released)
+
+#Other Goals
+
+- Define Order of Goal Blocks
