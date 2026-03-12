@@ -30,6 +30,7 @@ def launch_setup(context, *args, **kwargs):
     initial_joint_controller = LaunchConfiguration("initial_joint_controller")
     launch_rviz = LaunchConfiguration("launch_rviz")
     gazebo_gui = LaunchConfiguration("gazebo_gui")
+    base_height = LaunchConfiguration("base_height")
 
     initial_joint_controllers = PathJoinSubstitution(
         [FindPackageShare(runtime_config_package), "config", controllers_file]
@@ -135,12 +136,16 @@ def launch_setup(context, *args, **kwargs):
         }.items(),
     )
 
-    # Spawn robot
+    # Spawn robot — placed at the top of the cabinet (base_height metres above world origin)
     gazebo_spawn_robot = Node(
         package="gazebo_ros",
         executable="spawn_entity.py",
         name="spawn_ur",
-        arguments=["-entity", "ur", "-topic", "robot_description"],
+        arguments=[
+            "-entity", "ur",
+            "-topic", "robot_description",
+            "-z", base_height.perform(context),
+        ],
         output="screen",
     )
 
@@ -264,6 +269,17 @@ def generate_launch_description():
     declared_arguments.append(
         DeclareLaunchArgument(
             "gazebo_gui", default_value="true", description="Start Gazebo with GUI?"
+        )
+    )
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "base_height",
+            default_value="1.080",
+            description=(
+                "Height (metres) at which the robot base_link is spawned in Gazebo. "
+                "Set to the cabinet height so the robot sits on top of the cabinet "
+                "(default: 1.080 m for a 1080 mm steel cabinet)."
+            ),
         )
     )
 

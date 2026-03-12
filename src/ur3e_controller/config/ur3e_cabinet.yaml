@@ -1,0 +1,29 @@
+# Collision zones for the UR3e mounted on a steel wheeled cabinet.
+#
+# All dimensions in metres. The robot's base_link sits at the top surface of
+# the cabinet, so z = 0 in base_link equals the cabinet top.
+#
+#   World z = 1.080 m ── base_link ── z = 0 in base_link
+#                         ├── workspace_platform: z = 0.000 → +0.012 m
+#                         └── cabinet_body:       z = 0.000 → -1.080 m
+#   World z = 0.000 m ── floor
+#
+# Cabinet physical dimensions: 735 mm wide × 710 mm deep × 1080 mm tall
+# Platform physical dimensions: 500 mm wide × 320 mm long × 12 mm tall
+
+exclusion_zones:
+  # The cabinet body itself — prevents the robot from planning paths that
+  # would collide with the cabinet structure below the mounting surface.
+  - type: box
+    id: cabinet_body
+    frame_id: base_link
+    position: [0.0, 0.0, -0.540]    # centre of the 1.080 m tall cabinet
+    size:     [0.735, 0.710, 1.080]
+
+  # Small workspace platform sitting on top of the cabinet.
+  # This is where the Jenga tower is placed; the robot works above z = 0.012 m.
+  - type: box
+    id: workspace_platform
+    frame_id: base_link
+    position: [0.0, 0.0, 0.006]     # 12 mm slab on the cabinet top surface
+    size:     [0.500, 0.320, 0.012]

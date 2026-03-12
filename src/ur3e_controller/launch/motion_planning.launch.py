@@ -18,9 +18,30 @@ def generate_launch_description():
 
     exclusion_zones_file_arg = DeclareLaunchArgument(
         "exclusion_zones_file",
-        default_value="",
-        description="Path to YAML file with exclusion zones (optional). "
-        "Use 'default' to load config/exclusion_zones_example.yaml from the package.",
+        default_value=PathJoinSubstitution(
+            [FindPackageShare(pkg), "config", "ur3e_cabinet.yaml"]
+        ),
+        description=(
+            "Absolute path to a YAML file defining exclusion zones to load into the "
+            "MoveIt2 planning scene. Defaults to the cabinet + workspace-platform zones "
+            "from config/ur3e_cabinet.yaml. Pass an empty string to load no YAML zones."
+        ),
+    )
+    add_floor_plane_arg = DeclareLaunchArgument(
+        "add_floor_plane",
+        default_value="true",
+        description=(
+            "Whether to add the built-in floor-plane collision slab (top at floor_z). "
+            "Prevents the robot from planning paths below the cabinet mounting surface."
+        ),
+    )
+    floor_z_arg = DeclareLaunchArgument(
+        "floor_z",
+        default_value="0.0",
+        description=(
+            "Z height (metres, in base_link frame) of the floor-plane slab top surface. "
+            "0.0 places the floor at the cabinet top where the robot is mounted."
+        ),
     )
     plan_only_arg = DeclareLaunchArgument(
         "plan_only",
@@ -51,9 +72,10 @@ def generate_launch_description():
         ],
     )
 
-    # Optional: loads exclusion zones from YAML and adds them to the planning scene.
-    # Leave exclusion_zones_file empty to skip. Otherwise pass a path or use the example:
-    #   ros2 launch ur3e_controller motion_planning.launch.py exclusion_zones_file:=$(ros2 pkg prefix ur3e_controller)/share/ur3e_controller/config/exclusion_zones_example.yaml
+    # Loads exclusion zones from YAML and publishes them to the MoveIt2 planning scene.
+    # At runtime, individual zones can be toggled:
+    #   ros2 topic pub --once /remove_exclusion_zone std_msgs/msg/String "data: cabinet_body"
+    #   ros2 topic pub --once /add_exclusion_zone    std_msgs/msg/String "data: cabinet_body"
     exclusion_zones_node = Node(
         package=pkg,
         executable="exclusion_zones_node",
@@ -62,6 +84,8 @@ def generate_launch_description():
         parameters=[
             {
                 "exclusion_zones_file": LaunchConfiguration("exclusion_zones_file"),
+                "add_floor_plane": LaunchConfiguration("add_floor_plane"),
+                "floor_z": LaunchConfiguration("floor_z"),
             },
         ],
     )
@@ -86,6 +110,8 @@ def generate_launch_description():
 
     return LaunchDescription([
         exclusion_zones_file_arg,
+        add_floor_plane_arg,
+        floor_z_arg,
         plan_only_arg,
         move_action_arg,
         joint_action_arg,
