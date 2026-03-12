@@ -1,16 +1,22 @@
 # Perception
-
 This is the perception of the infamous JENGA robot!!
 
 ## Setup
+To make sure you can run the perception correctly please ensure you have installed ros2 humble
 
-To make sure you can run the perception correctly please ensure you have installed:
-    - ros2
+Please run the following script to install all required packages, you may have to alter the directory based on where you have stored the repo
+'''
+~/src/RS2-JENGA/src/perception ./perception_setup.sh
+'''
 
-Then run the setup script, this will install required packages
-you should see an output with:
-"
+you should see the following at the end of the install to confirm suscess
+'''
 realsense2_camera
 realsense2_camera_msgs
 realsense2_description
-"
+'''
+
+If you are denied permision when running any script please use
+'''
+chmod +x script_here.sh
+'''
