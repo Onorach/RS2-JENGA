@@ -36,7 +36,8 @@ import rclpy.time
 from builtin_interfaces.msg import Duration
 from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import Pose, PoseStamped, WrenchStamped
-from moveit_msgs.msg import CollisionObject, PlanningScene, PlanningSceneWorld
+from moveit_msgs.action import MoveGroup
+from moveit_msgs.msg import CollisionObject, PlanningOptions, PlanningScene, PlanningSceneWorld
 from rclpy.action import ActionClient
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -51,6 +52,11 @@ import tf2_ros
 from ur3e_controller.exclusion_zones_loader import (
     publish_floor_plane,
     publish_remove_floor_plane,
+)
+from ur3e_controller.moveit_planning import (
+    build_motion_plan_request,
+    pose_stamped_to_goal_constraints,
+    robot_trajectory_to_joint_trajectory,
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -154,6 +160,14 @@ class RobotControlNode(Node):
             "/joint_trajectory_controller/follow_joint_trajectory",
         )
 
+        # Action client for Cartesian planning via MoveGroup (plan-only, then execute above)
+        self._move_ac = ActionClient(self, MoveGroup, "/move_action")
+        self._cart_busy = False
+        self._cart_busy_lock = threading.Lock()
+        self._cart_plan_goal_handle = None
+        self._cart_exec_goal_handle = None
+        self._cart_handle_lock = threading.Lock()
+
         # E-stop service clients
         self._estop_client = self.create_client(Trigger, "/estop")
         self._estop_resume_client = self.create_client(Trigger, "/estop_resume")
@@ -246,6 +260,26 @@ class RobotControlNode(Node):
             except Exception as exc:
                 self._log(f"Could not cancel GUI trajectory goal: {exc}")
 
+        # 1b. Cancel any in-flight Cartesian planning or execution goal
+        with self._cart_handle_lock:
+            cart_plan = self._cart_plan_goal_handle
+            cart_exec = self._cart_exec_goal_handle
+            self._cart_plan_goal_handle = None
+            self._cart_exec_goal_handle = None
+        self._cart_set_free()
+        if cart_plan is not None:
+            try:
+                cart_plan.cancel_goal_async()
+                self._log("Cartesian planning goal cancel requested.")
+            except Exception as exc:
+                self._log(f"Could not cancel Cartesian plan goal: {exc}")
+        if cart_exec is not None:
+            try:
+                cart_exec.cancel_goal_async()
+                self._log("Cartesian execution goal cancel requested.")
+            except Exception as exc:
+                self._log(f"Could not cancel Cartesian exec goal: {exc}")
+
         # 2. Cancel ALL in-flight goals on the controller via the built-in cancel
         #    service (zero goal_id = cancel every goal, from any client including
         #    RViz MotionPlanning plugin).
@@ -335,6 +369,172 @@ class RobotControlNode(Node):
             f"RPY=({roll_deg:.1f}°, {pitch_deg:.1f}°, {yaw_deg:.1f}°)  frame='{frame_id}'"
         )
         self._log("  Planning and execution status appears in the pose_goal_node terminal.")
+
+    # ── Cartesian plan+execute pipeline (internal — no external pose_goal_node needed) ──
+
+    def plan_and_execute_pose(
+        self,
+        x: float, y: float, z: float,
+        roll_deg: float, pitch_deg: float, yaw_deg: float,
+        frame_id: str = "base_link",
+    ) -> None:
+        """Plan and execute a Cartesian pose goal via MoveIt2 (fully internal pipeline)."""
+        if self.get_estop_active():
+            self._log("ERROR: E-stop is active — clear it before sending goals.")
+            return
+        with self._cart_busy_lock:
+            if self._cart_busy:
+                self._log("Already planning/executing a Cartesian goal — please wait.")
+                return
+            self._cart_busy = True
+
+        qx, qy, qz, qw = euler_to_quaternion(
+            math.radians(roll_deg), math.radians(pitch_deg), math.radians(yaw_deg),
+        )
+        ps = PoseStamped()
+        ps.header.frame_id = frame_id
+        ps.header.stamp = self.get_clock().now().to_msg()
+        ps.pose.position.x = float(x)
+        ps.pose.position.y = float(y)
+        ps.pose.position.z = float(z)
+        ps.pose.orientation.x = qx
+        ps.pose.orientation.y = qy
+        ps.pose.orientation.z = qz
+        ps.pose.orientation.w = qw
+
+        self._log(
+            f"→ Cartesian goal: xyz=({x:.3f}, {y:.3f}, {z:.3f}) m  "
+            f"RPY=({roll_deg:.1f}°, {pitch_deg:.1f}°, {yaw_deg:.1f}°)  frame='{frame_id}'"
+        )
+        # Blocking wait_for_server runs in a separate thread so Tkinter stays responsive
+        threading.Thread(target=self._cart_do_plan, args=(ps,), daemon=True).start()
+
+    def _cart_do_plan(self, ps: PoseStamped) -> None:
+        """Background thread: wait for MoveGroup then submit the planning request."""
+        if not self._move_ac.wait_for_server(timeout_sec=5.0):
+            self._log(
+                "ERROR: MoveGroup action server '/move_action' not available.\n"
+                "  Start MoveIt2 first (e.g. ur3e_sim_moveit.launch.py)."
+            )
+            self._cart_set_free()
+            return
+
+        goal_constraints = pose_stamped_to_goal_constraints(ps)
+        request = build_motion_plan_request(goal_constraints)
+        options = PlanningOptions()
+        options.plan_only = True
+
+        goal_msg = MoveGroup.Goal()
+        goal_msg.request = request
+        goal_msg.planning_options = options
+
+        self._log("Sending planning request to MoveGroup…")
+        future = self._move_ac.send_goal_async(goal_msg)
+        future.add_done_callback(self._on_cart_plan_accepted)
+
+    def _on_cart_plan_accepted(self, future) -> None:
+        try:
+            goal_handle = future.result()
+        except Exception as exc:
+            self._log(f"Exception sending plan goal: {exc}")
+            self._cart_set_free()
+            return
+        if not goal_handle or not goal_handle.accepted:
+            self._log("MoveGroup rejected the planning goal.")
+            self._cart_set_free()
+            return
+        with self._cart_handle_lock:
+            self._cart_plan_goal_handle = goal_handle
+        self._log("Planning goal accepted — computing trajectory…")
+        goal_handle.get_result_async().add_done_callback(self._on_cart_plan_result)
+
+    def _on_cart_plan_result(self, future) -> None:
+        with self._cart_handle_lock:
+            self._cart_plan_goal_handle = None
+        try:
+            wrapped = future.result()
+        except Exception as exc:
+            self._log(f"Exception receiving plan result: {exc}")
+            self._cart_set_free()
+            return
+
+        res = wrapped.result
+        if res.error_code.val != 1:
+            code = res.error_code.val
+            hints = {
+                -1:  "plan failed",
+                -31: "no IK solution",
+                -10: "start state in collision",
+                -12: "goal state in collision",
+            }
+            hint = hints.get(code, "unknown error")
+            self._log(f"Planning failed: error_code={code} ({hint})")
+            self._cart_set_free()
+            return
+
+        traj = res.planned_trajectory
+        n_pts = len(traj.joint_trajectory.points)
+        if n_pts == 0:
+            self._log("Planner returned an empty trajectory.")
+            self._cart_set_free()
+            return
+
+        last_t = traj.joint_trajectory.points[-1].time_from_start
+        t_sec = last_t.sec + last_t.nanosec * 1e-9
+        self._log(f"Plan succeeded: {n_pts} waypoints, ~{t_sec:.1f} s.  Executing…")
+        self._cart_do_execute(traj)
+
+    def _cart_do_execute(self, robot_trajectory) -> None:
+        joint_traj = robot_trajectory_to_joint_trajectory(
+            robot_trajectory, joint_names=list(UR3E_JOINT_NAMES)
+        )
+        if not joint_traj.points:
+            self._log("Converted trajectory is empty — aborting.")
+            self._cart_set_free()
+            return
+
+        goal_msg = FollowJointTrajectory.Goal()
+        goal_msg.trajectory = joint_traj
+        try:
+            future = self._joint_ac.send_goal_async(goal_msg)
+            future.add_done_callback(self._on_cart_exec_accepted)
+        except Exception as exc:
+            self._log(f"ERROR: Could not send trajectory to controller: {exc}")
+            self._cart_set_free()
+
+    def _on_cart_exec_accepted(self, future) -> None:
+        try:
+            goal_handle = future.result()
+        except Exception as exc:
+            self._log(f"Exception sending execution goal: {exc}")
+            self._cart_set_free()
+            return
+        if not goal_handle or not goal_handle.accepted:
+            self._log("joint_trajectory_controller rejected the execution goal.")
+            self._cart_set_free()
+            return
+        with self._cart_handle_lock:
+            self._cart_exec_goal_handle = goal_handle
+        self._log("Execution accepted — robot is moving…")
+        goal_handle.get_result_async().add_done_callback(self._on_cart_exec_result)
+
+    def _on_cart_exec_result(self, future) -> None:
+        with self._cart_handle_lock:
+            self._cart_exec_goal_handle = None
+        try:
+            wrapped = future.result()
+            err = wrapped.result.error_code
+            if err == 0:
+                self._log("Cartesian goal reached successfully.")
+            else:
+                self._log(f"Execution finished with error code: {err}")
+        except Exception as exc:
+            self._log(f"Exception receiving execution result: {exc}")
+        self._cart_set_free()
+
+    def _cart_set_free(self) -> None:
+        with self._cart_busy_lock:
+            self._cart_busy = False
 
     def send_joint_goal(
         self,
@@ -663,7 +863,7 @@ class RobotGUI:
         row += 1
         ttk.Label(
             parent,
-            text="Requires pose_goal_node running.  RPY default = end-effector pointing down.",
+            text="Requires MoveIt2 (move_group) running.  RPY default = end-effector pointing down.",
             foreground="#666",
             font=("", 8),
         ).grid(row=row, column=0, columnspan=6, sticky="w", pady=(6, 0))
@@ -776,7 +976,7 @@ class RobotGUI:
             text="Floor-plane z (m):",
         ).grid(row=0, column=0, sticky="e", padx=(0, 4))
 
-        self._floor_z_sv = tk.StringVar(value="0.0")
+        self._floor_z_sv = tk.StringVar(value="-0.02")
         ttk.Entry(parent, textvariable=self._floor_z_sv, width=7).grid(row=0, column=1, sticky="w")
 
         ttk.Label(parent, text="Frame:").grid(row=0, column=2, sticky="e", padx=(12, 4))
@@ -795,7 +995,8 @@ class RobotGUI:
 
         ttk.Label(
             parent,
-            text="  Adds a 10 m × 10 m slab — MoveIt2 will reject any pose that takes a link below this height.",
+            text="  Adds a 10 m × 10 m slab — MoveIt2 will reject any pose below this height.  "
+                 "Use a slightly negative value (e.g. -0.02) to avoid colliding with the robot base.",
             foreground="#666",
             font=("", 8),
         ).grid(row=1, column=0, columnspan=6, sticky="w", pady=(4, 0))
@@ -814,7 +1015,7 @@ class RobotGUI:
         except ValueError as exc:
             messagebox.showerror("Input Error", f"Invalid number: {exc}")
             return
-        self._node.publish_goal_pose(x, y, z, roll, pitch, yaw, frame)
+        self._node.plan_and_execute_pose(x, y, z, roll, pitch, yaw, frame)
 
     def _on_cart_use_current(self) -> None:
         """Copy the live EE pose (from TF2) into the Cartesian goal-pose input fields."""

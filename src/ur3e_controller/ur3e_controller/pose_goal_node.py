@@ -171,8 +171,7 @@ class PoseGoalNode(Node):
         pos = msg.pose.position
         frame = msg.header.frame_id or "(no frame)"
         self.get_logger().info(
-            "Goal pose received: xyz=(%.3f, %.3f, %.3f)  frame='%s'",
-            pos.x, pos.y, pos.z, frame,
+            f"Goal pose received: xyz=({pos.x:.3f}, {pos.y:.3f}, {pos.z:.3f})  frame='{frame}'"
         )
         self._do_plan(msg)
 
@@ -191,8 +190,7 @@ class PoseGoalNode(Node):
 
         if not self._move_ac.wait_for_server(timeout_sec=5.0):
             self.get_logger().error(
-                "MoveGroup action server '%s' not available.  Is move_group running?",
-                self._move_ac._action_name,
+                f"MoveGroup action server '{self._move_ac._action_name}' not available.  Is move_group running?"
             )
             self._set_free()
             return
@@ -207,7 +205,7 @@ class PoseGoalNode(Node):
         try:
             goal_handle = future.result()
         except Exception as exc:
-            self.get_logger().error("Exception sending plan goal: %s", exc)
+            self.get_logger().error(f"Exception sending plan goal: {exc}")
             self._set_free()
             return
 
@@ -231,7 +229,7 @@ class PoseGoalNode(Node):
         try:
             wrapped = future.result()
         except Exception as exc:
-            self.get_logger().error("Exception receiving plan result: %s", exc)
+            self.get_logger().error(f"Exception receiving plan result: {exc}")
             self._set_free()
             return
 
@@ -239,9 +237,8 @@ class PoseGoalNode(Node):
         # MoveItErrorCodes: SUCCESS=1; –31=no IK; –1=plan failed; –10/–12=collision
         if res.error_code.val != 1:
             self.get_logger().error(
-                "Planning failed.  MoveIt error code: %d  "
-                "(–1=plan failed, –31=no IK solution, –10=start in collision, –12=goal in collision)",
-                res.error_code.val,
+                f"Planning failed.  MoveIt error code: {res.error_code.val}  "
+                "(–1=plan failed, –31=no IK solution, –10=start in collision, –12=goal in collision)"
             )
             self._set_free()
             return
@@ -257,7 +254,7 @@ class PoseGoalNode(Node):
         last_t = traj.joint_trajectory.points[-1].time_from_start
         t_sec = last_t.sec + last_t.nanosec * 1e-9
         self.get_logger().info(
-            "Plan succeeded: %d waypoints, estimated %.1f s.  Executing…", n_pts, t_sec
+            f"Plan succeeded: {n_pts} waypoints, estimated {t_sec:.1f} s.  Executing…"
         )
         self._do_execute(traj)
 
@@ -274,8 +271,7 @@ class PoseGoalNode(Node):
 
         if not self._joint_ac.wait_for_server(timeout_sec=5.0):
             self.get_logger().error(
-                "joint_trajectory_controller action server '%s' not available.",
-                self._joint_ac._action_name,
+                f"joint_trajectory_controller action server '{self._joint_ac._action_name}' not available."
             )
             self._set_free()
             return
@@ -291,7 +287,7 @@ class PoseGoalNode(Node):
         try:
             goal_handle = future.result()
         except Exception as exc:
-            self.get_logger().error("Exception sending execution goal: %s", exc)
+            self.get_logger().error(f"Exception sending execution goal: {exc}")
             self._set_free()
             return
 
@@ -317,7 +313,7 @@ class PoseGoalNode(Node):
         try:
             wrapped = future.result()
         except Exception as exc:
-            self.get_logger().error("Exception receiving execution result: %s", exc)
+            self.get_logger().error(f"Exception receiving execution result: {exc}")
             self._set_free()
             return
 
@@ -326,8 +322,8 @@ class PoseGoalNode(Node):
             self.get_logger().info("Trajectory executed successfully — goal reached.")
         else:
             self.get_logger().warn(
-                "Execution finished with error code: %d  "
-                "(non-zero means the controller could not reach the goal exactly)", err
+                f"Execution finished with error code: {err}  "
+                "(non-zero means the controller could not reach the goal exactly)"
             )
         self._set_free()
 

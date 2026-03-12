@@ -86,9 +86,7 @@ class UR3eMoveClient(Node):
     def wait_for_server(self):
         """Block until the action server is available."""
         self.get_logger().info(
-            "Waiting for action server '%s' (timeout %.1fs)...",
-            self._action_name,
-            self._wait_timeout,
+            f"Waiting for action server '{self._action_name}' (timeout {self._wait_timeout:.1f}s)..."
         )
         if not self._client.wait_for_server(timeout_sec=self._wait_timeout):
             raise RuntimeError(
@@ -110,7 +108,7 @@ class UR3eMoveClient(Node):
         goal_msg = FollowJointTrajectory.Goal()
         goal_msg.trajectory = trajectory
 
-        self.get_logger().info("Sending trajectory goal (%d points).", len(trajectory.points))
+        self.get_logger().info(f"Sending trajectory goal ({len(trajectory.points)} points).")
         send_future = self._client.send_goal_async(goal_msg)
         rclpy.spin_until_future_complete(self, send_future)
         goal_handle = send_future.result()
@@ -129,9 +127,7 @@ class UR3eMoveClient(Node):
             self.get_logger().info("Trajectory completed successfully.")
         else:
             self.get_logger().warn(
-                "Trajectory finished with error_code=%d: %s",
-                res.error_code,
-                res.error_string,
+                f"Trajectory finished with error_code={res.error_code}: {res.error_string}"
             )
         return res
 
