@@ -63,6 +63,7 @@ class PoseGoalNode(Node):
         move_action  = self.declare_parameter("move_action_name",      DEFAULT_MOVE_ACTION).value
         joint_action = self.declare_parameter("joint_trajectory_action", DEFAULT_JOINT_ACTION).value
         ft_topic     = self.declare_parameter("ft_topic",               DEFAULT_FT_TOPIC).value
+        self._plan_only = self.declare_parameter("plan_only", False).value
 
         # All subscriptions, action clients, and their callback chains share one
         # ReentrantCallbackGroup so they can run concurrently without deadlocking.
@@ -98,6 +99,11 @@ class PoseGoalNode(Node):
         self._exec_goal_handle = None
         self._handle_lock = threading.Lock()
 
+        # E-stop state — set by subscriptions below; checked in _on_goal to reject
+        # new pose goals while the e-stop is active.
+        self._estop_active = False
+        self._estop_lock = threading.Lock()
+
         # E-stop subscription — reacts to /estop_active broadcast from estop_node
         # Also subscribes directly to /estop Bool so it works without estop_node running
         self.create_subscription(
@@ -125,12 +131,21 @@ class PoseGoalNode(Node):
 
     def _on_estop(self, msg: Bool) -> None:
         """Reacts to /estop_active state broadcast from estop_node."""
-        if msg.data:
+        with self._estop_lock:
+            was_active = self._estop_active
+            self._estop_active = msg.data
+        if msg.data and not was_active:
             self._cancel_in_flight_goals()
 
     def _on_estop_direct(self, msg: Bool) -> None:
-        """Reacts to direct /estop Bool topic (True = engage)."""
-        if msg.data:
+        """Reacts to direct /estop Bool topic (True = engage, False = resume).
+        Fallback for when estop_node is not running; when estop_node IS running
+        both this and _on_estop will fire for the same event, so we guard on
+        the inactive→active transition to avoid cancelling twice."""
+        with self._estop_lock:
+            was_active = self._estop_active
+            self._estop_active = msg.data
+        if msg.data and not was_active:
             self._cancel_in_flight_goals()
 
     def _cancel_in_flight_goals(self) -> None:
@@ -162,6 +177,10 @@ class PoseGoalNode(Node):
     # ── Step 1: receive goal ─────────────────────────────────────────────────
 
     def _on_goal(self, msg: PoseStamped) -> None:
+        with self._estop_lock:
+            if self._estop_active:
+                self.get_logger().warn("E-stop is active — ignoring incoming pose goal.")
+                return
         with self._busy_lock:
             if self._busy:
                 self.get_logger().warn("Already executing a goal — ignoring incoming pose.")
@@ -261,6 +280,20 @@ class PoseGoalNode(Node):
     # ── Step 5: send trajectory to joint_trajectory_controller ───────────────
 
     def _do_execute(self, robot_trajectory) -> None:
+        with self._estop_lock:
+            estop = self._estop_active
+        if estop:
+            self.get_logger().warn(
+                "E-stop is active — discarding planned trajectory, not executing."
+            )
+            self._set_free()
+            return
+
+        if self._plan_only:
+            self.get_logger().info("plan_only=true — trajectory planned but not sent to controller.")
+            self._set_free()
+            return
+
         joint_traj = robot_trajectory_to_joint_trajectory(
             robot_trajectory, joint_names=list(UR3E_JOINT_NAMES)
         )

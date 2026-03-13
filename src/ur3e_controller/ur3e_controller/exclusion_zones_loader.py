@@ -231,14 +231,10 @@ class ExclusionZonesNode(Node):
     def __init__(self):
         super().__init__("exclusion_zones_node")
 
-        # Declare numeric/bool params as strings so that LaunchConfiguration values
-        # (which always resolve to strings) pass ROS2's strict type check without error.
-        _floor_z_str = self.declare_parameter("floor_z", str(DEFAULT_FLOOR_Z)).value
-        self._floor_z = float(_floor_z_str)
+        self._floor_z = self.declare_parameter("floor_z", DEFAULT_FLOOR_Z).value
         self._frame_id = self.declare_parameter("frame_id", DEFAULT_FRAME_ID).value
         self._zones_file = self.declare_parameter("exclusion_zones_file", "").value
-        _add_fp = self.declare_parameter("add_floor_plane", "true").value
-        self._add_floor_plane = str(_add_fp).lower() not in ("false", "0", "no", "")
+        self._add_floor_plane = self.declare_parameter("add_floor_plane", True).value
 
         self._pub = self.create_publisher(PlanningScene, "/planning_scene", 10)
 

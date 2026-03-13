@@ -45,7 +45,7 @@ from sensor_msgs.msg import JointState
 from shape_msgs.msg import SolidPrimitive
 from action_msgs.srv import CancelGoal as CancelGoalSrv
 from std_msgs.msg import Bool, Header
-from std_srvs.srv import Trigger
+from std_srvs.srv import SetBool
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 import tf2_ros
 
@@ -168,9 +168,8 @@ class RobotControlNode(Node):
         self._cart_exec_goal_handle = None
         self._cart_handle_lock = threading.Lock()
 
-        # E-stop service clients
-        self._estop_client = self.create_client(Trigger, "/estop")
-        self._estop_resume_client = self.create_client(Trigger, "/estop_resume")
+        # Single SetBool service client: data=True engages, data=False clears
+        self._estop_set_client = self.create_client(SetBool, "/estop")
 
         # Direct cancel client for the trajectory controller's action server.
         # Sending CancelGoal with an all-zero goal_id cancels ALL in-flight goals
@@ -298,8 +297,10 @@ class RobotControlNode(Node):
             self._estop_active = True
 
         # 4. Forward to estop_node service if it is running (keeps its state in sync)
-        if self._estop_client.service_is_ready():
-            self._estop_client.call_async(Trigger.Request()).add_done_callback(
+        if self._estop_set_client.service_is_ready():
+            req = SetBool.Request()
+            req.data = True
+            self._estop_set_client.call_async(req).add_done_callback(
                 self._on_estop_service_done
             )
 
@@ -311,8 +312,10 @@ class RobotControlNode(Node):
         with self._lock:
             self._estop_active = False
 
-        if self._estop_resume_client.service_is_ready():
-            self._estop_resume_client.call_async(Trigger.Request()).add_done_callback(
+        if self._estop_set_client.service_is_ready():
+            req = SetBool.Request()
+            req.data = False
+            self._estop_set_client.call_async(req).add_done_callback(
                 self._on_resume_service_done
             )
         else:
@@ -627,6 +630,9 @@ class RobotGUI:
         self._root = root
         self._node = node
         self._log_q = log_queue
+        # Tracks the UI's displayed e-stop state independently of the widget text,
+        # avoiding unreliable Unicode string comparisons in _update_state_display.
+        self._estop_ui_active = False
 
         root.title("UR3e Robot Control")
         root.resizable(True, True)
@@ -1058,16 +1064,25 @@ class RobotGUI:
                 sv.set(math.degrees(positions[name]))
 
     def _on_estop(self) -> None:
-        self._node.trigger_estop()
-        self._set_estop_ui(active=True)
+        # Run all ROS work in a daemon thread so the Tk button-command callback
+        # returns to the Tcl event loop immediately.  Performing rclpy publish /
+        # call_async calls on the Tk main thread while a MultiThreadedExecutor is
+        # spinning in a background thread can cause reentrant Tcl operations that
+        # corrupt Tcl's internal reference counts, producing:
+        #   "Tcl_Release couldn't find reference for <ptr>"  → Aborted
+        threading.Thread(target=self._node.trigger_estop, daemon=True).start()
+        self._root.after(0, lambda: self._set_estop_ui(active=True))
 
     def _on_estop_resume(self) -> None:
         self._node.resume_estop()
         self._set_estop_ui(active=False)
 
     def _set_estop_ui(self, active: bool) -> None:
+        if active == self._estop_ui_active:
+            return
+        self._estop_ui_active = active
         if active:
-            self._estop_status_var.set("⛔  STOPPED")
+            self._estop_status_var.set("STOPPED")
             self._estop_status_lbl.configure(fg="#ffff00")
             self._estop_btn.configure(state="disabled", bg="#880000")
             self._resume_btn.configure(state="normal", bg="#228822", fg="white")
@@ -1098,13 +1113,10 @@ class RobotGUI:
         self._root.after(100, self._schedule_updates)
 
     def _update_state_display(self) -> None:
-        # Sync e-stop button state with ROS-reported state (handles external triggers)
+        # Sync e-stop button state with ROS-reported state (handles external triggers).
+        # _set_estop_ui is idempotent and guards against redundant updates internally.
         ros_estop = self._node.get_estop_active()
-        ui_stopped = self._estop_status_var.get().startswith("⛔")
-        if ros_estop and not ui_stopped:
-            self._set_estop_ui(active=True)
-        elif not ros_estop and ui_stopped:
-            self._set_estop_ui(active=False)
+        self._set_estop_ui(active=ros_estop)
 
         # Joint angles
         positions = self._node.get_joint_positions()

@@ -22,8 +22,7 @@ not require the estop_node to have ever sent a trajectory goal itself.
 
 Interfaces
 ----------
-Service  /estop                     std_srvs/srv/Trigger   → engage e-stop
-Service  /estop_resume              std_srvs/srv/Trigger   → clear e-stop
+Service  /estop                     std_srvs/srv/SetBool   → data=true: engage, data=false: clear
 Topic    /estop        (subscribed)  std_msgs/msg/Bool      → True = engage, False = resume
 Topic    /estop_active (published)   std_msgs/msg/Bool      → True while e-stop is active
 
@@ -31,16 +30,16 @@ Usage
 -----
     ros2 run ur3e_controller estop_node
 
-    # Trigger from a terminal:
-    ros2 service call /estop std_srvs/srv/Trigger '{}'
+    # Engage via service:
+    ros2 service call /estop std_srvs/srv/SetBool 'data: true'
 
-    # Trigger via topic:
+    # Clear via service:
+    ros2 service call /estop std_srvs/srv/SetBool 'data: false'
+
+    # Engage via topic:
     ros2 topic pub --once /estop std_msgs/msg/Bool 'data: true'
 
-    # Resume via service:
-    ros2 service call /estop_resume std_srvs/srv/Trigger '{}'
-
-    # Resume via topic:
+    # Clear via topic:
     ros2 topic pub --once /estop std_msgs/msg/Bool 'data: false'
 """
 
@@ -53,9 +52,10 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
+from action_msgs.msg import GoalStatus, GoalStatusArray
 from action_msgs.srv import CancelGoal as CancelGoalSrv
 from std_msgs.msg import Bool
-from std_srvs.srv import Trigger
+from std_srvs.srv import SetBool, Trigger
 
 DEFAULT_JOINT_ACTION = "/joint_trajectory_controller/follow_joint_trajectory"
 # UR robot driver dashboard service — only present on real hardware
@@ -92,18 +92,27 @@ class EstopNode(Node):
         # Publisher: broadcast e-stop state so other nodes (PoseGoalNode, GUI) can react
         self._state_pub = self.create_publisher(Bool, "/estop_active", 1)
 
-        # Service: /estop — engage e-stop
+        # Single service: /estop — data=True engages, data=False clears
         self.create_service(
-            Trigger, "/estop", self._on_estop_service, callback_group=self._cbg
-        )
-        # Service: /estop_resume — clear e-stop
-        self.create_service(
-            Trigger, "/estop_resume", self._on_resume_service, callback_group=self._cbg
+            SetBool, "/estop", self._on_estop_service, callback_group=self._cbg
         )
 
         # Topic: Bool — True = engage e-stop, False = resume
         self.create_subscription(
             Bool, "/estop", self._on_estop_topic, 10, callback_group=self._cbg
+        )
+
+        # Subscribe to the trajectory controller's action status topic.
+        # While the e-stop is active, any goal that transitions to EXECUTING or
+        # ACCEPTED is immediately cancelled — this covers trajectories sent by
+        # external nodes (RViz MotionPlanning plugin, scripts, etc.) after the
+        # e-stop was engaged.
+        self.create_subscription(
+            GoalStatusArray,
+            f"{joint_action}/_action/status",
+            self._on_action_status,
+            10,
+            callback_group=self._cbg,
         )
 
         # UR dashboard stop service (real hardware only, ignored gracefully in sim)
@@ -113,27 +122,23 @@ class EstopNode(Node):
 
         self.get_logger().info(
             "EstopNode ready.\n"
-            "  Engage:  ros2 service call /estop std_srvs/srv/Trigger '{}'\n"
-            "  Resume:  ros2 service call /estop_resume std_srvs/srv/Trigger '{}'\n"
+            "  Engage:  ros2 service call /estop std_srvs/srv/SetBool 'data: true'\n"
+            "  Clear:   ros2 service call /estop std_srvs/srv/SetBool 'data: false'\n"
             "  Topic:   ros2 topic pub --once /estop std_msgs/msg/Bool 'data: true'"
         )
 
-    # ── service callbacks ─────────────────────────────────────────────────
+    # ── service callback ──────────────────────────────────────────────────
 
     def _on_estop_service(
-        self, _req: Trigger.Request, res: Trigger.Response
-    ) -> Trigger.Response:
-        self._do_estop()
+        self, req: SetBool.Request, res: SetBool.Response
+    ) -> SetBool.Response:
+        if req.data:
+            self._do_estop()
+            res.message = "E-stop engaged — all trajectory goals cancelled."
+        else:
+            self._do_resume()
+            res.message = "E-stop cleared — robot is ready."
         res.success = True
-        res.message = "E-stop engaged — all trajectory goals cancelled."
-        return res
-
-    def _on_resume_service(
-        self, _req: Trigger.Request, res: Trigger.Response
-    ) -> Trigger.Response:
-        self._do_resume()
-        res.success = True
-        res.message = "E-stop cleared — robot is ready."
         return res
 
     # ── topic callback ────────────────────────────────────────────────────
@@ -204,6 +209,24 @@ class EstopNode(Node):
             self.get_logger().error(f"Failed to send cancel request: {exc}")
 
     # ── internal callbacks ────────────────────────────────────────────────
+
+    def _on_action_status(self, msg: GoalStatusArray) -> None:
+        """
+        Re-cancel any goal that appears while the e-stop is active.
+
+        The trajectory controller publishes goal status at ~10 Hz.  If a new
+        goal arrives from an external source (RViz, another node) after the
+        e-stop was engaged, it will show up here as ACCEPTED or EXECUTING.
+        Sending a cancel-all immediately stops it.
+        """
+        if not self.is_active:
+            return
+        live_statuses = {GoalStatus.STATUS_ACCEPTED, GoalStatus.STATUS_EXECUTING}
+        if any(s.status in live_statuses for s in msg.status_list):
+            self.get_logger().warn(
+                "E-stop active: new goal detected on trajectory controller — cancelling."
+            )
+            self._send_cancel_all()
 
     def _on_cancel_done(self, future) -> None:
         try:
