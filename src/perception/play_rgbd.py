@@ -26,6 +26,7 @@ import sys
 import cv2
 import numpy as np
 import pyrealsense2 as rs
+import os
 
 # Import perception pipeline from same directory
 from jenga_perception_edges import JengaPerceptionNode
@@ -33,6 +34,8 @@ from jenga_perception_edges import JengaPerceptionNode
 
 def main():
     bag_path = sys.argv[1] if len(sys.argv) > 1 else None
+    if bag_path is not None:
+        bag_path = os.path.join(os.path.dirname(__file__), 'camera_files', 'rgbd_raw', bag_path)
     live_mode = bag_path is None
 
     # --- Set up RealSense pipeline ---

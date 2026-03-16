@@ -2,15 +2,23 @@
 
 echo "Perception setup"
 
+# Source ROS 2
 source /opt/ros/humble/setup.bash
 
-echo "Installing librealsense2"
-sudo apt install ros-humble-librealsense2*
-sudo apt install ros-humble-realsense2-*
+echo "Updating apt"
+sudo apt update
 
-echo "Listing realsense packages"
-ros2 pkg list | grep realsense
+echo "Installing Intel RealSense SDK"
+sudo apt install -y librealsense2-dev librealsense2-utils librealsense2-dkms
 
+echo "Installing ROS2 RealSense packages"
+sudo apt install -y ros-humble-librealsense2* ros-humble-realsense2-*
 
+echo "Installing Python RealSense bindings"
+python3 -m pip install --upgrade pip
+python3 -m pip install pyrealsense2
 
-#opencv-python>=4.5.0
+echo "Listing installed ROS2 RealSense packages"
+ros2 pkg list | grep realsense2
+
+echo "Setup complete."

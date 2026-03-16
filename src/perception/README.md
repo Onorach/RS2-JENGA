@@ -4,7 +4,7 @@ This is the perception of the infamous JENGA robot!!
 
 ## Setup
 
-To make sure you can run the perception correctly please ensure you have installed ros2 humble
+To make sure you can run the perception correctly please ensure you have installed ros2 humble, python and pip
 
 Please run the following script to install all required packages, you may have to alter the directory based on where you have stored the repo
 
