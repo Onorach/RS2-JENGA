@@ -44,8 +44,9 @@ from std_msgs.msg import Header, String
 # ── Floor-plane constants (kept for backward compatibility) ──────────────────
 
 FLOOR_OBJECT_ID = "floor_plane"
-DEFAULT_FLOOR_Z = 0.0       # top of slab in the planning frame (metres)
+DEFAULT_FLOOR_Z = 0.0       # top of slab in the frame (metres)
 DEFAULT_FRAME_ID = "base_link"
+DEFAULT_FLOOR_PLANE_FRAME_ID = "world"
 _SLAB_THICKNESS = 0.20      # 20 cm slab below floor_z
 
 
@@ -222,16 +223,20 @@ class ExclusionZonesNode(Node):
 
     Parameters
     ----------
-    floor_z              : float – z of the floor surface in base_link (default 0.0)
-    frame_id             : str   – TF frame for the floor plane (default "base_link")
-    exclusion_zones_file : str   – absolute path to a YAML zones file (default "")
-    add_floor_plane      : bool  – publish the built-in floor plane (default True)
+    floor_z                 : float – z of the floor slab top surface in floor_plane_frame_id (default 0.0)
+    floor_plane_frame_id    : str   – TF frame for the floor plane (default "world")
+    frame_id                : str   – fallback frame for remove ops; YAML zones use their own frame_id
+    exclusion_zones_file    : str   – absolute path to a YAML zones file (default "")
+    add_floor_plane         : bool  – publish the built-in floor plane (default True)
     """
 
     def __init__(self):
         super().__init__("exclusion_zones_node")
 
         self._floor_z = self.declare_parameter("floor_z", DEFAULT_FLOOR_Z).value
+        self._floor_plane_frame_id = self.declare_parameter(
+            "floor_plane_frame_id", DEFAULT_FLOOR_PLANE_FRAME_ID
+        ).value
         self._frame_id = self.declare_parameter("frame_id", DEFAULT_FRAME_ID).value
         self._zones_file = self.declare_parameter("exclusion_zones_file", "").value
         self._add_floor_plane = self.declare_parameter("add_floor_plane", True).value
@@ -262,13 +267,15 @@ class ExclusionZonesNode(Node):
         objects: list[CollisionObject] = []
 
         if self._add_floor_plane:
-            co = build_floor_plane_collision_object(self._floor_z, self._frame_id)
+            co = build_floor_plane_collision_object(
+                self._floor_z, self._floor_plane_frame_id
+            )
             self._zone_registry[FLOOR_OBJECT_ID] = co
             self._active_ids.add(FLOOR_OBJECT_ID)
             objects.append(co)
             self.get_logger().info(
-                "Floor-plane exclusion zone: top at z=%.3f m in '%s'.",
-                self._floor_z, self._frame_id,
+                f"Floor-plane exclusion zone: top at z={self._floor_z:.3f} m in "
+                f"'{self._floor_plane_frame_id}'."
             )
 
         if self._zones_file:
@@ -276,7 +283,7 @@ class ExclusionZonesNode(Node):
                 yaml_objects = load_zones_from_yaml(self._zones_file)
             except Exception as exc:
                 self.get_logger().error(
-                    "Failed to load exclusion zones from '%s': %s", self._zones_file, exc
+                    f"Failed to load exclusion zones from '{self._zones_file}': {exc}"
                 )
                 yaml_objects = []
 
@@ -284,7 +291,7 @@ class ExclusionZonesNode(Node):
                 self._zone_registry[co.id] = co
                 self._active_ids.add(co.id)
                 objects.append(co)
-                self.get_logger().info("Loaded exclusion zone: '%s'.", co.id)
+                self.get_logger().info(f"Loaded exclusion zone: '{co.id}'.")
         elif not self._add_floor_plane:
             self.get_logger().warn(
                 "No exclusion_zones_file set and add_floor_plane=false — "
@@ -294,7 +301,7 @@ class ExclusionZonesNode(Node):
         if objects:
             _publish_objects(self._pub, objects)
             self.get_logger().info(
-                "Published %d exclusion zone(s) to the planning scene.", len(objects)
+                f"Published {len(objects)} exclusion zone(s) to the planning scene."
             )
 
     # ── Runtime zone management ───────────────────────────────────────────────
@@ -306,17 +313,23 @@ class ExclusionZonesNode(Node):
             return
         if zone_id not in self._active_ids:
             self.get_logger().warn(
-                "Zone '%s' is not currently active — nothing to remove.", zone_id
+                f"Zone '{zone_id}' is not currently active — nothing to remove."
             )
             return
 
         co = CollisionObject()
-        co.header = Header(frame_id=self._frame_id)
+        # Use the original object's frame for removal (required for correct REMOVE)
+        frame = (
+            self._zone_registry[zone_id].header.frame_id
+            if zone_id in self._zone_registry
+            else self._frame_id
+        )
+        co.header = Header(frame_id=frame)
         co.id = zone_id
         co.operation = CollisionObject.REMOVE
         _publish_objects(self._pub, [co])
         self._active_ids.discard(zone_id)
-        self.get_logger().info("Removed exclusion zone '%s' from the planning scene.", zone_id)
+        self.get_logger().info(f"Removed exclusion zone '{zone_id}' from the planning scene.")
 
     def _on_add(self, msg: String) -> None:
         zone_id = msg.data.strip()
@@ -325,22 +338,20 @@ class ExclusionZonesNode(Node):
             return
         if zone_id not in self._zone_registry:
             self.get_logger().warn(
-                "Zone '%s' was not loaded at startup and cannot be re-added. "
-                "Known zones: %s",
-                zone_id,
-                list(self._zone_registry.keys()),
+                f"Zone '{zone_id}' was not loaded at startup and cannot be re-added. "
+                f"Known zones: {list(self._zone_registry.keys())}"
             )
             return
         if zone_id in self._active_ids:
             self.get_logger().info(
-                "Zone '%s' is already active — skipping.", zone_id
+                f"Zone '{zone_id}' is already active — skipping."
             )
             return
 
         co = self._zone_registry[zone_id]
         _publish_objects(self._pub, [co])
         self._active_ids.add(zone_id)
-        self.get_logger().info("Re-added exclusion zone '%s' to the planning scene.", zone_id)
+        self.get_logger().info(f"Re-added exclusion zone '{zone_id}' to the planning scene.")
 
 
 # Backward-compatible alias

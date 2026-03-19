@@ -19,12 +19,13 @@ def generate_launch_description():
     exclusion_zones_file_arg = DeclareLaunchArgument(
         "exclusion_zones_file",
         default_value=PathJoinSubstitution(
-            [FindPackageShare(pkg), "config", "ur3e_cabinet.yaml"]
+            [FindPackageShare(pkg), "config", "ur3e_workspace.yaml"]
         ),
         description=(
             "Absolute path to a YAML file defining exclusion zones to load into the "
-            "MoveIt2 planning scene. Defaults to the cabinet + workspace-platform zones "
-            "from config/ur3e_cabinet.yaml. Pass an empty string to load no YAML zones."
+            "MoveIt2 planning scene. Defaults to ur3e_workspace.yaml (cabinet, platform, "
+            "and Jenga tower matching config/ur3e_workspace.world). For hardware setups, "
+            "pass config/ur3e_cabinet.yaml. Pass an empty string to load no YAML zones."
         ),
     )
     add_floor_plane_arg = DeclareLaunchArgument(
@@ -39,8 +40,16 @@ def generate_launch_description():
         "floor_z",
         default_value="0.0",
         description=(
-            "Z height (metres, in base_link frame) of the floor-plane slab top surface. "
-            "0.0 places the floor at the cabinet top where the robot is mounted."
+            "Z height (metres) of the floor-plane slab top surface in floor_plane_frame_id. "
+            "0.0 = ground plane when using world frame."
+        ),
+    )
+    floor_plane_frame_id_arg = DeclareLaunchArgument(
+        "floor_plane_frame_id",
+        default_value="world",
+        description=(
+            "TF frame for the floor-plane collision object. "
+            "'world' places it at the global ground; 'base_link' places it relative to the robot."
         ),
     )
     plan_only_arg = DeclareLaunchArgument(
@@ -84,8 +93,11 @@ def generate_launch_description():
         parameters=[
             {
                 "exclusion_zones_file": LaunchConfiguration("exclusion_zones_file"),
-                "add_floor_plane": LaunchConfiguration("add_floor_plane"),
+                "add_floor_plane": False,  # Floor plane only via GUI or service call, not at startup
                 "floor_z": LaunchConfiguration("floor_z"),
+                # Hardcode "world" so the floor plane loads at global ground (not base_link).
+                # For hardware, edit to "base_link" or pass via exclusion_zones_params.yaml.
+                "floor_plane_frame_id": "world",
             },
         ],
     )
@@ -112,6 +124,7 @@ def generate_launch_description():
         exclusion_zones_file_arg,
         add_floor_plane_arg,
         floor_z_arg,
+        floor_plane_frame_id_arg,
         plan_only_arg,
         move_action_arg,
         joint_action_arg,

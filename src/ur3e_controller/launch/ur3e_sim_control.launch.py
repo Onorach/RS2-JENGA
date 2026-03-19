@@ -160,6 +160,16 @@ def launch_setup(context, *args, **kwargs):
     # Jenga blocks are static in the default world file (ur3e_workspace.world) for stability.
     # For dynamic blocks, use world:=.../ur3e_workspace_dynamic.world and run spawn_jenga_tower separately.
 
+    # Publish world -> base_link so collision objects in world frame (e.g. floor plane) display correctly
+    base_height_val = base_height.perform(context)
+    world_to_base = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="world_to_base_link",
+        arguments=["0", "0", base_height_val, "0", "0", "0", "world", "base_link"],
+        parameters=[{"use_sim_time": True}],
+    )
+
     nodes_to_start = [
         robot_state_publisher_node,
         joint_state_broadcaster_spawner,
@@ -168,6 +178,7 @@ def launch_setup(context, *args, **kwargs):
         initial_joint_controller_spawner_started,
         gazebo,
         gazebo_spawn_robot,
+        world_to_base,
     ]
 
     return nodes_to_start
