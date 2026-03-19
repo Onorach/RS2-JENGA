@@ -1,0 +1,57 @@
+[0.569s] Invoking command in '/home/fergus/ros2_ws/src/RS2-JENGA/src/ur3e_controller': PYTHONPATH=/home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/ur3e_controller build --build-base /home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/build install --record /home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/install.log --single-version-externally-managed install_data
+[0.770s] running egg_info
+[0.771s] creating ../../build/ur3e_controller/ur3e_controller.egg-info
+[0.771s] writing ../../build/ur3e_controller/ur3e_controller.egg-info/PKG-INFO
+[0.771s] writing dependency_links to ../../build/ur3e_controller/ur3e_controller.egg-info/dependency_links.txt
+[0.771s] writing entry points to ../../build/ur3e_controller/ur3e_controller.egg-info/entry_points.txt
+[0.771s] writing requirements to ../../build/ur3e_controller/ur3e_controller.egg-info/requires.txt
+[0.771s] writing top-level names to ../../build/ur3e_controller/ur3e_controller.egg-info/top_level.txt
+[0.772s] writing manifest file '../../build/ur3e_controller/ur3e_controller.egg-info/SOURCES.txt'
+[0.773s] reading manifest file '../../build/ur3e_controller/ur3e_controller.egg-info/SOURCES.txt'
+[0.774s] writing manifest file '../../build/ur3e_controller/ur3e_controller.egg-info/SOURCES.txt'
+[0.774s] running build
+[0.774s] running build_py
+[0.774s] creating /home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/build
+[0.774s] creating /home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/build/lib
+[0.775s] creating /home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/build/lib/ur3e_controller
+[0.775s] copying ur3e_controller/__init__.py -> /home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/build/lib/ur3e_controller
+[0.775s] copying ur3e_controller/estop_node.py -> /home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/build/lib/ur3e_controller
+[0.775s] copying ur3e_controller/force_torque_feedback.py -> /home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/build/lib/ur3e_controller
+[0.775s] copying ur3e_controller/move_client.py -> /home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/build/lib/ur3e_controller
+[0.775s] copying ur3e_controller/demo_node.py -> /home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/build/lib/ur3e_controller
+[0.775s] running install
+[0.777s] running install_lib
+[0.777s] creating /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/python3.10/site-packages/ur3e_controller
+[0.777s] copying /home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/build/lib/ur3e_controller/__init__.py -> /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/python3.10/site-packages/ur3e_controller
+[0.777s] copying /home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/build/lib/ur3e_controller/estop_node.py -> /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/python3.10/site-packages/ur3e_controller
+[0.777s] copying /home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/build/lib/ur3e_controller/force_torque_feedback.py -> /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/python3.10/site-packages/ur3e_controller
+[0.777s] copying /home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/build/lib/ur3e_controller/move_client.py -> /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/python3.10/site-packages/ur3e_controller
+[0.777s] copying /home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/build/lib/ur3e_controller/demo_node.py -> /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/python3.10/site-packages/ur3e_controller
+[0.777s] byte-compiling /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/python3.10/site-packages/ur3e_controller/__init__.py to __init__.cpython-310.pyc
+[0.777s] byte-compiling /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/python3.10/site-packages/ur3e_controller/estop_node.py to estop_node.cpython-310.pyc
+[0.779s] byte-compiling /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/python3.10/site-packages/ur3e_controller/force_torque_feedback.py to force_torque_feedback.cpython-310.pyc
+[0.780s] byte-compiling /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/python3.10/site-packages/ur3e_controller/move_client.py to move_client.cpython-310.pyc
+[0.781s] byte-compiling /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/python3.10/site-packages/ur3e_controller/demo_node.py to demo_node.cpython-310.pyc
+[0.781s] running install_data
+[0.781s] creating /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/share/ament_index
+[0.781s] creating /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/share/ament_index/resource_index
+[0.783s] creating /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/share/ament_index/resource_index/packages
+[0.783s] copying resource/ur3e_controller -> /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/share/ament_index/resource_index/packages
+[0.783s] copying package.xml -> /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/share/ur3e_controller
+[0.783s] creating /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/share/ur3e_controller/launch
+[0.783s] copying launch/headless_moveit.launch.py -> /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/share/ur3e_controller/launch
+[0.783s] copying launch/ur3e_sim_control.launch.py -> /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/share/ur3e_controller/launch
+[0.783s] copying launch/ur3e_sim_moveit.launch.py -> /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/share/ur3e_controller/launch
+[0.783s] copying launch/demo.launch.py -> /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/share/ur3e_controller/launch
+[0.783s] creating /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/share/ur3e_controller/config
+[0.783s] copying config/ur3e_controllers.yaml -> /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/share/ur3e_controller/config
+[0.783s] copying config/ur3e_workspace.world -> /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/share/ur3e_controller/config
+[0.783s] creating /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/share/ur3e_controller/scripts
+[0.783s] running install_egg_info
+[0.785s] Copying ../../build/ur3e_controller/ur3e_controller.egg-info to /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/python3.10/site-packages/ur3e_controller-0.1.0-py3.10.egg-info
+[0.785s] running install_scripts
+[0.812s] Installing estop_node script to /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/ur3e_controller
+[0.813s] Installing initials_demo script to /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/ur3e_controller
+[0.813s] Installing move_ur3e_demo script to /home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/ur3e_controller
+[0.813s] writing list of installed files to '/home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/install.log'
+[0.843s] Invoked command in '/home/fergus/ros2_ws/src/RS2-JENGA/src/ur3e_controller' returned '0': PYTHONPATH=/home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/ur3e_controller build --build-base /home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/build install --record /home/fergus/ros2_ws/src/RS2-JENGA/build/ur3e_controller/install.log --single-version-externally-managed install_data

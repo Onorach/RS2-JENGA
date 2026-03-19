@@ -1,0 +1,62 @@
+[0.606s] Invoking command in '/home/fergus/ros2_ws/src/RS2-JENGA/src/motion_planning': AMENT_PREFIX_PATH=/home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller:${AMENT_PREFIX_PATH} PYTHONPATH=/home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages:/home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/motion_planning build --build-base /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build install --record /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/install.log --single-version-externally-managed install_data
+[0.807s] running egg_info
+[0.807s] creating ../../build/motion_planning/motion_planning.egg-info
+[0.807s] writing ../../build/motion_planning/motion_planning.egg-info/PKG-INFO
+[0.808s] writing dependency_links to ../../build/motion_planning/motion_planning.egg-info/dependency_links.txt
+[0.808s] writing entry points to ../../build/motion_planning/motion_planning.egg-info/entry_points.txt
+[0.808s] writing requirements to ../../build/motion_planning/motion_planning.egg-info/requires.txt
+[0.808s] writing top-level names to ../../build/motion_planning/motion_planning.egg-info/top_level.txt
+[0.808s] writing manifest file '../../build/motion_planning/motion_planning.egg-info/SOURCES.txt'
+[0.809s] reading manifest file '../../build/motion_planning/motion_planning.egg-info/SOURCES.txt'
+[0.810s] writing manifest file '../../build/motion_planning/motion_planning.egg-info/SOURCES.txt'
+[0.810s] running build
+[0.810s] running build_py
+[0.810s] creating /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build
+[0.810s] creating /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build/lib
+[0.810s] creating /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build/lib/motion_planning
+[0.810s] copying motion_planning/__init__.py -> /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build/lib/motion_planning
+[0.810s] copying motion_planning/exclusion_zones_loader.py -> /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build/lib/motion_planning
+[0.810s] copying motion_planning/moveit_planning.py -> /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build/lib/motion_planning
+[0.810s] copying motion_planning/robot_gui.py -> /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build/lib/motion_planning
+[0.810s] copying motion_planning/pose_goal_node.py -> /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build/lib/motion_planning
+[0.811s] copying motion_planning/rmrc_planning_node.py -> /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build/lib/motion_planning
+[0.811s] copying motion_planning/rmrc_planner.py -> /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build/lib/motion_planning
+[0.811s] copying motion_planning/test_rmrc_pose.py -> /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build/lib/motion_planning
+[0.811s] running install
+[0.811s] running install_lib
+[0.812s] creating /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages/motion_planning
+[0.812s] copying /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build/lib/motion_planning/__init__.py -> /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages/motion_planning
+[0.812s] copying /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build/lib/motion_planning/exclusion_zones_loader.py -> /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages/motion_planning
+[0.812s] copying /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build/lib/motion_planning/moveit_planning.py -> /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages/motion_planning
+[0.812s] copying /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build/lib/motion_planning/robot_gui.py -> /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages/motion_planning
+[0.812s] copying /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build/lib/motion_planning/pose_goal_node.py -> /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages/motion_planning
+[0.812s] copying /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build/lib/motion_planning/rmrc_planning_node.py -> /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages/motion_planning
+[0.812s] copying /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build/lib/motion_planning/rmrc_planner.py -> /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages/motion_planning
+[0.812s] copying /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build/lib/motion_planning/test_rmrc_pose.py -> /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages/motion_planning
+[0.812s] byte-compiling /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages/motion_planning/__init__.py to __init__.cpython-310.pyc
+[0.812s] byte-compiling /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages/motion_planning/exclusion_zones_loader.py to exclusion_zones_loader.cpython-310.pyc
+[0.814s] byte-compiling /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages/motion_planning/moveit_planning.py to moveit_planning.cpython-310.pyc
+[0.815s] byte-compiling /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages/motion_planning/robot_gui.py to robot_gui.cpython-310.pyc
+[0.826s] byte-compiling /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages/motion_planning/pose_goal_node.py to pose_goal_node.cpython-310.pyc
+[0.826s] byte-compiling /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages/motion_planning/rmrc_planning_node.py to rmrc_planning_node.cpython-310.pyc
+[0.827s] byte-compiling /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages/motion_planning/rmrc_planner.py to rmrc_planner.cpython-310.pyc
+[0.830s] byte-compiling /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages/motion_planning/test_rmrc_pose.py to test_rmrc_pose.cpython-310.pyc
+[0.830s] running install_data
+[0.830s] creating /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/share/ament_index
+[0.830s] creating /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/share/ament_index/resource_index
+[0.830s] creating /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/share/ament_index/resource_index/packages
+[0.830s] copying resource/motion_planning -> /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/share/ament_index/resource_index/packages
+[0.830s] copying package.xml -> /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/share/motion_planning
+[0.830s] creating /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/share/motion_planning/launch
+[0.830s] copying launch/motion_planning.launch.py -> /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/share/motion_planning/launch
+[0.831s] creating /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/share/motion_planning/config
+[0.831s] running install_egg_info
+[0.832s] Copying ../../build/motion_planning/motion_planning.egg-info to /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages/motion_planning-0.1.0-py3.10.egg-info
+[0.833s] running install_scripts
+[0.854s] Installing exclusion_zones_node script to /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/motion_planning
+[0.854s] Installing pose_goal_node script to /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/motion_planning
+[0.855s] Installing rmrc_planning_node script to /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/motion_planning
+[0.855s] Installing robot_gui script to /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/motion_planning
+[0.855s] Installing test_rmrc_pose script to /home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/motion_planning
+[0.855s] writing list of installed files to '/home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/install.log'
+[0.908s] Invoked command in '/home/fergus/ros2_ws/src/RS2-JENGA/src/motion_planning' returned '0': AMENT_PREFIX_PATH=/home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller:${AMENT_PREFIX_PATH} PYTHONPATH=/home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/prefix_override:/usr/lib/python3/dist-packages/colcon_core/task/python/colcon_distutils_commands:/home/fergus/ros2_ws/src/RS2-JENGA/install/motion_planning/lib/python3.10/site-packages:/home/fergus/ros2_ws/src/RS2-JENGA/install/ur3e_controller/lib/python3.10/site-packages:${PYTHONPATH} /usr/bin/python3 -W ignore:setup.py install is deprecated -W ignore:easy_install command is deprecated setup.py egg_info --egg-base ../../build/motion_planning build --build-base /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/build install --record /home/fergus/ros2_ws/src/RS2-JENGA/build/motion_planning/install.log --single-version-externally-managed install_data

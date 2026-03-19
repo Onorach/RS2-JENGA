@@ -18,7 +18,7 @@ Force/torque readings (if available) are displayed in real time.
 
 Usage:
     # source the workspace, then:
-    ros2 run ur3e_controller robot_gui
+    ros2 run motion_planning robot_gui
 """
 
 from __future__ import annotations
