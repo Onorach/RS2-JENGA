@@ -1,9 +1,13 @@
+import os
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    ExecuteProcess,
     IncludeLaunchDescription,
     OpaqueFunction,
     RegisterEventHandler,
+    TimerAction,
 )
 from launch.conditions import IfCondition, UnlessCondition
 from launch.event_handlers import OnProcessExit
@@ -31,6 +35,8 @@ def launch_setup(context, *args, **kwargs):
     launch_rviz = LaunchConfiguration("launch_rviz")
     gazebo_gui = LaunchConfiguration("gazebo_gui")
     base_height = LaunchConfiguration("base_height")
+
+    world = LaunchConfiguration("world")
 
     initial_joint_controllers = PathJoinSubstitution(
         [FindPackageShare(runtime_config_package), "config", controllers_file]
@@ -133,6 +139,8 @@ def launch_setup(context, *args, **kwargs):
         ),
         launch_arguments={
             "gui": gazebo_gui,
+            "server_required": "true",
+            "world": world,
         }.items(),
     )
 
@@ -148,6 +156,9 @@ def launch_setup(context, *args, **kwargs):
         ],
         output="screen",
     )
+
+    # Jenga blocks are static in the default world file (ur3e_workspace.world) for stability.
+    # For dynamic blocks, use world:=.../ur3e_workspace_dynamic.world and run spawn_jenga_tower separately.
 
     nodes_to_start = [
         robot_state_publisher_node,
@@ -280,6 +291,14 @@ def generate_launch_description():
                 "Set to the cabinet height so the robot sits on top of the cabinet "
                 "(default: 1.080 m for a 1080 mm steel cabinet)."
             ),
+        )
+    )
+ 
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            'world',
+            default_value=os.path.join(get_package_share_directory('ur3e_controller'), 'config', 'ur3e_workspace.world'),
+            description='Full path to world model file to load'
         )
     )
 

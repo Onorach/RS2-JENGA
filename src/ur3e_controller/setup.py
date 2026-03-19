@@ -13,6 +13,8 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         (os.path.join("share", package_name, "launch"), glob("launch/*.py")),
         (os.path.join("share", package_name, "config"), glob("config/*.yaml")),
+        (os.path.join("share", package_name, "config"), glob("config/*.world")),
+        (os.path.join("share", package_name, "config"), glob("config/*.sdf")),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -29,6 +31,7 @@ setup(
             "exclusion_zones_node = ur3e_controller.exclusion_zones_loader:main",
             "robot_gui = ur3e_controller.robot_gui:main",
             "estop_node = ur3e_controller.estop_node:main",
+            "spawn_jenga_tower = ur3e_controller.spawn_jenga_tower:main",
         ],
     },
 )

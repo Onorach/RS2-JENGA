@@ -1,0 +1,29 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <model name="jenga_block">
+    <static>false</static>
+    <link name="link">
+      <inertial>
+        <mass>0.007</mass>
+        <inertia>
+          <ixx>4.9583e-7</ixx><iyy>3.4125e-6</iyy><izz>3.6458e-6</izz>
+          <ixy>0</ixy><ixz>0</ixz><iyz>0</iyz>
+        </inertia>
+      </inertial>
+      <collision name="c">
+        <geometry><box><size>0.075 0.025 0.015</size></box></geometry>
+        <surface>
+          <friction><ode><mu>0.8</mu><mu2>0.8</mu2></ode></friction>
+          <contact><ode><min_depth>0.002</min_depth><max_vel>0.01</max_vel></ode></contact>
+        </surface>
+      </collision>
+      <visual name="v">
+        <geometry><box><size>0.075 0.025 0.015</size></box></geometry>
+        <material>
+          <ambient>0.45 0.30 0.10 1</ambient>
+          <diffuse>0.80 0.60 0.25 1</diffuse>
+        </material>
+      </visual>
+    </link>
+  </model>
+</sdf>
