@@ -95,10 +95,10 @@ This package can plan **collision-free Cartesian motions** and handle **inverse 
 ### Pose goals and trajectory planning
 
 1. Start the robot and **MoveIt2** (e.g. `ur3e_sim_moveit.launch.py` or `ur_moveit_config` with real robot).
-2. Start the motion planning stack:
+2. Start the motion planning stack (from the `motion_planning` package):
 
 ```bash
-ros2 launch ur3e_controller motion_planning.launch.py
+ros2 launch motion_planning motion_planning.launch.py
 ```
 
 3. Send a goal pose (frame_id must match your planning frame, e.g. `base_link`):
