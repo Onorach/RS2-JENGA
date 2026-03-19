@@ -29,7 +29,6 @@ setup(
             "move_ur3e_demo = ur3e_controller.demo_node:main",
             "initials_demo = ur3e_controller.demo_node:main",
             "estop_node = ur3e_controller.estop_node:main",
-            "spawn_jenga_tower = ur3e_controller.spawn_jenga_tower:main",
         ],
     },
 )
