@@ -250,7 +250,7 @@ class MoveItPlanningInterface(Node):
         MoveIt2's collision checker will reject any configuration that intersects
         the slab, so all planned trajectories stay above floor_z.
         """
-        from ur3e_controller.exclusion_zones_loader import (
+        from motion_planning.exclusion_zones_loader import (
             publish_floor_plane,
         )
         publish_floor_plane(self._planning_scene_pub, floor_z, frame_id)
@@ -263,7 +263,7 @@ class MoveItPlanningInterface(Node):
         frame_id: str = DEFAULT_PLANNING_FRAME,
     ) -> None:
         """Remove the floor-plane collision object from the planning scene."""
-        from ur3e_controller.exclusion_zones_loader import (
+        from motion_planning.exclusion_zones_loader import (
             publish_remove_floor_plane,
         )
         publish_remove_floor_plane(self._planning_scene_pub, frame_id)

@@ -2,7 +2,7 @@ from setuptools import find_packages, setup
 import os
 from glob import glob
 
-package_name = "ur3e_controller"
+package_name = "motion_planning"
 
 setup(
     name=package_name,
@@ -13,22 +13,21 @@ setup(
         ("share/" + package_name, ["package.xml"]),
         (os.path.join("share", package_name, "launch"), glob("launch/*.py")),
         (os.path.join("share", package_name, "config"), glob("config/*.yaml")),
-        (os.path.join("share", package_name, "config"), glob("config/*.world")),
-        (os.path.join("share", package_name, "config"), glob("config/*.sdf")),
-        (os.path.join("share", package_name, "scripts"), glob("scripts/*.py")),
     ],
-    install_requires=["setuptools", "numpy"],
+    install_requires=["setuptools", "ikpy", "numpy"],
     zip_safe=True,
     maintainer="RS2-JENGA",
     maintainer_email="user@example.com",
-    description="Interface to send joint trajectory commands to UR3e (simulation and hardware).",
+    description="Motion planning for UR3e: RMRC planner, MoveIt interface, pose goals, and exclusion zones.",
     license="BSD-3-Clause",
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            "move_ur3e_demo = ur3e_controller.demo_node:main",
-            "initials_demo = ur3e_controller.demo_node:main",
-            "estop_node = ur3e_controller.estop_node:main",
+            "pose_goal_node = motion_planning.pose_goal_node:main",
+            "exclusion_zones_node = motion_planning.exclusion_zones_loader:main",
+            "rmrc_planning_node = motion_planning.rmrc_planning_node:main",
+            "test_rmrc_pose = motion_planning.test_rmrc_pose:main",
+            "robot_gui = motion_planning.robot_gui:main",
         ],
     },
 )

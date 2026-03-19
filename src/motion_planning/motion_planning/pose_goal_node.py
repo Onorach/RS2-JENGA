@@ -43,7 +43,7 @@ from std_msgs.msg import Bool
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from ur3e_controller.move_client import UR3E_JOINT_NAMES
-from ur3e_controller.moveit_planning import (
+from motion_planning.moveit_planning import (
     build_motion_plan_request,
     pose_stamped_to_goal_constraints,
     robot_trajectory_to_joint_trajectory,
