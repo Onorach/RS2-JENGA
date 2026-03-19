@@ -1,0 +1,6 @@
+# Default parameters for exclusion_zones_node.
+# floor_plane_frame_id: "world" ensures the floor plane loads at the global world frame.
+# Override via launch arg: floor_plane_frame_id:=base_link
+exclusion_zones_node:
+  ros__parameters:
+    floor_plane_frame_id: "world"
