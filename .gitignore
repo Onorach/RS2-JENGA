@@ -3,3 +3,14 @@
 **/.vscode
 **/log
 **/__pycache__
+
+# ROS2 build artifacts
+install/
+build/
+log/
+
+# Python artifacts
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
