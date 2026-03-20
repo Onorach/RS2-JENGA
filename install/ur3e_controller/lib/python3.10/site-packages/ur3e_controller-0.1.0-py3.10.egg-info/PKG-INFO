@@ -1,0 +1,12 @@
+Metadata-Version: 2.1
+Name: ur3e-controller
+Version: 0.1.0
+Summary: Interface to send joint trajectory commands to UR3e (simulation and hardware).
+Home-page: UNKNOWN
+Maintainer: RS2-JENGA
+Maintainer-email: user@example.com
+License: BSD-3-Clause
+Platform: UNKNOWN
+
+UNKNOWN
+

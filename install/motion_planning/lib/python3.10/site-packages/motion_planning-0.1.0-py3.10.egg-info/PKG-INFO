@@ -1,0 +1,12 @@
+Metadata-Version: 2.1
+Name: motion-planning
+Version: 0.1.0
+Summary: Motion planning for UR3e: RMRC planner, MoveIt interface, pose goals, and exclusion zones.
+Home-page: UNKNOWN
+Maintainer: RS2-JENGA
+Maintainer-email: user@example.com
+License: BSD-3-Clause
+Platform: UNKNOWN
+
+UNKNOWN
+

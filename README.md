@@ -1,106 +1,129 @@
-# RS2 Jenga Project Readme
+# RS2-JENGA
 
-## Start the Environment (Choose ONE option)
+ROS2 workspace for controlling a UR3e robot in Jenga manipulation tasks. Supports simulation (Gazebo) and real hardware, with motion planning via MoveIt2 or RMRC (Resolved Motion Rate Control).
+
+## Package Structure
+
+| Package             | Description                                                                 |
+|---------------------|-----------------------------------------------------------------------------|
+| `ur3e_controller`   | Joint trajectory control, simulation launch files, demo nodes, e-stop      |
+| `motion_planning`   | Pose goals, RMRC planner, exclusion zones, MoveIt2 integration             |
+
+## Requirements
+
+- ROS2 Iron or Humble (Ubuntu 22.04)
+- For simulation: Gazebo Classic, `ur_description`, `ur_moveit_config`
+- For hardware: `ur_robot_driver`, UR3e in external control mode
+
+## Build
+
+```bash
+cd ~/ros2_ws
+source /opt/ros/iron/setup.bash  # or humble
+colcon build --packages-select ur3e_controller motion_planning
+source install/setup.bash
+```
+
 ---
 
-### Option 1: Gazebo Classic
+## Start the Environment
 
-#### Step 1: Launch Gazebo and Moveit
+Choose **one** option below.
 
-    Ensure your workspace is built and activated
+### Option 1: Simulation (Gazebo)
 
-'''
-    cd ~/ros2_ws
-    source install/setup.bash
-'''
+**Using packages in this workspace:**
 
-    Launch Gazebo and Moveit
+```bash
+# Gazebo sim + RViz
+ros2 launch ur3e_controller ur3e_sim_control.launch.py
 
-    ros2 launch ur_simulation_gazebo ur_sim_moveit.launch.py
+# Gazebo + MoveIt (planning in RViz)
+ros2 launch ur3e_controller ur3e_sim_moveit.launch.py
+```
 
-    Note: The launch defaults to a ur5e, make sure to go into the launch files and edit them to default to ur3e.
+**Or using Universal Robots Gazebo package** (if installed):
 
+```bash
+ros2 launch ur_simulation_gazebo ur_sim_moveit.launch.py
+```
+
+*Note: The upstream launch may default to UR5e; configure it for UR3e if needed.*
 
 ### Option 2: Real Robot
-#### Step 1: Launch UR3e Driver and Visualization (Real Robot)
-##### 1. Setup the robot for external control
 
-    On the robot tablet:
-        Press the red button (power off) on the bottom left; if this is your first time starting, click "confirm configuration" on the pop-up.
-        Press "On".
-        Press "Start" when it becomes available.
-        Press "Exit".
-        Navigate to "Program" -> Urcaps.
-        Press on "External Control" once.
+#### 1. Prepare the robot on the tablet
 
-##### 2. Launch the UR3e driver and RViz
+- Press the red button (power off) on the bottom left; if first time, click "confirm configuration".
+- Press "On", then "Start" when available.
+- Press "Exit".
+- Navigate to **Program → Urcaps**.
+- Press **External Control** once.
 
-'''
+#### 2. Launch driver and RViz
+
+```bash
 source /opt/ros/iron/setup.bash
 ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=192.168.56.101 launch_rviz:=true
-'''
+```
 
-##### 3. Setup the robot for external control
+#### 3. Start external control on the tablet
 
-    Go back to the tablet:
-        Press on the start/pause button on the bottom right of the screen, on the left of "Simulation".
-        Press on "Play from selection #: Control by Desktop".
+- Press the start/pause button (bottom right, left of "Simulation").
+- Press **Play from selection #: Control by Desktop**.
 
-##### 4. AFTER you finish with the robot
+#### 4. Shutdown when finished
 
-    Go back to the tablet:
-        Press the green button on the bottom left (normal)
-        Press on the red "Off" button
-        Press the metal on/off button on the tablet to shut down, click "do not save" if prompted
+- Press the green button (normal mode).
+- Press the red "Off" button.
+- Power off the tablet; choose "do not save" if prompted.
 
-## Executing the Code
----
-### Step 1: Build and Source
-
-    In a new terminal
-'''
-    source /opt/ros/iron/setup.bash
-    colcon build --packages-select ur3e_controller
-    source install/setup.bash
-'''
-
-### Step 2: Launch Moveit2
-
-
-#### 1. If using the real robot
-
-    Complete the corresponding steps from Option 1 or Option 3.
-
-'''
-ros2 launch ur_moveit_config ur_moveit.launch.py ur_type:=ur3e launch_rviz:=true
-'''
-
-#### 2. If using Gazebo
-
-    If you completed the corresponding steps from Option 2, it should already be running, if not.
-
-'''
-ros2 launch ur_simulation_gazebo ur_sim_moveit.launch.py
-'''
-
-### Step 3: Launch a Demo
-
-    In a new terminal, repeat step 1, then finally, run your package
-
-'''
-    ros2 run ur3e_controller initials_demo
-'''
-    (Or: ros2 run ur3e_controller move_ur3e_demo)
-
-## Running Simulation
 ---
 
-ros2 launch ur_simulation_gazebo ur_sim_control.launch.py
+## Running Demos
 
-Move robot using test script from ur_robot_driver package (if you've installed that one):
+### Joint trajectory demo
 
-ros2 launch ur_robot_driver test_joint_trajectory_controller.launch.py
+After starting the robot (sim or hardware):
 
-Example using MoveIt with simulated robot:
+```bash
+source install/setup.bash
+ros2 run ur3e_controller move_ur3e_demo
+# or
+ros2 run ur3e_controller initials_demo
+```
 
-ros2 launch ur_simulation_gazebo ur_sim_moveit.launch.py
+### Motion planning (pose goals)
+
+1. Start the robot and MoveIt2 (e.g. `ur3e_sim_moveit.launch.py` or `ur_moveit_config` with real robot).
+2. Launch the motion planning stack:
+
+```bash
+ros2 launch motion_planning motion_planning.launch.py
+```
+
+3. Send a goal pose:
+
+```bash
+ros2 topic pub --once /goal_pose geometry_msgs/msg/PoseStamped \
+  "{header: {frame_id: 'base_link'}, pose: {position: {x: 0.3, y: 0.0, z: 0.4}, orientation: {w: 1.0}}}"
+```
+
+### RMRC planning (headless, no MoveIt GUI)
+
+```bash
+ros2 launch ur3e_controller headless_moveit.launch.py use_rmrc:=true
+```
+
+Then send goal poses as above, or run:
+
+```bash
+ros2 run motion_planning test_rmrc_pose
+```
+
+---
+
+## Documentation
+
+- [ur3e_controller](src/ur3e_controller/README.md) – joint control, launch files, move client API
+- [motion_planning](src/motion_planning/README.md) – pose goals, RMRC, exclusion zones, MoveIt2 integration

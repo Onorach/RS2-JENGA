@@ -1,0 +1,116 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="ur3e_sim_world">
+
+    <include>
+      <uri>model://sun</uri>
+    </include>
+
+    <include>
+      <uri>model://ground_plane</uri>
+    </include>
+
+    <!-- Physics tuning for stable stacked small objects (prevents jitter/collapse) -->
+    <physics type="ode">
+      <max_step_size>0.001</max_step_size>
+      <real_time_update_rate>1000</real_time_update_rate>
+      <ode>
+        <solver>
+          <type>world</type>
+        </solver>
+        <constraints>
+          <erp>0.2</erp>
+          <cfm>1e-10</cfm>
+          <contact_max_correcting_vel>0.01</contact_max_correcting_vel>
+          <contact_surface_layer>0.0005</contact_surface_layer>
+        </constraints>
+      </ode>
+    </physics>
+
+    <!--
+      Wheeled steel cabinet: 735 mm wide (Y) × 735 mm deep (X) × 1080 mm tall (Z)
+      Model origin at (0.20, 0, 0) so the robot at (0,0,1.08) sits ~168 mm
+      from the cabinet's back edge, offset from centre.
+    -->
+    <model name="wheeled_cabinet">
+      <static>true</static>
+      <pose>0.20 0 0 0 0 0</pose>
+      <link name="link">
+        <pose>0 0 0.54 0 0 0</pose>
+        <collision name="collision">
+          <geometry>
+            <box><size>0.735 0.71 1.08</size></box>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>0.735 0.71 1.08</size></box>
+          </geometry>
+          <material>
+            <ambient>0.30 0.30 0.30 1</ambient>
+            <diffuse>0.70 0.70 0.70 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!--
+      Flat platform on top of cabinet, in front of the robot.
+      Dimensions: 320 mm (X/depth) × 500 mm (Y/width) × 12 mm (Z/height)
+      Sits flush on the cabinet top (z = 1.08); centre at z = 1.086.
+    -->
+    <model name="platform">
+      <static>true</static>
+      <pose>0.35 0.0 1.086 0 0 0</pose>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <box><size>0.320 0.500 0.012</size></box>
+          </geometry>
+          <surface>
+            <contact><ode><min_depth>0.001</min_depth><max_vel>0.1</max_vel></ode></contact>
+          </surface>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <box><size>0.320 0.500 0.012</size></box>
+          </geometry>
+          <material>
+            <ambient>0.40 0.25 0.10 1</ambient>
+            <diffuse>0.65 0.45 0.20 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!--
+      Jenga tower (8 layers × 3 blocks) — STATIC blocks (no physics). Use for stable simulation.
+      For dynamic blocks (playable Jenga), set jenga_static:=false and use spawn_jenga_tower.
+    -->
+    <model name="jenga_L1_B1"><static>true</static><pose>0.325 0.0 1.0995 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.025 0.075 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.025 0.075 0.015</size></box></geometry><material><ambient>0.45 0.30 0.10 1</ambient><diffuse>0.80 0.60 0.25 1</diffuse></material></visual></link></model>
+    <model name="jenga_L1_B2"><static>true</static><pose>0.350 0.0 1.0995 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.025 0.075 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.025 0.075 0.015</size></box></geometry><material><ambient>0.45 0.30 0.10 1</ambient><diffuse>0.80 0.60 0.25 1</diffuse></material></visual></link></model>
+    <model name="jenga_L1_B3"><static>true</static><pose>0.375 0.0 1.0995 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.025 0.075 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.025 0.075 0.015</size></box></geometry><material><ambient>0.45 0.30 0.10 1</ambient><diffuse>0.80 0.60 0.25 1</diffuse></material></visual></link></model>
+    <model name="jenga_L2_B1"><static>true</static><pose>0.35 -0.025 1.1145 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.075 0.025 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.075 0.025 0.015</size></box></geometry><material><ambient>0.45 0.08 0.08 1</ambient><diffuse>0.80 0.15 0.15 1</diffuse></material></visual></link></model>
+    <model name="jenga_L2_B2"><static>true</static><pose>0.35 0.0 1.1145 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.075 0.025 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.075 0.025 0.015</size></box></geometry><material><ambient>0.45 0.08 0.08 1</ambient><diffuse>0.80 0.15 0.15 1</diffuse></material></visual></link></model>
+    <model name="jenga_L2_B3"><static>true</static><pose>0.35 0.025 1.1145 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.075 0.025 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.075 0.025 0.015</size></box></geometry><material><ambient>0.45 0.08 0.08 1</ambient><diffuse>0.80 0.15 0.15 1</diffuse></material></visual></link></model>
+    <model name="jenga_L3_B1"><static>true</static><pose>0.325 0.0 1.1295 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.025 0.075 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.025 0.075 0.015</size></box></geometry><material><ambient>0.08 0.08 0.45 1</ambient><diffuse>0.15 0.15 0.80 1</diffuse></material></visual></link></model>
+    <model name="jenga_L3_B2"><static>true</static><pose>0.350 0.0 1.1295 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.025 0.075 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.025 0.075 0.015</size></box></geometry><material><ambient>0.08 0.08 0.45 1</ambient><diffuse>0.15 0.15 0.80 1</diffuse></material></visual></link></model>
+    <model name="jenga_L3_B3"><static>true</static><pose>0.375 0.0 1.1295 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.025 0.075 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.025 0.075 0.015</size></box></geometry><material><ambient>0.08 0.08 0.45 1</ambient><diffuse>0.15 0.15 0.80 1</diffuse></material></visual></link></model>
+    <model name="jenga_L4_B1"><static>true</static><pose>0.35 -0.025 1.1445 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.075 0.025 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.075 0.025 0.015</size></box></geometry><material><ambient>0.08 0.45 0.08 1</ambient><diffuse>0.15 0.80 0.15 1</diffuse></material></visual></link></model>
+    <model name="jenga_L4_B2"><static>true</static><pose>0.35 0.0 1.1445 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.075 0.025 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.075 0.025 0.015</size></box></geometry><material><ambient>0.08 0.45 0.08 1</ambient><diffuse>0.15 0.80 0.15 1</diffuse></material></visual></link></model>
+    <model name="jenga_L4_B3"><static>true</static><pose>0.35 0.025 1.1445 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.075 0.025 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.075 0.025 0.015</size></box></geometry><material><ambient>0.08 0.45 0.08 1</ambient><diffuse>0.15 0.80 0.15 1</diffuse></material></visual></link></model>
+    <model name="jenga_L5_B1"><static>true</static><pose>0.325 0.0 1.1595 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.025 0.075 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.025 0.075 0.015</size></box></geometry><material><ambient>0.45 0.45 0.08 1</ambient><diffuse>0.80 0.80 0.15 1</diffuse></material></visual></link></model>
+    <model name="jenga_L5_B2"><static>true</static><pose>0.350 0.0 1.1595 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.025 0.075 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.025 0.075 0.015</size></box></geometry><material><ambient>0.45 0.45 0.08 1</ambient><diffuse>0.80 0.80 0.15 1</diffuse></material></visual></link></model>
+    <model name="jenga_L5_B3"><static>true</static><pose>0.375 0.0 1.1595 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.025 0.075 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.025 0.075 0.015</size></box></geometry><material><ambient>0.45 0.45 0.08 1</ambient><diffuse>0.80 0.80 0.15 1</diffuse></material></visual></link></model>
+    <model name="jenga_L6_B1"><static>true</static><pose>0.35 -0.025 1.1745 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.075 0.025 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.075 0.025 0.015</size></box></geometry><material><ambient>0.45 0.25 0.08 1</ambient><diffuse>0.80 0.45 0.15 1</diffuse></material></visual></link></model>
+    <model name="jenga_L6_B2"><static>true</static><pose>0.35 0.0 1.1745 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.075 0.025 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.075 0.025 0.015</size></box></geometry><material><ambient>0.45 0.25 0.08 1</ambient><diffuse>0.80 0.45 0.15 1</diffuse></material></visual></link></model>
+    <model name="jenga_L6_B3"><static>true</static><pose>0.35 0.025 1.1745 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.075 0.025 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.075 0.025 0.015</size></box></geometry><material><ambient>0.45 0.25 0.08 1</ambient><diffuse>0.80 0.45 0.15 1</diffuse></material></visual></link></model>
+    <model name="jenga_L7_B1"><static>true</static><pose>0.325 0.0 1.1895 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.025 0.075 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.025 0.075 0.015</size></box></geometry><material><ambient>0.38 0.08 0.45 1</ambient><diffuse>0.70 0.15 0.80 1</diffuse></material></visual></link></model>
+    <model name="jenga_L7_B2"><static>true</static><pose>0.350 0.0 1.1895 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.025 0.075 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.025 0.075 0.015</size></box></geometry><material><ambient>0.38 0.08 0.45 1</ambient><diffuse>0.70 0.15 0.80 1</diffuse></material></visual></link></model>
+    <model name="jenga_L7_B3"><static>true</static><pose>0.375 0.0 1.1895 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.025 0.075 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.025 0.075 0.015</size></box></geometry><material><ambient>0.38 0.08 0.45 1</ambient><diffuse>0.70 0.15 0.80 1</diffuse></material></visual></link></model>
+    <model name="jenga_L8_B1"><static>true</static><pose>0.35 -0.025 1.2045 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.075 0.025 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.075 0.025 0.015</size></box></geometry><material><ambient>0.08 0.38 0.38 1</ambient><diffuse>0.15 0.70 0.70 1</diffuse></material></visual></link></model>
+    <model name="jenga_L8_B2"><static>true</static><pose>0.35 0.0 1.2045 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.075 0.025 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.075 0.025 0.015</size></box></geometry><material><ambient>0.08 0.38 0.38 1</ambient><diffuse>0.15 0.70 0.70 1</diffuse></material></visual></link></model>
+    <model name="jenga_L8_B3"><static>true</static><pose>0.35 0.025 1.2045 0 0 0</pose><link name="link"><collision name="c"><geometry><box><size>0.075 0.025 0.015</size></box></geometry></collision><visual name="v"><geometry><box><size>0.075 0.025 0.015</size></box></geometry><material><ambient>0.08 0.38 0.38 1</ambient><diffuse>0.15 0.70 0.70 1</diffuse></material></visual></link></model>
+
+  </world>
+</sdf>
