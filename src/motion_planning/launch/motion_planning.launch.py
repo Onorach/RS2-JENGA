@@ -34,16 +34,17 @@ def generate_launch_description():
         description=(
             "Absolute path to a YAML file defining exclusion zones to load into the "
             "MoveIt2 planning scene. Defaults to ur3e_workspace.yaml (cabinet, platform, "
-            "and Jenga tower matching ur3e_controller config/ur3e_workspace.world). "
+            "Jenga tower in base_link with cabinet top at z=0, matching default base_height). "
             "Pass an empty string to load no YAML zones."
         ),
     )
     add_floor_plane_arg = DeclareLaunchArgument(
         "add_floor_plane",
-        default_value="true",
+        default_value="false",
         description=(
-            "Whether to add the built-in floor-plane collision slab (top at floor_z). "
-            "Prevents the robot from planning paths below the cabinet mounting surface."
+            "If true, publish the built-in floor-plane slab on startup. Default is false so the "
+            "slab is not placed in the wrong frame; add it from robot_gui (or set this to true "
+            "with floor_plane_frame_id:=world when you want it at launch)."
         ),
     )
     floor_z_arg = DeclareLaunchArgument(
@@ -161,9 +162,9 @@ def generate_launch_description():
         parameters=[
             {
                 "exclusion_zones_file": LaunchConfiguration("exclusion_zones_file"),
-                "add_floor_plane": False,
+                "add_floor_plane": LaunchConfiguration("add_floor_plane"),
                 "floor_z": LaunchConfiguration("floor_z"),
-                "floor_plane_frame_id": "world",
+                "floor_plane_frame_id": LaunchConfiguration("floor_plane_frame_id"),
             },
         ],
     )

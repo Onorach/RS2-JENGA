@@ -52,7 +52,7 @@ ros2 launch motion_planning motion_planning.launch.py
 | `use_rmrc`                | `false`                            | Use RMRC instead of MoveIt pose_goal_node           |
 | `exclusion_zones_file`    | `config/ur3e_workspace.yaml`       | Path to YAML defining exclusion zones               |
 | `plan_only`               | `false`                            | Plan only, do not execute                            |
-| `add_floor_plane`         | `true`                             | Add floor-plane collision object                     |
+| `add_floor_plane`         | `false`                            | Add floor-plane at startup (use GUI or `:=true` + `world` frame if needed) |
 | `floor_z`                  | `0.0`                              | Floor Z height (metres)                              |
 
 **Examples:**

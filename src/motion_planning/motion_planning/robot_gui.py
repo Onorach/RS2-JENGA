@@ -594,12 +594,12 @@ class RobotControlNode(Node):
         except Exception as exc:
             self._log(f"Exception receiving joint goal result: {exc}")
 
-    def add_floor_plane(self, floor_z: float = 0.0, frame_id: str = "base_link") -> None:
+    def add_floor_plane(self, floor_z: float = 0.0, frame_id: str = "world") -> None:
         """Add 10 m × 10 m slab to block all robot motion below floor_z."""
         publish_floor_plane(self._scene_pub, floor_z, frame_id)
         self._log(f"Floor plane added: top at z={floor_z:.3f} m  frame='{frame_id}'")
 
-    def remove_floor_plane(self, frame_id: str = "base_link") -> None:
+    def remove_floor_plane(self, frame_id: str = "world") -> None:
         """Remove the floor-plane collision object."""
         publish_remove_floor_plane(self._scene_pub, frame_id)
         self._log("Floor plane removed from planning scene.")
@@ -982,14 +982,14 @@ class RobotGUI:
             text="Floor-plane z (m):",
         ).grid(row=0, column=0, sticky="e", padx=(0, 4))
 
-        self._floor_z_sv = tk.StringVar(value="-0.02")
+        self._floor_z_sv = tk.StringVar(value="0.0")
         ttk.Entry(parent, textvariable=self._floor_z_sv, width=7).grid(row=0, column=1, sticky="w")
 
         ttk.Label(parent, text="Frame:").grid(row=0, column=2, sticky="e", padx=(12, 4))
         self._scene_frame_cb = ttk.Combobox(
-            parent, values=["base_link", "world", "base"], width=10, state="normal"
+            parent, values=["world", "base_link", "base"], width=10, state="normal"
         )
-        self._scene_frame_cb.set("base_link")
+        self._scene_frame_cb.set("world")
         self._scene_frame_cb.grid(row=0, column=3, sticky="w")
 
         ttk.Button(
@@ -1002,7 +1002,8 @@ class RobotGUI:
         ttk.Label(
             parent,
             text="  Adds a 10 m × 10 m slab — MoveIt2 will reject any pose below this height.  "
-                 "Use a slightly negative value (e.g. -0.02) to avoid colliding with the robot base.",
+                 "Use frame 'world' with z=0 for sim ground (matches ur3e_workspace.yaml). "
+                 "For base_link, a small negative z can clear the pedestal.",
             foreground="#666",
             font=("", 8),
         ).grid(row=1, column=0, columnspan=6, sticky="w", pady=(4, 0))
@@ -1098,11 +1099,11 @@ class RobotGUI:
         except ValueError:
             messagebox.showerror("Input Error", "Floor z must be a number (e.g. 0.0).")
             return
-        frame = self._scene_frame_cb.get().strip() or "base_link"
+        frame = self._scene_frame_cb.get().strip() or "world"
         self._node.add_floor_plane(z, frame)
 
     def _on_remove_floor(self) -> None:
-        frame = self._scene_frame_cb.get().strip() or "base_link"
+        frame = self._scene_frame_cb.get().strip() or "world"
         self._node.remove_floor_plane(frame)
 
     # ── Periodic update ────────────────────────────────────────────────────

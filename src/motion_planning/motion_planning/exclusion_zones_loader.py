@@ -5,8 +5,8 @@
 General-purpose MoveIt2 exclusion-zone manager.
 
 Loads named collision objects (boxes and spheres) from a YAML file and
-publishes them to the MoveIt2 planning scene.  Also maintains a built-in
-floor-plane slab so the robot cannot plan paths below the mounting surface.
+publishes them to the MoveIt2 planning scene.  An optional built-in floor-plane
+slab can be enabled via parameter or added later (e.g. from robot_gui).
 
 At runtime, individual zones can be removed or re-added by publishing a
 zone ID string to the appropriate topic:
@@ -212,9 +212,8 @@ class ExclusionZonesNode(Node):
     """
     ROS2 node that manages MoveIt2 planning-scene exclusion zones.
 
-    On startup it publishes the floor-plane slab (unless disabled) and any
-    zones loaded from the YAML file specified by the *exclusion_zones_file*
-    parameter.
+    On startup it publishes YAML exclusion zones and optionally the floor-plane
+    slab when *add_floor_plane* is true.
 
     At runtime two topics allow individual zones to be toggled by ID:
 
@@ -227,7 +226,7 @@ class ExclusionZonesNode(Node):
     floor_plane_frame_id    : str   – TF frame for the floor plane (default "world")
     frame_id                : str   – fallback frame for remove ops; YAML zones use their own frame_id
     exclusion_zones_file    : str   – absolute path to a YAML zones file (default "")
-    add_floor_plane         : bool  – publish the built-in floor plane (default True)
+    add_floor_plane         : bool  – publish the built-in floor plane (default False)
     """
 
     def __init__(self):
@@ -239,7 +238,7 @@ class ExclusionZonesNode(Node):
         ).value
         self._frame_id = self.declare_parameter("frame_id", DEFAULT_FRAME_ID).value
         self._zones_file = self.declare_parameter("exclusion_zones_file", "").value
-        self._add_floor_plane = self.declare_parameter("add_floor_plane", True).value
+        self._add_floor_plane = self.declare_parameter("add_floor_plane", False).value
 
         self._pub = self.create_publisher(PlanningScene, "/planning_scene", 10)
 

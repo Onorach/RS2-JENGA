@@ -1,0 +1,27 @@
+# MoveIt exclusion zones aligned with ur3e_controller/config/ur3e_workspace.world
+#
+# Geometry is expressed in base_link so the cabinet top lies at z=0 (robot base on cabinet).
+# World-frame poses from the Gazebo world are converted with:
+#   p_base = p_world - (0, 0, base_height)
+# using the same base_height as ur3e_sim_control.launch.py (default 1.080 m) and the
+# static_transform world -> base_link.
+
+exclusion_zones:
+  - type: box
+    id: wheeled_cabinet
+    frame_id: base_link
+    # Top surface at z=0; centre z = -cabinet_half_height
+    position: [0.20, 0.0, -0.54]
+    size: [0.735, 0.71, 1.08]
+
+  - type: box
+    id: platform
+    frame_id: base_link
+    position: [0.35, 0.0, 0.006]
+    size: [0.320, 0.500, 0.012]
+
+  - type: box
+    id: jenga_tower
+    frame_id: base_link
+    position: [0.35, 0.0, 0.072]
+    size: [0.085, 0.085, 0.135]
