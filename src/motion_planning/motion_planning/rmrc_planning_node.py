@@ -11,22 +11,27 @@ from __future__ import annotations
 import os
 import threading
 import time
+import math
 from pathlib import Path
 
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rclpy.duration import Duration as RclDuration
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 
 from control_msgs.action import FollowJointTrajectory
-from control_msgs.msg import JointTolerance
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
+from tf2_ros import Buffer, TransformListener
+from tf2_ros import TransformException
+import tf2_geometry_msgs  # noqa: F401  (registers PoseStamped transform support)
+from tf2_geometry_msgs import do_transform_pose
 
 from ur3e_controller.move_client import (
     UR3E_JOINT_NAMES,
@@ -41,9 +46,13 @@ from motion_planning.moveit_planning import DEFAULT_PLANNING_FRAME, DEFAULT_EE_L
 
 DEFAULT_JOINT_ACTION = "/joint_trajectory_controller/follow_joint_trajectory"
 DEFAULT_PATH_RESOLUTION_M = 0.002
-DEFAULT_MAX_VELOCITY = 0.5
+DEFAULT_MAX_VELOCITY = 0.2
 DEFAULT_D_SAFE = 0.05
 DEFAULT_K_REPULSION = 0.5
+DEFAULT_EXEC_START_DELAY = 1.0
+DEFAULT_GOAL_TIME_TOLERANCE = 2.0
+DEFAULT_MAX_JOINT_VELOCITY = 0.25
+DEFAULT_MAX_JOINT_ACCELERATION = 0.5
 
 
 def _pose_stamped_to_pose_tuple(msg: PoseStamped) -> tuple:
@@ -54,6 +63,12 @@ def _pose_stamped_to_pose_tuple(msg: PoseStamped) -> tuple:
     pos = np.array([p.x, p.y, p.z], dtype=np.float64)
     quat = np.array([q.x, q.y, q.z, q.w], dtype=np.float64)
     return (pos, quat)
+
+
+def _unwrap_to_nearest(angle: float, reference: float) -> float:
+    """Return angle equivalent (mod 2*pi) nearest to reference."""
+    two_pi = 2.0 * math.pi
+    return angle + two_pi * round((reference - angle) / two_pi)
 
 
 class RMRCPlanningNode(Node):
@@ -78,6 +93,18 @@ class RMRCPlanningNode(Node):
         self._k_repulsion = self.declare_parameter(
             "k_repulsion", DEFAULT_K_REPULSION
         ).value
+        self._exec_start_delay = self.declare_parameter(
+            "execution_start_delay", DEFAULT_EXEC_START_DELAY
+        ).value
+        self._goal_time_tolerance = self.declare_parameter(
+            "goal_time_tolerance", DEFAULT_GOAL_TIME_TOLERANCE
+        ).value
+        self._max_joint_velocity = self.declare_parameter(
+            "max_joint_velocity", DEFAULT_MAX_JOINT_VELOCITY
+        ).value
+        self._max_joint_acceleration = self.declare_parameter(
+            "max_joint_acceleration", DEFAULT_MAX_JOINT_ACCELERATION
+        ).value
         self._plan_only = self.declare_parameter("plan_only", False).value
         self._exclusion_zones_file = self.declare_parameter(
             "exclusion_zones_file", ""
@@ -85,8 +112,13 @@ class RMRCPlanningNode(Node):
         self._robot_description = self.declare_parameter(
             "robot_description", ""
         ).value
+        self._planning_frame = self.declare_parameter(
+            "planning_frame", DEFAULT_PLANNING_FRAME
+        ).value
 
         self._cbg = ReentrantCallbackGroup()
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
 
         self._joint_ac = ActionClient(
             self,
@@ -193,7 +225,7 @@ class RMRCPlanningNode(Node):
         try:
             self._planner = RMRCPlanner(
                 rd,
-                base_link=DEFAULT_PLANNING_FRAME,
+                base_link=str(self._planning_frame),
                 ee_link=DEFAULT_EE_LINK,
                 joint_names=list(UR3E_JOINT_NAMES),
             )
@@ -219,9 +251,7 @@ class RMRCPlanningNode(Node):
             with open(path, "r") as f:
                 data = yaml.safe_load(f)
             zones = data.get("exclusion_zones", [])
-            self._obstacles = obstacles_from_yaml_data(
-                zones, frame_id=DEFAULT_PLANNING_FRAME
-            )
+            self._obstacles = obstacles_from_yaml_data(zones, frame_id=str(self._planning_frame))
             self.get_logger().info(
                 f"Loaded {len(self._obstacles)} obstacles from {path}"
             )
@@ -240,8 +270,83 @@ class RMRCPlanningNode(Node):
                 return
             self._busy = True
 
+        source_frame = msg.header.frame_id or str(self._planning_frame)
+        if source_frame != str(self._planning_frame):
+            try:
+                in_x = float(msg.pose.position.x)
+                in_y = float(msg.pose.position.y)
+                in_z = float(msg.pose.position.z)
+                tf = self._tf_buffer.lookup_transform(
+                    str(self._planning_frame),
+                    str(source_frame),
+                    rclpy.time.Time(),
+                    timeout=RclDuration(seconds=0.5),
+                )
+                tx = float(tf.transform.translation.x)
+                ty = float(tf.transform.translation.y)
+                tz = float(tf.transform.translation.z)
+                rx = float(tf.transform.rotation.x)
+                ry = float(tf.transform.rotation.y)
+                rz = float(tf.transform.rotation.z)
+                rw = float(tf.transform.rotation.w)
+                msg.pose = do_transform_pose(msg.pose, tf)
+                msg.header.frame_id = str(self._planning_frame)
+                self.get_logger().info(
+                    "Goal transformed: "
+                    f"{source_frame} -> {self._planning_frame}, "
+                    f"xyz_in=({in_x:.3f}, {in_y:.3f}, {in_z:.3f}), "
+                    f"xyz_out=({msg.pose.position.x:.3f}, {msg.pose.position.y:.3f}, {msg.pose.position.z:.3f}), "
+                    f"tf_t=({tx:.3f}, {ty:.3f}, {tz:.3f}), "
+                    f"tf_q=({rx:.3f}, {ry:.3f}, {rz:.3f}, {rw:.3f})"
+                )
+                if (
+                    source_frame == "world"
+                    and str(self._planning_frame) == "base_link"
+                    and abs(tx) < 1e-4
+                    and abs(ty) < 1e-4
+                    and abs(tz) < 1e-4
+                ):
+                    reverse_dbg = ""
+                    try:
+                        tf_rev = self._tf_buffer.lookup_transform(
+                            str(source_frame),
+                            str(self._planning_frame),
+                            rclpy.time.Time(),
+                            timeout=RclDuration(seconds=0.2),
+                        )
+                        reverse_dbg = (
+                            f" reverse_tf_t=({float(tf_rev.transform.translation.x):.3f}, "
+                            f"{float(tf_rev.transform.translation.y):.3f}, "
+                            f"{float(tf_rev.transform.translation.z):.3f})"
+                        )
+                    except Exception:
+                        pass
+                    frames_dbg = ""
+                    try:
+                        frames_dbg = self._tf_buffer.all_frames_as_yaml()
+                    except Exception:
+                        pass
+                    self.get_logger().error(
+                        "world->base_link TF is near identity. "
+                        "Expected non-zero offset (for target=base_link, source=world this is typically around -1.08 m in z). "
+                        "Refusing to execute goal until TF is fixed."
+                        + reverse_dbg
+                    )
+                    if frames_dbg:
+                        self.get_logger().error(f"TF frames snapshot:\n{frames_dbg}")
+                    self._set_free()
+                    return
+            except (TransformException, Exception) as e:
+                self.get_logger().error(
+                    f"Could not transform goal from '{source_frame}' "
+                    f"to '{self._planning_frame}': {e}"
+                )
+                self._set_free()
+                return
+
         self.get_logger().info(
-            f"Goal pose received: xyz=({msg.pose.position.x:.3f}, "
+            f"Goal pose used for planning ({self._planning_frame}): "
+            f"xyz=({msg.pose.position.x:.3f}, "
             f"{msg.pose.position.y:.3f}, {msg.pose.position.z:.3f})"
         )
 
@@ -272,6 +377,8 @@ class RMRCPlanningNode(Node):
                 dt=0.02,
                 d_safe=self._d_safe,
                 k_repulsion=self._k_repulsion,
+                max_joint_velocity=float(self._max_joint_velocity),
+                max_joint_acceleration=float(self._max_joint_acceleration),
             )
         except Exception as e:
             self.get_logger().error(f"RMRC planning failed: {e}")
@@ -283,11 +390,26 @@ class RMRCPlanningNode(Node):
             self._set_free()
             return
 
-        waypoints = [(t, list(q)) for t, q in traj_points]
+        # Keep joint trajectory continuous in controller space:
+        # unwrap each waypoint to the nearest equivalent angle and force
+        # first command to exactly match current measured joints.
+        waypoints = []
+        prev = list(q_current)
+        for idx, (t, q) in enumerate(traj_points):
+            q_list = [float(v) for v in q]
+            if idx == 0:
+                q_adj = list(prev)
+            else:
+                q_adj = [_unwrap_to_nearest(q_list[j], prev[j]) for j in range(6)]
+            waypoints.append((t, q_adj))
+            prev = q_adj
         joint_traj = build_trajectory(
             UR3E_JOINT_NAMES,
             waypoints,
             time_from_start_sec=None,
+        )
+        joint_traj = self._offset_trajectory_times(
+            joint_traj, float(self._exec_start_delay)
         )
 
         self.get_logger().info(
@@ -316,16 +438,17 @@ class RMRCPlanningNode(Node):
 
         goal_msg = FollowJointTrajectory.Goal()
         goal_msg.trajectory = joint_traj
-        # Lenient path tolerance to avoid PATH_TOLERANCE_VIOLATED during execution (0.1 rad ~ 6 deg)
-        goal_msg.path_tolerance = [
-            JointTolerance(name=name, position=0.1, velocity=-1.0, acceleration=-1.0)
-            for name in UR3E_JOINT_NAMES
-        ]
-        # Lenient goal tolerance to avoid GOAL_TOLERANCE_VIOLATED (0.05 rad ~ 3 deg)
-        goal_msg.goal_tolerance = [
-            JointTolerance(name=name, position=0.05, velocity=-1.0, acceleration=-1.0)
-            for name in UR3E_JOINT_NAMES
-        ]
+        # Do not override tolerances here by default.
+        # Let joint_trajectory_controller use its configured tolerances from YAML
+        # (trajectory: 0.2 rad, goal: 0.1 rad in this project).
+        goal_msg.path_tolerance = []
+        goal_msg.goal_tolerance = []
+        goal_msg.goal_time_tolerance = Duration(
+            sec=int(self._goal_time_tolerance),
+            nanosec=int(
+                round((float(self._goal_time_tolerance) - int(self._goal_time_tolerance)) * 1e9)
+            ),
+        )
         future = self._joint_ac.send_goal_async(goal_msg)
         future.add_done_callback(self._on_exec_accepted)
 
@@ -366,6 +489,27 @@ class RMRCPlanningNode(Node):
     def _set_free(self) -> None:
         with self._busy_lock:
             self._busy = False
+
+    @staticmethod
+    def _offset_trajectory_times(
+        trajectory: JointTrajectory, delay_sec: float
+    ) -> JointTrajectory:
+        """Shift all trajectory timestamps by delay_sec."""
+        if delay_sec <= 0.0 or not trajectory.points:
+            return trajectory
+        sec = int(delay_sec)
+        nsec = int(round((delay_sec - sec) * 1e9))
+        if nsec >= 1_000_000_000:
+            sec += 1
+            nsec -= 1_000_000_000
+        for pt in trajectory.points:
+            total_nsec = pt.time_from_start.nanosec + nsec
+            carry = total_nsec // 1_000_000_000
+            pt.time_from_start = Duration(
+                sec=pt.time_from_start.sec + sec + carry,
+                nanosec=total_nsec % 1_000_000_000,
+            )
+        return trajectory
 
 
 def main(args=None) -> int:

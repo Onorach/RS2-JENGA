@@ -17,6 +17,7 @@ def launch_setup(context, *args, **kwargs):
     moveit_config_package = LaunchConfiguration("moveit_config_package")
     moveit_config_file = LaunchConfiguration("moveit_config_file")
     prefix = LaunchConfiguration("prefix")
+    use_fake_hardware = LaunchConfiguration("use_fake_hardware")
 
     ur_control_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
@@ -48,7 +49,7 @@ def launch_setup(context, *args, **kwargs):
             "prefix": prefix,
             "use_sim_time": "true",
             "launch_rviz": "true",
-            "use_fake_hardware": "true",  # to change moveit default controller to joint_trajectory_controller
+            "use_fake_hardware": use_fake_hardware,
         }.items(),
     )
 
@@ -138,6 +139,16 @@ def generate_launch_description():
             "prefix",
             default_value='""',
             description="Prefix of the joint names, useful for multi-robot setup.",
+        )
+    )
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "use_fake_hardware",
+            default_value="false",
+            description=(
+                "Use MoveIt fake hardware. Keep false for Gazebo control so "
+                "joint_trajectory_controller commands drive the simulated robot."
+            ),
         )
     )
 

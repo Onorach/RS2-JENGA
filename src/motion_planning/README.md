@@ -52,6 +52,12 @@ ros2 launch motion_planning motion_planning.launch.py
 | `use_rmrc`                | `false`                            | Use RMRC instead of MoveIt pose_goal_node           |
 | `exclusion_zones_file`    | `config/ur3e_workspace.yaml`       | Path to YAML defining exclusion zones               |
 | `plan_only`               | `false`                            | Plan only, do not execute                            |
+| `execution_start_delay`   | `1.0`                              | RMRC-only: delay added before first trajectory point to avoid startup tolerance trips |
+| `goal_time_tolerance`     | `2.0`                              | RMRC-only: extra time allowed for controller to settle at goal |
+| `max_joint_velocity`      | `0.25`                             | RMRC-only: clamp generated joint velocities (rad/s) |
+| `max_joint_acceleration`  | `0.5`                              | RMRC-only: clamp generated joint acceleration (rad/s²) |
+| `publish_world_to_base_tf`| `false`                            | Publish static `world -> base_link` TF from this launch (keep false when robot launch already provides it) |
+| `base_height`             | `1.08`                             | Z offset (m) used for static `world -> base_link` TF |
 | `add_floor_plane`         | `false`                            | Add floor-plane at startup (use GUI or `:=true` + `world` frame if needed) |
 | `floor_z`                  | `0.0`                              | Floor Z height (metres)                              |
 

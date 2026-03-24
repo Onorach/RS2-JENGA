@@ -361,6 +361,7 @@ class RMRCPlanner:
         lambda_damped: float = 0.01,
         q_min: np.ndarray | None = None,
         q_max: np.ndarray | None = None,
+        max_joint_velocity: float | None = None,
     ) -> np.ndarray:
         """
         Compute q_dot for one RMRC step.
@@ -383,6 +384,8 @@ class RMRCPlanner:
                     q_dot[i] = 0.0
                 elif q[i] >= q_max[i] and q_dot[i] > 0:
                     q_dot[i] = 0.0
+        if max_joint_velocity is not None and max_joint_velocity > 0.0:
+            q_dot = np.clip(q_dot, -max_joint_velocity, max_joint_velocity)
         return q_dot
 
     def plan_rmrc_trajectory(
@@ -395,6 +398,8 @@ class RMRCPlanner:
         dt: float = 0.02,
         d_safe: float = 0.05,
         k_repulsion: float = 0.5,
+        max_joint_velocity: float = 0.6,
+        max_joint_acceleration: float = 1.2,
         max_steps: int = 10000,
     ) -> list[tuple[float, np.ndarray]]:
         """
@@ -413,6 +418,7 @@ class RMRCPlanner:
             return [(0.0, q_start)]
         trajectory: list[tuple[float, np.ndarray]] = [(0.0, np.array(q_start, dtype=np.float64).copy())]
         q = np.array(q_start, dtype=np.float64)
+        q_dot_prev = np.zeros_like(q)
         t_total = 0.0
         prev_pos, prev_quat = path[0][1], path[0][2]
         for step in range(max_steps):
@@ -436,8 +442,19 @@ class RMRCPlanner:
             else:
                 omega = np.zeros(3)
             v_desired = np.concatenate([v_linear * max_velocity_scale, omega * max_velocity_scale])
-            q_dot = self.rmrc_step(q, v_desired, obstacles, d_safe=d_safe, k_repulsion=k_repulsion)
+            q_dot = self.rmrc_step(
+                q,
+                v_desired,
+                obstacles,
+                d_safe=d_safe,
+                k_repulsion=k_repulsion,
+                max_joint_velocity=max_joint_velocity,
+            )
+            if max_joint_acceleration > 0.0:
+                dqdot_limit = max_joint_acceleration * dt_step
+                q_dot = np.clip(q_dot, q_dot_prev - dqdot_limit, q_dot_prev + dqdot_limit)
             q = q + q_dot * dt_step
+            q_dot_prev = q_dot
             t_total += dt_step
             trajectory.append((t_total, q.copy()))
             prev_pos, prev_quat = pos_next, q_next

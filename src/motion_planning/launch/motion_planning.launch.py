@@ -83,6 +83,50 @@ def generate_launch_description():
         default_value="false",
         description="If true, run RMRC planning node instead of pose_goal_node (no MoveIt GUI).",
     )
+    exec_start_delay_arg = DeclareLaunchArgument(
+        "execution_start_delay",
+        default_value="1.0",
+        description=(
+            "Delay (seconds) added to all RMRC trajectory timestamps before execution "
+            "to avoid controller path/state tolerance violations at trajectory start."
+        ),
+    )
+    goal_time_tolerance_arg = DeclareLaunchArgument(
+        "goal_time_tolerance",
+        default_value="2.0",
+        description=(
+            "Extra allowed time (seconds) for RMRC joint_trajectory_controller goal convergence."
+        ),
+    )
+    max_joint_velocity_arg = DeclareLaunchArgument(
+        "max_joint_velocity",
+        default_value="0.25",
+        description=(
+            "RMRC-only: absolute per-joint velocity limit in rad/s for generated trajectories."
+        ),
+    )
+    max_joint_acceleration_arg = DeclareLaunchArgument(
+        "max_joint_acceleration",
+        default_value="0.5",
+        description=(
+            "RMRC-only: absolute per-joint acceleration limit in rad/s^2 for generated trajectories."
+        ),
+    )
+    publish_world_to_base_tf_arg = DeclareLaunchArgument(
+        "publish_world_to_base_tf",
+        default_value="false",
+        description=(
+            "If true, publish static TF world->base_link. Enable when robot launch "
+            "does not already provide a valid world frame transform."
+        ),
+    )
+    base_height_arg = DeclareLaunchArgument(
+        "base_height",
+        default_value="1.08",
+        description=(
+            "Z translation for world->base_link static TF (metres). Must match robot spawn height."
+        ),
+    )
 
     # robot_description for RMRC: built from ur_description xacro
     # ur3e_controllers.yaml stays in ur3e_controller (robot control config)
@@ -147,11 +191,33 @@ def generate_launch_description():
                 "plan_only": LaunchConfiguration("plan_only"),
                 "joint_trajectory_action": LaunchConfiguration("joint_trajectory_action"),
                 "path_resolution": 0.002,
-                "max_velocity": 0.5,
+                "max_velocity": 0.2,
                 "d_safe": 0.05,
                 "k_repulsion": 0.5,
+                "execution_start_delay": LaunchConfiguration("execution_start_delay"),
+                "goal_time_tolerance": LaunchConfiguration("goal_time_tolerance"),
+                "max_joint_velocity": LaunchConfiguration("max_joint_velocity"),
+                "max_joint_acceleration": LaunchConfiguration("max_joint_acceleration"),
             },
         ],
+    )
+
+    world_to_base_tf_node = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="world_to_base_link_motion_planning",
+        output="screen",
+        arguments=[
+            "0",
+            "0",
+            LaunchConfiguration("base_height"),
+            "0",
+            "0",
+            "0",
+            "world",
+            "base_link",
+        ],
+        condition=IfCondition(LaunchConfiguration("publish_world_to_base_tf")),
     )
 
     exclusion_zones_node = Node(
@@ -190,6 +256,13 @@ def generate_launch_description():
         move_action_arg,
         joint_action_arg,
         use_rmrc_arg,
+        exec_start_delay_arg,
+        goal_time_tolerance_arg,
+        max_joint_velocity_arg,
+        max_joint_acceleration_arg,
+        publish_world_to_base_tf_arg,
+        base_height_arg,
+        world_to_base_tf_node,
         pose_goal_node,
         rmrc_planning_node,
         exclusion_zones_node,
