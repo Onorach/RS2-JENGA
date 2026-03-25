@@ -16,7 +16,7 @@ import os
 from datetime import datetime
 
 # Edge detector node
-from jenga_perception_edges import JengaPerceptionNode
+from jenga_perception_colour import JengaPerceptionNode
 
 # ------------------------------------------------------------------------------
 # Camera configuration
@@ -91,7 +91,13 @@ def _apply_one_camera_setting(sensor, settings, idx: int):
 def main():
     bag_path = sys.argv[1] if len(sys.argv) > 1 else None
     if bag_path is not None:
-        bag_path = os.path.join(os.path.dirname(__file__), 'camera_files', 'rgbd_raw', bag_path)
+        base = os.path.dirname(__file__)
+        candidates = [
+            os.path.join(base, "camera_files", "rgbd_raw", bag_path),
+            os.path.join(base, "camera_files", "rgbd_large", bag_path),
+            bag_path,  # allow absolute or relative paths
+        ]
+        bag_path = next((p for p in candidates if os.path.exists(p)), candidates[0])
     live_mode = bag_path is None
 
     # --- Set up RealSense pipeline ---
@@ -113,7 +119,7 @@ def main():
         config.enable_stream(rs.stream.color, 1920, 1080, rs.format.bgr8, 30)
         config.enable_stream(rs.stream.depth, 1280, 720, rs.format.z16, 30)
 
-        # Preconfigure recording to a .bag file (we'll pause it immediately)
+        # Preconfigure recording to a .bag file
         base_dir = os.path.join(os.path.dirname(__file__), "camera_files", "rgbd_raw")
         os.makedirs(base_dir, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -175,6 +181,8 @@ def main():
         # Playback speed
         playback = profile.get_device().as_playback()
         playback.set_real_time(False)   # play bag as fast as possible
+
+        print("Controls: \n - R: start/stop .bag recording\n - SPACE: pause\n - Q: quit")
 
     # --- Set up perception node ---
     node = JengaPerceptionNode()

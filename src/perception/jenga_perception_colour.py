@@ -115,23 +115,23 @@ class JengaPerceptionNode:
         self.hsv_ranges: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
             # red wraps around hue=0, so it's two ranges
             "red": [
-                ((0, 80, 60), (10, 255, 255)),
-                ((170, 80, 60), (179, 255, 255)),
+                ((0, 150, 140), (10, 255, 255)),
+                ((170, 150, 140), (179, 255, 255)),
             ],
             # Yellow — slightly broader hue, lower S/V thresholds so more pixels are included
             "yellow": [
-                ((18, 60, 60), (40, 255, 255)),
+                ((18, 140, 140), (40, 255, 255)),
             ],
             "green": [
-                ((40, 60, 50), (85, 255, 255)),
+                ((40, 120, 100), (85, 255, 255)),
             ],
             # Blue — light blue, stop earlier so we don't eat into purple
             "blue": [
-                ((90, 40, 80), (120, 255, 255)),
+                ((90, 220, 130), (110, 255, 255)),
             ],
             # Purple / magenta — darker purples, allow low V but keep higher S
             "purple": [
-                ((110, 80, 10), (175, 255, 200)),
+                ((110, 110, 50), (175, 255, 200)),
             ],
         }
 
