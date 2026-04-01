@@ -3,3 +3,4 @@
 **/.vscode
 **/log
 **/__pycache__
+**/rgbd_raw

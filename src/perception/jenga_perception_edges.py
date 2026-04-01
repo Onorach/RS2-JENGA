@@ -49,8 +49,8 @@ class JengaPerceptionNode:
         # Centre crop — adjust to frame the tower
         crop_cx: float = 0.5,       # horizontal centre as fraction of image width
         crop_cy: float = 0.5,      # vertical centre as fraction of image height
-        crop_w:  float = 0.3,      # crop width as fraction of image width
-        crop_h:  float = 0.6,      # crop height as fraction of image height
+        crop_w:  float = 0.35,      # crop width as fraction of image width
+        crop_h:  float = 0.65,      # crop height as fraction of image height
         # Canny edge detection — lower values = more edges
         canny_low:  int = 30,
         canny_high: int = 90,
@@ -63,7 +63,7 @@ class JengaPerceptionNode:
         max_vert_angle_deg:  float = 4.0,   # lines within this of vertical   → blue
         # Persistence display (in crop coordinates)
         persistence_frames: int = 50,
-        persistence_min_hits: int = 20,
+        persistence_min_hits: int = 5,
         persistence_source: str = "hough",  # "canny" | "hough" | "hsv"
         # HSV-mask persistence (only used when persistence_source="hsv")
         hsv_s_min: int = 40,
