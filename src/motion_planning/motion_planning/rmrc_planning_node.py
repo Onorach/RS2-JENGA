@@ -1,5 +1,3 @@
-# Copyright 2025 RS2-JENGA
-# BSD-3-Clause
 
 """
 RMRC planning node: subscribes to /goal_pose, plans Cartesian RMRC collision-free
@@ -8,12 +6,15 @@ trajectories, and executes via joint_trajectory_controller. Works without MoveIt
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
 import math
+from copy import deepcopy
 from pathlib import Path
 
+import numpy as np
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -26,12 +27,13 @@ from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Bool
+from std_msgs.msg import Float64MultiArray
+from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
 from tf2_ros import Buffer, TransformListener
 from tf2_ros import TransformException
-import tf2_geometry_msgs  # noqa: F401  (registers PoseStamped transform support)
-from tf2_geometry_msgs import do_transform_pose
+import tf2_geometry_msgs
 
 from ur3e_controller.move_client import (
     UR3E_JOINT_NAMES,
@@ -47,17 +49,42 @@ from motion_planning.moveit_planning import DEFAULT_PLANNING_FRAME, DEFAULT_EE_L
 DEFAULT_JOINT_ACTION = "/joint_trajectory_controller/follow_joint_trajectory"
 DEFAULT_PATH_RESOLUTION_M = 0.002
 DEFAULT_MAX_VELOCITY = 0.2
-DEFAULT_D_SAFE = 0.05
-DEFAULT_K_REPULSION = 0.5
+DEFAULT_D_SAFE = 0.065
+DEFAULT_K_REPULSION = 0.55
 DEFAULT_EXEC_START_DELAY = 1.0
 DEFAULT_GOAL_TIME_TOLERANCE = 2.0
 DEFAULT_MAX_JOINT_VELOCITY = 0.25
 DEFAULT_MAX_JOINT_ACCELERATION = 0.5
+DEFAULT_REQUIRE_GOAL_CONVERGENCE = True
+DEFAULT_FINAL_POS_TOLERANCE_M = 0.02
+DEFAULT_FINAL_ORI_TOLERANCE_RAD = 0.35
+DEFAULT_EXECUTION_MODE = "trajectory"
+DEFAULT_KINEMATICS_BACKEND = "hybrid"
+DEFAULT_VELOCITY_COMMAND_TOPIC = "/joint_group_velocity_controller/commands"
+DEFAULT_IK_SEED_GAIN = 0.0
+DEFAULT_BODY_LINK_WEIGHT = 0.55
+DEFAULT_MAX_CART_REPULSION_LINEAR = 0.75
+DEFAULT_USE_MULTI_POINT_REPULSION = True
+DEFAULT_POSTURE_BIAS_GAIN = 0.0
+DEFAULT_POSTURE_SHOULDER_LIFT_RAD = -1.25
+DEFAULT_POSTURE_ELBOW_RAD = 0.85
+DEFAULT_IK_SCORE_MODE = "composite"
+DEFAULT_IK_SCORE_W_ELBOW = 1.0
+DEFAULT_IK_SCORE_W_CLEARANCE = 0.08
+DEFAULT_IK_SCORE_W_START = 0.35
+DEFAULT_JOINT_SECONDARY_WEIGHT = 0.0
+DEFAULT_JOINT_SECONDARY_GAIN = 1.5
+DEFAULT_JOINT_SECONDARY_W_EPSILON = 0.025
+DEFAULT_JOINT_SECONDARY_PREF_CLIP = 0.45
+DEFAULT_REPULSION_SMOOTH_ALPHA = 0.45
+DEFAULT_REPULSION_DIST_SCALE = True
+DEFAULT_REPULSION_OUT_GRAD_CAP = 120.0
+DEFAULT_ORIENTATION_ERROR_GAIN = 1.15
+DEFAULT_PATH_FB_SCALE_CAP = 2.5
 
 
 def _pose_stamped_to_pose_tuple(msg: PoseStamped) -> tuple:
     """Convert PoseStamped to (position [x,y,z], quaternion [x,y,z,w]) for planner."""
-    import numpy as np
     p = msg.pose.position
     q = msg.pose.orientation
     pos = np.array([p.x, p.y, p.z], dtype=np.float64)
@@ -69,6 +96,24 @@ def _unwrap_to_nearest(angle: float, reference: float) -> float:
     """Return angle equivalent (mod 2*pi) nearest to reference."""
     two_pi = 2.0 * math.pi
     return angle + two_pi * round((reference - angle) / two_pi)
+
+
+def _quat_angle_error_rad(q_target, q_actual) -> float:
+    """Return shortest angular distance between two quaternions in radians."""
+    import numpy as np
+
+    qt = np.array(q_target, dtype=np.float64)
+    qa = np.array(q_actual, dtype=np.float64)
+    nt = np.linalg.norm(qt)
+    na = np.linalg.norm(qa)
+    if nt < 1e-12 or na < 1e-12:
+        return float("inf")
+    qt = qt / nt
+    qa = qa / na
+    # q and -q represent the same orientation.
+    dot = abs(float(np.dot(qt, qa)))
+    dot = max(-1.0, min(1.0, dot))
+    return 2.0 * math.acos(dot)
 
 
 class RMRCPlanningNode(Node):
@@ -105,6 +150,15 @@ class RMRCPlanningNode(Node):
         self._max_joint_acceleration = self.declare_parameter(
             "max_joint_acceleration", DEFAULT_MAX_JOINT_ACCELERATION
         ).value
+        self._require_goal_convergence = self.declare_parameter(
+            "require_goal_convergence", DEFAULT_REQUIRE_GOAL_CONVERGENCE
+        ).value
+        self._final_pos_tolerance_m = self.declare_parameter(
+            "final_pos_tolerance_m", DEFAULT_FINAL_POS_TOLERANCE_M
+        ).value
+        self._final_ori_tolerance_rad = self.declare_parameter(
+            "final_ori_tolerance_rad", DEFAULT_FINAL_ORI_TOLERANCE_RAD
+        ).value
         self._plan_only = self.declare_parameter("plan_only", False).value
         self._exclusion_zones_file = self.declare_parameter(
             "exclusion_zones_file", ""
@@ -115,6 +169,97 @@ class RMRCPlanningNode(Node):
         self._planning_frame = self.declare_parameter(
             "planning_frame", DEFAULT_PLANNING_FRAME
         ).value
+        self._execution_mode = str(
+            self.declare_parameter("execution_mode", DEFAULT_EXECUTION_MODE).value
+        ).lower()
+        self._kinematics_backend = str(
+            self.declare_parameter("kinematics_backend", DEFAULT_KINEMATICS_BACKEND).value
+        ).lower()
+        self._velocity_command_topic = self.declare_parameter(
+            "velocity_command_topic", DEFAULT_VELOCITY_COMMAND_TOPIC
+        ).value
+        self._ik_seed_gain = float(
+            self.declare_parameter("ik_seed_gain", DEFAULT_IK_SEED_GAIN).value
+        )
+        self._body_link_weight = float(
+            self.declare_parameter("body_link_weight", DEFAULT_BODY_LINK_WEIGHT).value
+        )
+        self._max_cart_repulsion_linear = float(
+            self.declare_parameter(
+                "max_cart_repulsion_linear", DEFAULT_MAX_CART_REPULSION_LINEAR
+            ).value
+        )
+        self._use_multi_point_repulsion = bool(
+            self.declare_parameter(
+                "use_multi_point_repulsion", DEFAULT_USE_MULTI_POINT_REPULSION
+            ).value
+        )
+        self._posture_bias_gain = float(
+            self.declare_parameter("posture_bias_gain", DEFAULT_POSTURE_BIAS_GAIN).value
+        )
+        self._posture_apply_shoulder_lift = bool(
+            self.declare_parameter("posture_apply_shoulder_lift", False).value
+        )
+        self._posture_shoulder_lift_rad = float(
+            self.declare_parameter(
+                "posture_shoulder_lift_target_rad", DEFAULT_POSTURE_SHOULDER_LIFT_RAD
+            ).value
+        )
+        self._posture_apply_elbow = bool(
+            self.declare_parameter("posture_apply_elbow", False).value
+        )
+        self._posture_elbow_rad = float(
+            self.declare_parameter("posture_elbow_target_rad", DEFAULT_POSTURE_ELBOW_RAD).value
+        )
+        self._ik_score_mode = str(
+            self.declare_parameter("ik_score_mode", DEFAULT_IK_SCORE_MODE).value
+        ).lower()
+        self._ik_score_w_elbow = float(
+            self.declare_parameter("ik_score_w_elbow", DEFAULT_IK_SCORE_W_ELBOW).value
+        )
+        self._ik_score_w_clearance = float(
+            self.declare_parameter("ik_score_w_clearance", DEFAULT_IK_SCORE_W_CLEARANCE).value
+        )
+        self._ik_score_w_start = float(
+            self.declare_parameter("ik_score_w_start", DEFAULT_IK_SCORE_W_START).value
+        )
+        self._joint_secondary_weight = float(
+            self.declare_parameter("joint_secondary_weight", DEFAULT_JOINT_SECONDARY_WEIGHT).value
+        )
+        self._joint_secondary_gain = float(
+            self.declare_parameter("joint_secondary_gain", DEFAULT_JOINT_SECONDARY_GAIN).value
+        )
+        self._joint_secondary_w_epsilon = float(
+            self.declare_parameter(
+                "joint_secondary_w_epsilon", DEFAULT_JOINT_SECONDARY_W_EPSILON
+            ).value
+        )
+        self._joint_secondary_pref_clip = float(
+            self.declare_parameter(
+                "joint_secondary_pref_clip", DEFAULT_JOINT_SECONDARY_PREF_CLIP
+            ).value
+        )
+        self._repulsion_smooth_alpha = float(
+            self.declare_parameter("repulsion_smooth_alpha", DEFAULT_REPULSION_SMOOTH_ALPHA).value
+        )
+        self._repulsion_dist_scale = bool(
+            self.declare_parameter("repulsion_dist_scale", DEFAULT_REPULSION_DIST_SCALE).value
+        )
+        self._repulsion_out_grad_cap = float(
+            self.declare_parameter("repulsion_out_grad_cap", DEFAULT_REPULSION_OUT_GRAD_CAP).value
+        )
+        self._orientation_error_gain = float(
+            self.declare_parameter("orientation_error_gain", DEFAULT_ORIENTATION_ERROR_GAIN).value
+        )
+        self._path_fb_scale_cap = self.declare_parameter(
+            "path_fb_scale_cap", DEFAULT_PATH_FB_SCALE_CAP
+        ).value
+        self._status_topic = str(
+            self.declare_parameter("status_topic", "rmrc_status").value
+        )
+        self._status_publish_rate_hz = float(
+            self.declare_parameter("status_publish_rate_hz", 0.0).value
+        )
 
         self._cbg = ReentrantCallbackGroup()
         self._tf_buffer = Buffer()
@@ -125,6 +270,16 @@ class RMRCPlanningNode(Node):
             FollowJointTrajectory,
             self._joint_action,
             callback_group=self._cbg,
+        )
+        self._velocity_pub = self.create_publisher(
+            Float64MultiArray,
+            str(self._velocity_command_topic),
+            10,
+        )
+        self._status_pub = self.create_publisher(
+            String,
+            self._status_topic,
+            10,
         )
 
         self._joint_states_lock = threading.Lock()
@@ -147,8 +302,14 @@ class RMRCPlanningNode(Node):
 
         self._busy = False
         self._busy_lock = threading.Lock()
+        self._pending_goal_lock = threading.Lock()
+        self._pending_goal: PoseStamped | None = None
         self._exec_goal_handle = None
         self._handle_lock = threading.Lock()
+
+        self._status_lock = threading.Lock()
+        self._status_phase: str = "idle"
+        self._executions_completed: int = 0
 
         self._estop_active = False
         self._estop_lock = threading.Lock()
@@ -162,8 +323,17 @@ class RMRCPlanningNode(Node):
         self._planner: RMRCPlanner | None = None
         self._obstacles: list[Obstacle] = []
 
+        if self._status_publish_rate_hz > 0.0:
+            period = 1.0 / max(self._status_publish_rate_hz, 1e-6)
+            self.create_timer(period, self._emit_status)
+
+        self._emit_status()
         self.get_logger().info(
             "RMRCPlanningNode started. Publish geometry_msgs/PoseStamped to '/goal_pose'."
+        )
+        self.get_logger().info(
+            f"RMRC status JSON on '{self._status_topic}' "
+            f"(executions_completed increments after each goal cycle finishes)."
         )
 
     def _on_joint_states(self, msg: JointState) -> None:
@@ -189,6 +359,9 @@ class RMRCPlanningNode(Node):
         with self._estop_lock:
             was = self._estop_active
             self._estop_active = msg.data
+        if msg.data:
+            with self._pending_goal_lock:
+                self._pending_goal = None
         if msg.data and not was:
             self._cancel_execution()
 
@@ -196,6 +369,9 @@ class RMRCPlanningNode(Node):
         with self._estop_lock:
             was = self._estop_active
             self._estop_active = msg.data
+        if msg.data:
+            with self._pending_goal_lock:
+                self._pending_goal = None
         if msg.data and not was:
             self._cancel_execution()
 
@@ -228,10 +404,13 @@ class RMRCPlanningNode(Node):
                 base_link=str(self._planning_frame),
                 ee_link=DEFAULT_EE_LINK,
                 joint_names=list(UR3E_JOINT_NAMES),
+                kinematics_backend=str(self._kinematics_backend),
             )
-            self.get_logger().info("RMRC planner initialized from robot_description.")
+            self.get_logger().info(
+                f"RMRC planner initialized from robot_description (backend={self._kinematics_backend})."
+            )
         except ImportError as e:
-            self.get_logger().error(f"Failed to import ikpy: {e}")
+            self.get_logger().error(f"Failed to initialize kinematics backend: {e}")
             return None
         except Exception as e:
             self.get_logger().error(f"Failed to create RMRC planner: {e}")
@@ -259,6 +438,47 @@ class RMRCPlanningNode(Node):
             self.get_logger().warn(f"Could not load exclusion zones: {e}")
         return self._obstacles
 
+    def _build_posture_joint_targets(self) -> np.ndarray | None:
+        """
+        Optional NaN-padded 6-vector: merged with analytical IK seed in RMRC null space.
+        Use shoulder/elbow hints to discourage inverted-V postures toward the cabinet.
+        """
+        if self._posture_apply_shoulder_lift or self._posture_apply_elbow:
+            pt = np.full(6, np.nan, dtype=np.float64)
+            if self._posture_apply_shoulder_lift:
+                pt[1] = float(self._posture_shoulder_lift_rad)
+            if self._posture_apply_elbow:
+                pt[2] = float(self._posture_elbow_rad)
+            return pt
+        return None
+
+    def _set_status_phase(self, phase: str) -> None:
+        with self._status_lock:
+            self._status_phase = phase
+        self._emit_status()
+
+    def _emit_status(self) -> None:
+        with self._status_lock:
+            phase = self._status_phase
+            completed = self._executions_completed
+        with self._busy_lock:
+            busy = self._busy
+        with self._pending_goal_lock:
+            has_buffered = self._pending_goal is not None
+        with self._estop_lock:
+            estop = self._estop_active
+        payload = {
+            "state": phase,
+            "busy": busy,
+            "has_buffered_goal": has_buffered,
+            "executions_completed": completed,
+            "estop_active": estop,
+            "execution_mode": self._execution_mode,
+        }
+        out = String()
+        out.data = json.dumps(payload, separators=(",", ":"))
+        self._status_pub.publish(out)
+
     def _on_goal(self, msg: PoseStamped) -> None:
         with self._estop_lock:
             if self._estop_active:
@@ -266,89 +486,15 @@ class RMRCPlanningNode(Node):
                 return
         with self._busy_lock:
             if self._busy:
-                self.get_logger().warn("Busy — ignoring goal.")
+                with self._pending_goal_lock:
+                    self._pending_goal = deepcopy(msg)
+                self.get_logger().warn(
+                    "Busy — buffering latest goal (replacing any previously buffered goal)."
+                )
                 return
             self._busy = True
 
-        source_frame = msg.header.frame_id or str(self._planning_frame)
-        if source_frame != str(self._planning_frame):
-            try:
-                in_x = float(msg.pose.position.x)
-                in_y = float(msg.pose.position.y)
-                in_z = float(msg.pose.position.z)
-                tf = self._tf_buffer.lookup_transform(
-                    str(self._planning_frame),
-                    str(source_frame),
-                    rclpy.time.Time(),
-                    timeout=RclDuration(seconds=0.5),
-                )
-                tx = float(tf.transform.translation.x)
-                ty = float(tf.transform.translation.y)
-                tz = float(tf.transform.translation.z)
-                rx = float(tf.transform.rotation.x)
-                ry = float(tf.transform.rotation.y)
-                rz = float(tf.transform.rotation.z)
-                rw = float(tf.transform.rotation.w)
-                msg.pose = do_transform_pose(msg.pose, tf)
-                msg.header.frame_id = str(self._planning_frame)
-                self.get_logger().info(
-                    "Goal transformed: "
-                    f"{source_frame} -> {self._planning_frame}, "
-                    f"xyz_in=({in_x:.3f}, {in_y:.3f}, {in_z:.3f}), "
-                    f"xyz_out=({msg.pose.position.x:.3f}, {msg.pose.position.y:.3f}, {msg.pose.position.z:.3f}), "
-                    f"tf_t=({tx:.3f}, {ty:.3f}, {tz:.3f}), "
-                    f"tf_q=({rx:.3f}, {ry:.3f}, {rz:.3f}, {rw:.3f})"
-                )
-                if (
-                    source_frame == "world"
-                    and str(self._planning_frame) == "base_link"
-                    and abs(tx) < 1e-4
-                    and abs(ty) < 1e-4
-                    and abs(tz) < 1e-4
-                ):
-                    reverse_dbg = ""
-                    try:
-                        tf_rev = self._tf_buffer.lookup_transform(
-                            str(source_frame),
-                            str(self._planning_frame),
-                            rclpy.time.Time(),
-                            timeout=RclDuration(seconds=0.2),
-                        )
-                        reverse_dbg = (
-                            f" reverse_tf_t=({float(tf_rev.transform.translation.x):.3f}, "
-                            f"{float(tf_rev.transform.translation.y):.3f}, "
-                            f"{float(tf_rev.transform.translation.z):.3f})"
-                        )
-                    except Exception:
-                        pass
-                    frames_dbg = ""
-                    try:
-                        frames_dbg = self._tf_buffer.all_frames_as_yaml()
-                    except Exception:
-                        pass
-                    self.get_logger().error(
-                        "world->base_link TF is near identity. "
-                        "Expected non-zero offset (for target=base_link, source=world this is typically around -1.08 m in z). "
-                        "Refusing to execute goal until TF is fixed."
-                        + reverse_dbg
-                    )
-                    if frames_dbg:
-                        self.get_logger().error(f"TF frames snapshot:\n{frames_dbg}")
-                    self._set_free()
-                    return
-            except (TransformException, Exception) as e:
-                self.get_logger().error(
-                    f"Could not transform goal from '{source_frame}' "
-                    f"to '{self._planning_frame}': {e}"
-                )
-                self._set_free()
-                return
-
-        self.get_logger().info(
-            f"Goal pose used for planning ({self._planning_frame}): "
-            f"xyz=({msg.pose.position.x:.3f}, "
-            f"{msg.pose.position.y:.3f}, {msg.pose.position.z:.3f})"
-        )
+        self._set_status_phase("planning")
 
         planner = self._ensure_planner()
         if planner is None:
@@ -365,9 +511,47 @@ class RMRCPlanningNode(Node):
 
         import numpy as np
         obstacles = self._load_obstacles()
-        pose_target = _pose_stamped_to_pose_tuple(msg)
+        source_frame = str(msg.header.frame_id or "<empty>")
+        planning_frame = str(self._planning_frame)
+        goal_msg = deepcopy(msg)
+        if source_frame != "<empty>" and source_frame != planning_frame:
+            try:
+                goal_msg = self._tf_buffer.transform(
+                    goal_msg,
+                    planning_frame,
+                    timeout=RclDuration(seconds=0.5),
+                )
+            except TransformException as e:
+                self.get_logger().error(
+                    f"Cannot transform goal from '{source_frame}' to '{planning_frame}': {e}"
+                )
+                self._set_free()
+                return
+        pose_target = _pose_stamped_to_pose_tuple(goal_msg)
+        target_pos, target_quat = pose_target
+        self.get_logger().info(
+            "RMRC goal received: "
+            f"frame='{source_frame}' planning_frame='{planning_frame}' "
+            f"goal_in_{planning_frame} "
+            f"xyz=({float(target_pos[0]):.3f}, {float(target_pos[1]):.3f}, {float(target_pos[2]):.3f}) "
+            f"quat=({float(target_quat[0]):.3f}, {float(target_quat[1]):.3f}, "
+            f"{float(target_quat[2]):.3f}, {float(target_quat[3]):.3f})"
+        )
+        self.get_logger().info(
+            "RMRC settings: "
+            f"ik_score_mode={self._ik_score_mode} "
+            f"joint_secondary_w={float(self._joint_secondary_weight):.3f} "
+            f"rep_smooth_alpha={float(self._repulsion_smooth_alpha):.3f} "
+            f"ori_gain={float(self._orientation_error_gain):.3f}"
+        )
 
         try:
+            try:
+                pfc = float(self._path_fb_scale_cap)
+            except (TypeError, ValueError):
+                pfc = 0.0
+            path_cap = pfc if pfc > 0.0 else None
+            rep_cap = float(self._repulsion_out_grad_cap)
             traj_points = planner.plan_rmrc_trajectory(
                 np.array(q_current, dtype=np.float64),
                 pose_target,
@@ -379,6 +563,27 @@ class RMRCPlanningNode(Node):
                 k_repulsion=self._k_repulsion,
                 max_joint_velocity=float(self._max_joint_velocity),
                 max_joint_acceleration=float(self._max_joint_acceleration),
+                goal_pos_tolerance_m=float(self._final_pos_tolerance_m),
+                goal_ori_tolerance_rad=float(self._final_ori_tolerance_rad),
+                ik_seed_gain=float(self._ik_seed_gain),
+                posture_joint_targets=self._build_posture_joint_targets(),
+                posture_bias_gain=float(self._posture_bias_gain),
+                body_link_weight=float(self._body_link_weight),
+                max_cart_repulsion_linear=float(self._max_cart_repulsion_linear),
+                use_multi_point_repulsion=bool(self._use_multi_point_repulsion),
+                ik_score_mode=str(self._ik_score_mode),
+                ik_score_w_elbow=float(self._ik_score_w_elbow),
+                ik_score_w_clearance=float(self._ik_score_w_clearance),
+                ik_score_w_start=float(self._ik_score_w_start),
+                joint_secondary_weight=float(self._joint_secondary_weight),
+                joint_secondary_gain=float(self._joint_secondary_gain),
+                joint_secondary_w_epsilon=float(self._joint_secondary_w_epsilon),
+                joint_secondary_pref_clip=float(self._joint_secondary_pref_clip),
+                repulsion_smooth_alpha=float(self._repulsion_smooth_alpha),
+                repulsion_dist_scale=bool(self._repulsion_dist_scale),
+                repulsion_out_grad_cap=rep_cap if rep_cap > 0.0 else None,
+                orientation_error_gain=float(self._orientation_error_gain),
+                path_fb_scale_cap=path_cap,
             )
         except Exception as e:
             self.get_logger().error(f"RMRC planning failed: {e}")
@@ -389,6 +594,32 @@ class RMRCPlanningNode(Node):
             self.get_logger().error("RMRC planner returned empty trajectory.")
             self._set_free()
             return
+        try:
+            q_final = np.array(traj_points[-1][1], dtype=np.float64)
+            ee_final_pos, ee_final_quat = planner.compute_ee_pose(q_final.tolist())
+            pos_err = float(np.linalg.norm(np.array(target_pos, dtype=np.float64) - ee_final_pos))
+            ori_err = float(_quat_angle_error_rad(target_quat, ee_final_quat))
+            self.get_logger().info(
+                "RMRC planned final EE pose (planner frame): "
+                f"xyz=({float(ee_final_pos[0]):.3f}, {float(ee_final_pos[1]):.3f}, {float(ee_final_pos[2]):.3f}) "
+                f"quat=({float(ee_final_quat[0]):.3f}, {float(ee_final_quat[1]):.3f}, "
+                f"{float(ee_final_quat[2]):.3f}, {float(ee_final_quat[3]):.3f}), "
+                f"pos_err={pos_err:.3f} m, ori_err={ori_err:.3f} rad"
+            )
+            if bool(self._require_goal_convergence):
+                pos_tol = float(self._final_pos_tolerance_m)
+                ori_tol = float(self._final_ori_tolerance_rad)
+                if pos_err > pos_tol or ori_err > ori_tol:
+                    self.get_logger().error(
+                        "RMRC convergence check failed: "
+                        f"pos_err={pos_err:.3f} m (tol {pos_tol:.3f}), "
+                        f"ori_err={ori_err:.3f} rad (tol {ori_tol:.3f}). "
+                        "Not executing trajectory."
+                    )
+                    self._set_free()
+                    return
+        except Exception as e:
+            self.get_logger().warn(f"Could not compute planned final FK pose for diagnostics: {e}")
 
         # Keep joint trajectory continuous in controller space:
         # unwrap each waypoint to the nearest equivalent angle and force
@@ -412,6 +643,17 @@ class RMRCPlanningNode(Node):
             joint_traj, float(self._exec_start_delay)
         )
 
+        dbg = getattr(planner, "_last_rmrc_plan_debug", None)
+        if isinstance(dbg, dict) and dbg:
+            self.get_logger().info(
+                "RMRC plan diagnostics: "
+                f"ik_mode={dbg.get('ik_score_mode')} "
+                f"ik_candidates={dbg.get('ik_candidates_count')} "
+                f"ik_elbow_sel_rad={dbg.get('ik_selected_elbow_rad')} "
+                f"traj_first_elbow_rad={dbg.get('traj_first_elbow_rad')} "
+                f"traj_last_elbow_rad={dbg.get('traj_last_elbow_rad')} "
+                f"path_fb_scale={dbg.get('path_fb_scale')}"
+            )
         self.get_logger().info(
             f"RMRC plan succeeded: {len(traj_points)} waypoints."
         )
@@ -429,18 +671,21 @@ class RMRCPlanningNode(Node):
                 self._set_free()
                 return
 
+        if self._execution_mode == "velocity":
+            self._set_status_phase("executing")
+            self._execute_velocity_waypoints(waypoints)
+            return
+
         if not self._joint_ac.wait_for_server(timeout_sec=5.0):
             self.get_logger().error(
-                f"joint_trajectory_controller not available."
+                "joint_trajectory_controller not available."
             )
             self._set_free()
             return
 
+        self._set_status_phase("executing")
         goal_msg = FollowJointTrajectory.Goal()
         goal_msg.trajectory = joint_traj
-        # Do not override tolerances here by default.
-        # Let joint_trajectory_controller use its configured tolerances from YAML
-        # (trajectory: 0.2 rad, goal: 0.1 rad in this project).
         goal_msg.path_tolerance = []
         goal_msg.goal_tolerance = []
         goal_msg.goal_time_tolerance = Duration(
@@ -451,6 +696,47 @@ class RMRCPlanningNode(Node):
         )
         future = self._joint_ac.send_goal_async(goal_msg)
         future.add_done_callback(self._on_exec_accepted)
+
+    def _execute_velocity_waypoints(self, waypoints: list[tuple[float, list[float]]]) -> None:
+        if len(waypoints) < 2:
+            self.get_logger().warn("Not enough RMRC waypoints for velocity execution.")
+            self._set_free()
+            return
+        self.get_logger().info(
+            f"Executing RMRC as velocity stream on '{self._velocity_command_topic}'."
+        )
+        last_t, last_q = waypoints[0]
+        try:
+            for t, q in waypoints[1:]:
+                with self._estop_lock:
+                    if self._estop_active:
+                        self.get_logger().warn("E-stop active — stopping velocity stream.")
+                        self._publish_zero_velocity()
+                        self._set_free()
+                        return
+                dt = max(1e-3, float(t - last_t))
+                dq = np.array(q, dtype=np.float64) - np.array(last_q, dtype=np.float64)
+                vel = np.clip(
+                    dq / dt,
+                    -float(self._max_joint_velocity),
+                    float(self._max_joint_velocity),
+                )
+                msg = Float64MultiArray()
+                msg.data = [float(v) for v in vel]
+                self._velocity_pub.publish(msg)
+                time.sleep(dt)
+                last_t, last_q = t, q
+            self._publish_zero_velocity()
+            self.get_logger().info("Velocity execution completed.")
+        except Exception as e:
+            self.get_logger().error(f"Velocity execution failed: {e}")
+            self._publish_zero_velocity()
+        self._set_free()
+
+    def _publish_zero_velocity(self) -> None:
+        stop_msg = Float64MultiArray()
+        stop_msg.data = [0.0] * len(UR3E_JOINT_NAMES)
+        self._velocity_pub.publish(stop_msg)
 
     def _on_exec_accepted(self, future) -> None:
         try:
@@ -487,8 +773,20 @@ class RMRCPlanningNode(Node):
         self._set_free()
 
     def _set_free(self) -> None:
+        next_goal = None
         with self._busy_lock:
             self._busy = False
+        with self._pending_goal_lock:
+            if self._pending_goal is not None:
+                next_goal = self._pending_goal
+                self._pending_goal = None
+        with self._status_lock:
+            self._executions_completed += 1
+            self._status_phase = "idle"
+        self._emit_status()
+        if next_goal is not None:
+            self.get_logger().info("Processing buffered goal.")
+            self._on_goal(next_goal)
 
     @staticmethod
     def _offset_trajectory_times(

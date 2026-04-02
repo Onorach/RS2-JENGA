@@ -15,7 +15,7 @@ ROS2 package for motion planning with a UR3e: pose goals, RMRC (Resolved Motion 
 - `ur3e_controller` (for trajectory execution)
 - `ur_moveit_config` (when using MoveIt pose goal node)
 - `ur_description` (for RMRC)
-- Python: `numpy`, `ikpy`, `yaml`
+- Python/ROS deps: `numpy`, `python3-pykdl`, `kdl_parser_py`, `urdf_parser_py`, `yaml`
 
 ## Build
 
@@ -30,7 +30,7 @@ source install/setup.bash
 | Node                   | Description                                                              |
 |------------------------|--------------------------------------------------------------------------|
 | `pose_goal_node`       | MoveIt2 pose goals; plans and executes via `/move_action`               |
-| `rmrc_planning_node`   | RMRC Cartesian planner; no MoveIt; uses Jacobian + repulsion           |
+| `rmrc_planning_node`   | RMRC Cartesian planner; no MoveIt; uses PyKDL Jacobian + repulsion     |
 | `exclusion_zones_node` | Loads exclusion zones from YAML into the MoveIt planning scene         |
 | `test_rmrc_pose`       | Test script that publishes sample goal poses                            |
 | `robot_gui`            | GUI for robot interaction                                               |
@@ -49,13 +49,17 @@ ros2 launch motion_planning motion_planning.launch.py
 
 | Parameter                 | Default                            | Description                                          |
 |---------------------------|------------------------------------|------------------------------------------------------|
-| `use_rmrc`                | `false`                            | Use RMRC instead of MoveIt pose_goal_node           |
+| `use_rmrc`                | `true`                             | Use RMRC instead of MoveIt pose_goal_node            |
 | `exclusion_zones_file`    | `config/ur3e_workspace.yaml`       | Path to YAML defining exclusion zones               |
 | `plan_only`               | `false`                            | Plan only, do not execute                            |
 | `execution_start_delay`   | `1.0`                              | RMRC-only: delay added before first trajectory point to avoid startup tolerance trips |
 | `goal_time_tolerance`     | `2.0`                              | RMRC-only: extra time allowed for controller to settle at goal |
 | `max_joint_velocity`      | `0.25`                             | RMRC-only: clamp generated joint velocities (rad/s) |
 | `max_joint_acceleration`  | `0.5`                              | RMRC-only: clamp generated joint acceleration (rad/s²) |
+| `execution_mode`          | `trajectory`                       | RMRC execution mode: `trajectory` or `velocity`      |
+| `kinematics_backend`      | `hybrid`                           | `pykdl` or `hybrid` (PyKDL + optional analytical IK helper) |
+| `velocity_command_topic`  | `/joint_group_velocity_controller/commands` | Topic used when `execution_mode:=velocity` |
+| `ik_seed_gain`            | `0.0`                              | Null-space bias gain toward analytical IK candidate   |
 | `publish_world_to_base_tf`| `false`                            | Publish static `world -> base_link` TF from this launch (keep false when robot launch already provides it) |
 | `base_height`             | `1.08`                             | Z offset (m) used for static `world -> base_link` TF |
 | `add_floor_plane`         | `false`                            | Add floor-plane at startup (use GUI or `:=true` + `world` frame if needed) |
@@ -69,6 +73,9 @@ ros2 launch motion_planning motion_planning.launch.py exclusion_zones_file:=/pat
 
 # RMRC planning (no MoveIt GUI)
 ros2 launch motion_planning motion_planning.launch.py use_rmrc:=true
+
+# RMRC local velocity servo mode (for fine manipulation/contact tasks)
+ros2 launch motion_planning motion_planning.launch.py use_rmrc:=true execution_mode:=velocity
 ```
 
 ### Standalone exclusion zones loader
@@ -133,7 +140,7 @@ from motion_planning.exclusion_zones_loader import apply_exclusion_zones_to_scen
 | Aspect        | MoveIt (`use_rmrc:=false`)      | RMRC (`use_rmrc:=true`)        |
 |---------------|----------------------------------|---------------------------------|
 | GUI           | RViz + MoveIt                   | Optional; can run headless      |
-| Planning      | OMPL                            | Jacobian + potential field      |
+| Planning      | OMPL                            | PyKDL Jacobian + potential field |
 | Dependencies  | MoveIt2, move_group              | `ur_description` only           |
 | Use case      | Full planning pipeline          | Fast Cartesian, no MoveIt stack  |
 

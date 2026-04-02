@@ -27,7 +27,7 @@ def launch_setup(context, *args, **kwargs):
     runtime_config_package = LaunchConfiguration("runtime_config_package")
     controllers_file = LaunchConfiguration("controllers_file")
     initial_positions_file = LaunchConfiguration("initial_positions_file")
-    description_package = LaunchConfiguration("description_package")
+    robot_description_package = LaunchConfiguration("robot_description_package")
     description_file = LaunchConfiguration("description_file")
     prefix = LaunchConfiguration("prefix")
     start_joint_controller = LaunchConfiguration("start_joint_controller")
@@ -35,6 +35,7 @@ def launch_setup(context, *args, **kwargs):
     launch_rviz = LaunchConfiguration("launch_rviz")
     gazebo_gui = LaunchConfiguration("gazebo_gui")
     base_height = LaunchConfiguration("base_height")
+    spawn_z = LaunchConfiguration("spawn_z")
 
     world = LaunchConfiguration("world")
 
@@ -42,12 +43,13 @@ def launch_setup(context, *args, **kwargs):
         [FindPackageShare(runtime_config_package), "config", controllers_file]
     )
 
+    # Stock UR initial joint positions live in ur_description
     initial_positions_file_abs = PathJoinSubstitution(
-        [FindPackageShare(description_package), "config", initial_positions_file]
+        [FindPackageShare("ur_description"), "config", initial_positions_file]
     )
 
     rviz_config_file = PathJoinSubstitution(
-        [FindPackageShare(description_package), "rviz", "view_robot.rviz"]
+        [FindPackageShare("ur_description"), "rviz", "view_robot.rviz"]
     )
 
     robot_description_content = Command(
@@ -55,7 +57,7 @@ def launch_setup(context, *args, **kwargs):
             PathJoinSubstitution([FindExecutable(name="xacro")]),
             " ",
             PathJoinSubstitution(
-                [FindPackageShare(description_package), "urdf", description_file]
+                [FindPackageShare(robot_description_package), "urdf", description_file]
             ),
             " ",
             "safety_limits:=",
@@ -83,6 +85,9 @@ def launch_setup(context, *args, **kwargs):
             " ",
             "initial_positions_file:=",
             initial_positions_file_abs,
+            " ",
+            "base_height:=",
+            base_height,
         ]
     )
     robot_description = {"robot_description": robot_description_content}
@@ -144,31 +149,24 @@ def launch_setup(context, *args, **kwargs):
         }.items(),
     )
 
-    # Spawn robot — placed at the top of the cabinet (base_height metres above world origin)
+    # Spawn pose in Gazebo world. Vertical offset from world to base_link is in the workspace xacro (base_height).
     gazebo_spawn_robot = Node(
         package="gazebo_ros",
         executable="spawn_entity.py",
         name="spawn_ur",
         arguments=[
-            "-entity", "ur",
-            "-topic", "robot_description",
-            "-z", base_height.perform(context),
+            "-entity",
+            "ur",
+            "-topic",
+            "robot_description",
+            "-z",
+            spawn_z.perform(context),
         ],
         output="screen",
     )
 
     # Jenga blocks are static in the default world file (ur3e_workspace.world) for stability.
     # For dynamic blocks, use world:=.../ur3e_workspace_dynamic.world and run spawn_jenga_tower separately.
-
-    # Publish world -> base_link so collision objects in world frame (e.g. floor plane) display correctly
-    base_height_val = base_height.perform(context)
-    world_to_base = Node(
-        package="tf2_ros",
-        executable="static_transform_publisher",
-        name="world_to_base_link",
-        arguments=["0", "0", base_height_val, "0", "0", "0", "world", "base_link"],
-        parameters=[{"use_sim_time": True}],
-    )
 
     nodes_to_start = [
         robot_state_publisher_node,
@@ -178,7 +176,6 @@ def launch_setup(context, *args, **kwargs):
         initial_joint_controller_spawner_started,
         gazebo,
         gazebo_spawn_robot,
-        world_to_base,
     ]
 
     return nodes_to_start
@@ -247,21 +244,21 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "initial_positions_file",
             default_value="initial_positions.yaml",
-            description="YAML file (relative to description_package/config) with the robot's initial joint positions.",
+            description="YAML file under ur_description/config/ with the robot's initial joint positions.",
         )
     )
     declared_arguments.append(
         DeclareLaunchArgument(
-            "description_package",
-            default_value="ur_description",
-            description="Description package with robot URDF/XACRO files.",
+            "robot_description_package",
+            default_value="ur3e_controller",
+            description="Package containing the top-level workspace URDF/XACRO (urdf/).",
         )
     )
     declared_arguments.append(
         DeclareLaunchArgument(
             "description_file",
-            default_value="ur.urdf.xacro",
-            description="URDF/XACRO description file with the robot.",
+            default_value="ur3e_workspace.urdf.xacro",
+            description="URDF/XACRO description file (relative to robot_description_package/urdf).",
         )
     )
     declared_arguments.append(
@@ -298,20 +295,30 @@ def generate_launch_description():
             "base_height",
             default_value="1.080",
             description=(
-                "Height (metres) at which the robot base_link is spawned in Gazebo. "
-                "Set to the cabinet height so the robot sits on top of the cabinet "
-                "(default: 1.080 m for a 1080 mm steel cabinet)."
+                "Z offset (metres) from world to base_link in the workspace URDF (e.g. cabinet height). "
+                "Must match spawn_z usage: default spawn_z=0 so the arm base sits at this height in Gazebo."
             ),
         )
     )
- 
     declared_arguments.append(
         DeclareLaunchArgument(
-            'world',
-            default_value=os.path.join(get_package_share_directory('ur3e_controller'), 'config', 'ur3e_workspace.world'),
-            description='Full path to world model file to load'
+            "spawn_z",
+            default_value="0",
+            description=(
+                "Gazebo spawn_entity -z (metres). Use 0 when base_height is encoded in the workspace xacro; "
+                "use base_height here instead if the URDF keeps world->base identity."
+            ),
+        )
+    )
+
+    declared_arguments.append(
+        DeclareLaunchArgument(
+            "world",
+            default_value=os.path.join(
+                get_package_share_directory("ur3e_controller"), "config", "ur3e_workspace.world"
+            ),
+            description="Full path to world model file to load",
         )
     )
 
     return LaunchDescription(declared_arguments + [OpaqueFunction(function=launch_setup)])
-

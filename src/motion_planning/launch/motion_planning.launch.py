@@ -1,12 +1,11 @@
-# Copyright 2025 RS2-JENGA
-# BSD-3-Clause
 
 """
 Launch Motion Planning and Control: pose goal node, exclusion zones, and e-stop node.
 Start this after MoveIt2 and the robot (sim or hardware) are running.
 
-With use_rmrc:=true, runs RMRC planning node instead of MoveIt pose_goal_node
-(no MoveIt GUI required). RMRC needs robot_description, built from ur_description.
+use_rmrc:=true by default, runs RMRC planning node instead of MoveIt pose_goal_node
+(no MoveIt GUI required). RMRC needs robot_description, built from the same workspace
+xacro as ur3e_sim_control (ur3e_workspace.urdf.xacro).
 """
 
 from launch import LaunchDescription
@@ -80,12 +79,12 @@ def generate_launch_description():
     )
     use_rmrc_arg = DeclareLaunchArgument(
         "use_rmrc",
-        default_value="false",
+        default_value="true",
         description="If true, run RMRC planning node instead of pose_goal_node (no MoveIt GUI).",
     )
     exec_start_delay_arg = DeclareLaunchArgument(
         "execution_start_delay",
-        default_value="1.0",
+        default_value="0.5",
         description=(
             "Delay (seconds) added to all RMRC trajectory timestamps before execution "
             "to avoid controller path/state tolerance violations at trajectory start."
@@ -112,30 +111,167 @@ def generate_launch_description():
             "RMRC-only: absolute per-joint acceleration limit in rad/s^2 for generated trajectories."
         ),
     )
+    execution_mode_arg = DeclareLaunchArgument(
+        "execution_mode",
+        default_value="trajectory",
+        description=(
+            "RMRC execution mode: 'trajectory' sends FollowJointTrajectory goals, "
+            "'velocity' streams joint velocities to a velocity controller topic."
+        ),
+    )
+    kinematics_backend_arg = DeclareLaunchArgument(
+        "kinematics_backend",
+        default_value="hybrid",
+        description=(
+            "RMRC kinematics backend: 'pykdl' for FK/Jacobian only, "
+            "'hybrid' enables PyKDL + optional analytical IK helper."
+        ),
+    )
+    velocity_command_topic_arg = DeclareLaunchArgument(
+        "velocity_command_topic",
+        default_value="/joint_group_velocity_controller/commands",
+        description="Topic used for RMRC velocity streaming mode.",
+    )
+    ik_seed_gain_arg = DeclareLaunchArgument(
+        "ik_seed_gain",
+        default_value="0.0",
+        description=(
+            "Null-space gain toward analytical IK seed in RMRC planning. "
+            "Set >0 only when analytical IK backend is available."
+        ),
+    )
+    body_link_weight_arg = DeclareLaunchArgument(
+        "body_link_weight",
+        default_value="0.55",
+        description=(
+            "RMRC: scale for repulsion at intermediate link frames (upper_arm, forearm, etc.). "
+            "Higher values push the middle of the arm away from exclusion zones."
+        ),
+    )
+    max_cart_repulsion_linear_arg = DeclareLaunchArgument(
+        "max_cart_repulsion_linear",
+        default_value="0.75",
+        description="RMRC: cap on repulsion linear velocity magnitude (m/s) blended into task.",
+    )
+    use_multi_point_repulsion_arg = DeclareLaunchArgument(
+        "use_multi_point_repulsion",
+        default_value="true",
+        description="RMRC: if true, repulsion uses EE plus sampled link origins (PyKDL).",
+    )
+    posture_bias_gain_arg = DeclareLaunchArgument(
+        "posture_bias_gain",
+        default_value="0.0",
+        description=(
+            "RMRC: null-space gain toward merged posture targets (shoulder/elbow). "
+            "Set >0 together with posture_apply_* to reduce inverted-V toward cabinet."
+        ),
+    )
+    posture_apply_shoulder_lift_arg = DeclareLaunchArgument(
+        "posture_apply_shoulder_lift",
+        default_value="false",
+        description="RMRC: apply posture_shoulder_lift_target_rad in null space.",
+    )
+    posture_apply_elbow_arg = DeclareLaunchArgument(
+        "posture_apply_elbow",
+        default_value="false",
+        description="RMRC: apply posture_elbow_target_rad in null space.",
+    )
+    ik_score_mode_arg = DeclareLaunchArgument(
+        "ik_score_mode",
+        default_value="composite",
+        description=(
+            "RMRC analytical IK branch: nearest | elbow_up | clearance | composite "
+            "(elbow + link clearance − start distance)."
+        ),
+    )
+    ik_score_w_elbow_arg = DeclareLaunchArgument(
+        "ik_score_w_elbow",
+        default_value="1.0",
+        description="RMRC composite IK: weight on elbow_joint (higher = elbow-up preference).",
+    )
+    ik_score_w_clearance_arg = DeclareLaunchArgument(
+        "ik_score_w_clearance",
+        default_value="0.08",
+        description="RMRC composite IK: weight on sum of link–obstacle distances.",
+    )
+    ik_score_w_start_arg = DeclareLaunchArgument(
+        "ik_score_w_start",
+        default_value="0.35",
+        description="RMRC composite IK: penalty weight on ||q_ik − q_start||.",
+    )
+    joint_secondary_weight_arg = DeclareLaunchArgument(
+        "joint_secondary_weight",
+        default_value="0.0",
+        description=(
+            "RMRC: shoulder/elbow secondary strength (0 disables). "
+            "Internal diagonal uses weight * joint_secondary_w_epsilon so Cartesian dominates."
+        ),
+    )
+    joint_secondary_gain_arg = DeclareLaunchArgument(
+        "joint_secondary_gain",
+        default_value="1.5",
+        description="RMRC: gain on (q_bias − q) for shoulder_lift and elbow in joint secondary.",
+    )
+    joint_secondary_w_epsilon_arg = DeclareLaunchArgument(
+        "joint_secondary_w_epsilon",
+        default_value="0.025",
+        description=(
+            "RMRC: scales Wdiag = joint_secondary_weight * epsilon (keep subordinate to JᵀJ)."
+        ),
+    )
+    joint_secondary_pref_clip_arg = DeclareLaunchArgument(
+        "joint_secondary_pref_clip",
+        default_value="0.45",
+        description="RMRC: clip |gain * (q_bias − q)| per joint (rad/s scale) for joint secondary.",
+    )
+    repulsion_smooth_alpha_arg = DeclareLaunchArgument(
+        "repulsion_smooth_alpha",
+        default_value="0.45",
+        description="RMRC: EMA on repulsion Cartesian vector (1.0 = no smoothing).",
+    )
+    repulsion_dist_scale_arg = DeclareLaunchArgument(
+        "repulsion_dist_scale",
+        default_value="true",
+        description="RMRC: scale repulsion gain by normalized distance inside influence zone.",
+    )
+    repulsion_out_grad_cap_arg = DeclareLaunchArgument(
+        "repulsion_out_grad_cap",
+        default_value="120.0",
+        description="RMRC: cap on repulsion gradient magnitude (0 = no cap).",
+    )
+    orientation_error_gain_arg = DeclareLaunchArgument(
+        "orientation_error_gain",
+        default_value="1.15",
+        description="RMRC: multiply orientation path/hold error (EE-down tracking).",
+    )
+    path_fb_scale_cap_arg = DeclareLaunchArgument(
+        "path_fb_scale_cap",
+        default_value="2.5",
+        description="RMRC: cap on Cartesian path feedback gain (0 = no cap).",
+    )
     publish_world_to_base_tf_arg = DeclareLaunchArgument(
         "publish_world_to_base_tf",
         default_value="false",
         description=(
-            "If true, publish static TF world->base_link. Enable when robot launch "
-            "does not already provide a valid world frame transform."
+            "If true, publish static TF world->base_link. Keep false when using "
+            "ur3e_sim_control (workspace URDF already publishes this transform)."
         ),
     )
     base_height_arg = DeclareLaunchArgument(
         "base_height",
-        default_value="1.08",
+        default_value="1.080",
         description=(
             "Z translation for world->base_link static TF (metres). Must match robot spawn height."
         ),
     )
 
-    # robot_description for RMRC: built from ur_description xacro
-    # ur3e_controllers.yaml stays in ur3e_controller (robot control config)
+    # robot_description for RMRC: same workspace xacro as ur3e_sim_control (single world->base TF)
     robot_description_content = Command(
         [
             PathJoinSubstitution([FindExecutable(name="xacro")]),
             " ",
             PathJoinSubstitution(
-                [FindPackageShare("ur_description"), "urdf", "ur.urdf.xacro"]
+                [FindPackageShare(pkg_controller), "urdf", "ur3e_workspace.urdf.xacro"]
             ),
             " ",
             "safety_limits:=true",
@@ -161,6 +297,9 @@ def generate_launch_description():
             PathJoinSubstitution(
                 [FindPackageShare("ur_description"), "config", "initial_positions.yaml"]
             ),
+            " ",
+            "base_height:=",
+            LaunchConfiguration("base_height"),
         ]
     )
 
@@ -192,12 +331,35 @@ def generate_launch_description():
                 "joint_trajectory_action": LaunchConfiguration("joint_trajectory_action"),
                 "path_resolution": 0.002,
                 "max_velocity": 0.2,
-                "d_safe": 0.05,
-                "k_repulsion": 0.5,
+                "d_safe": 0.065,
+                "k_repulsion": 0.55,
                 "execution_start_delay": LaunchConfiguration("execution_start_delay"),
                 "goal_time_tolerance": LaunchConfiguration("goal_time_tolerance"),
                 "max_joint_velocity": LaunchConfiguration("max_joint_velocity"),
                 "max_joint_acceleration": LaunchConfiguration("max_joint_acceleration"),
+                "execution_mode": LaunchConfiguration("execution_mode"),
+                "kinematics_backend": LaunchConfiguration("kinematics_backend"),
+                "velocity_command_topic": LaunchConfiguration("velocity_command_topic"),
+                "ik_seed_gain": LaunchConfiguration("ik_seed_gain"),
+                "body_link_weight": LaunchConfiguration("body_link_weight"),
+                "max_cart_repulsion_linear": LaunchConfiguration("max_cart_repulsion_linear"),
+                "use_multi_point_repulsion": LaunchConfiguration("use_multi_point_repulsion"),
+                "posture_bias_gain": LaunchConfiguration("posture_bias_gain"),
+                "posture_apply_shoulder_lift": LaunchConfiguration("posture_apply_shoulder_lift"),
+                "posture_apply_elbow": LaunchConfiguration("posture_apply_elbow"),
+                "ik_score_mode": LaunchConfiguration("ik_score_mode"),
+                "ik_score_w_elbow": LaunchConfiguration("ik_score_w_elbow"),
+                "ik_score_w_clearance": LaunchConfiguration("ik_score_w_clearance"),
+                "ik_score_w_start": LaunchConfiguration("ik_score_w_start"),
+                "joint_secondary_weight": LaunchConfiguration("joint_secondary_weight"),
+                "joint_secondary_gain": LaunchConfiguration("joint_secondary_gain"),
+                "joint_secondary_w_epsilon": LaunchConfiguration("joint_secondary_w_epsilon"),
+                "joint_secondary_pref_clip": LaunchConfiguration("joint_secondary_pref_clip"),
+                "repulsion_smooth_alpha": LaunchConfiguration("repulsion_smooth_alpha"),
+                "repulsion_dist_scale": LaunchConfiguration("repulsion_dist_scale"),
+                "repulsion_out_grad_cap": LaunchConfiguration("repulsion_out_grad_cap"),
+                "orientation_error_gain": LaunchConfiguration("orientation_error_gain"),
+                "path_fb_scale_cap": LaunchConfiguration("path_fb_scale_cap"),
             },
         ],
     )
@@ -260,6 +422,29 @@ def generate_launch_description():
         goal_time_tolerance_arg,
         max_joint_velocity_arg,
         max_joint_acceleration_arg,
+        execution_mode_arg,
+        kinematics_backend_arg,
+        velocity_command_topic_arg,
+        ik_seed_gain_arg,
+        body_link_weight_arg,
+        max_cart_repulsion_linear_arg,
+        use_multi_point_repulsion_arg,
+        posture_bias_gain_arg,
+        posture_apply_shoulder_lift_arg,
+        posture_apply_elbow_arg,
+        ik_score_mode_arg,
+        ik_score_w_elbow_arg,
+        ik_score_w_clearance_arg,
+        ik_score_w_start_arg,
+        joint_secondary_weight_arg,
+        joint_secondary_gain_arg,
+        joint_secondary_w_epsilon_arg,
+        joint_secondary_pref_clip_arg,
+        repulsion_smooth_alpha_arg,
+        repulsion_dist_scale_arg,
+        repulsion_out_grad_cap_arg,
+        orientation_error_gain_arg,
+        path_fb_scale_cap_arg,
         publish_world_to_base_tf_arg,
         base_height_arg,
         world_to_base_tf_node,

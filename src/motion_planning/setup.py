@@ -14,7 +14,7 @@ setup(
         (os.path.join("share", package_name, "launch"), glob("launch/*.py")),
         (os.path.join("share", package_name, "config"), glob("config/*.yaml")),
     ],
-    install_requires=["setuptools", "ikpy", "numpy"],
+    install_requires=["setuptools", "numpy"],
     zip_safe=True,
     maintainer="RS2-JENGA",
     maintainer_email="user@example.com",

@@ -12,7 +12,7 @@ def launch_setup(context, *args, **kwargs):
     # General arguments
     runtime_config_package = LaunchConfiguration("runtime_config_package")
     controllers_file = LaunchConfiguration("controllers_file")
-    description_package = LaunchConfiguration("description_package")
+    robot_description_package = LaunchConfiguration("robot_description_package")
     description_file = LaunchConfiguration("description_file")
     moveit_config_package = LaunchConfiguration("moveit_config_package")
     moveit_config_file = LaunchConfiguration("moveit_config_file")
@@ -28,7 +28,7 @@ def launch_setup(context, *args, **kwargs):
             "safety_limits": safety_limits,
             "runtime_config_package": runtime_config_package,
             "controllers_file": controllers_file,
-            "description_package": description_package,
+            "robot_description_package": robot_description_package,
             "description_file": description_file,
             "prefix": prefix,
             "launch_rviz": "false",
@@ -42,7 +42,7 @@ def launch_setup(context, *args, **kwargs):
         launch_arguments={
             "ur_type": ur_type,
             "safety_limits": safety_limits,
-            "description_package": description_package,
+            "description_package": robot_description_package,
             "description_file": description_file,
             "moveit_config_package": moveit_config_package,
             "moveit_config_file": moveit_config_file,
@@ -108,15 +108,15 @@ def generate_launch_description():
     )
     declared_arguments.append(
         DeclareLaunchArgument(
-            "description_package",
-            default_value="ur_description",
-            description="Description package with robot URDF/XACRO files.",
+            "robot_description_package",
+            default_value="ur3e_controller",
+            description="Package with workspace URDF/XACRO and ur3e config/ YAMLs (for MoveIt paths).",
         )
     )
     declared_arguments.append(
         DeclareLaunchArgument(
             "description_file",
-            default_value="ur.urdf.xacro",
+            default_value="ur3e_workspace.urdf.xacro",
             description="URDF/XACRO description file with the robot.",
         )
     )
