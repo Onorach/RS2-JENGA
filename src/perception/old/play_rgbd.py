@@ -13,7 +13,6 @@ import cv2
 import numpy as np
 import pyrealsense2 as rs
 import os
-from datetime import datetime
 
 # Edge detector node
 from jenga_perception_edges import JengaPerceptionNode
@@ -23,13 +22,9 @@ from jenga_perception_edges import JengaPerceptionNode
 # ------------------------------------------------------------------------------
 
 # Each entry: (name, RealSense option, boost)
-# boost in [-1, 1] mapped from min → default → max.
 camera_configuration_settings = [
     ("sharpness", rs.option.sharpness, 1.0),
     ("saturation", rs.option.saturation, 0.25),
-    ("gamma",      rs.option.gamma,      0.0),
-    ("contrast",   rs.option.contrast,   0.0),
-    ("brightness", rs.option.brightness, 0.0),
 ]
 
 
@@ -101,7 +96,6 @@ def main():
     # --- Runtime state ---
     color_sensor = None
     selected_setting_idx = 0
-    recorder = None  # rs.recorder for live .bag recording
 
     # ===================================
     # LIVE MODE
@@ -113,14 +107,7 @@ def main():
         config.enable_stream(rs.stream.color, 1920, 1080, rs.format.bgr8, 30)
         config.enable_stream(rs.stream.depth, 1280, 720, rs.format.z16, 30)
 
-        # Preconfigure recording to a .bag file (we'll pause it immediately)
-        base_dir = os.path.join(os.path.dirname(__file__), "camera_files", "rgbd_raw")
-        os.makedirs(base_dir, exist_ok=True)
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        bag_out = os.path.join(base_dir, f"live_{ts}.bag")
-        config.enable_record_to_file(bag_out)
-
-        # Start camera + recorder
+        # Start camera
         try:
             profile = pipeline.start(config)
         except Exception as e:
@@ -128,27 +115,19 @@ def main():
             print("Make sure pyrealsense2 is installed: pip install pyrealsense2")
             sys.exit(1)
 
-        try:
-            device = profile.get_device()
-            recorder = device.as_recorder()
-            recorder.pause()  # start with recording paused
-            print(f"[record] Ready to record to {bag_out} (press R to start/stop)")
-        except Exception as e:
-            print(f"[record] Warning: recorder not available: {e}")
-
         # Apply camera settings (sharpness/saturation/etc)
         try:
-            if 'device' not in locals():
-                device = profile.get_device()
+            device = profile.get_device()
             color_sensor = _get_rgb_sensor(device)
             if color_sensor is not None:
-                # Lock auto-exposure / auto-white-balance off for stability, if supported
-                if color_sensor.supports(rs.option.enable_auto_exposure):
-                    color_sensor.set_option(rs.option.enable_auto_exposure, 0.0)
-                if color_sensor.supports(rs.option.enable_auto_white_balance):
-                    color_sensor.set_option(rs.option.enable_auto_white_balance, 1.0)
-
                 _apply_all_camera_settings(color_sensor, camera_configuration_settings)
+                print("Controls: \n - Left/Right: select camera option \n - Up/Down: change boost by 0.25\n - SPACE: pause\n - Q: quit")
+                print("Controls: \n - Left/Right: select camera option \n - Up/Down: change boost by 0.25\n - SPACE: pause\n - Q: quit")
+                print("Controls: \n - Left/Right: select camera option \n - Up/Down: change boost by 0.25\n - SPACE: pause\n - Q: quit")
+                print("Controls: \n - Left/Right: select camera option \n - Up/Down: change boost by 0.25\n - SPACE: pause\n - Q: quit")
+                print("Controls: \n - Left/Right: select camera option \n - Up/Down: change boost by 0.25\n - SPACE: pause\n - Q: quit")
+                print("Controls: \n - Left/Right: select camera option \n - Up/Down: change boost by 0.25\n - SPACE: pause\n - Q: quit")
+                print("Controls: \n - Left/Right: select camera option \n - Up/Down: change boost by 0.25\n - SPACE: pause\n - Q: quit")
         except Exception as e:
             print(f"Warning: failed to configure colour sensor options: {e}")
 
@@ -175,6 +154,8 @@ def main():
         # Playback speed
         playback = profile.get_device().as_playback()
         playback.set_real_time(False)   # play bag as fast as possible
+
+        print("Controls: \n - R: start/stop .bag recording\n - SPACE: pause\n - Q: quit")
 
     # --- Set up perception node ---
     node = JengaPerceptionNode()
