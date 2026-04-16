@@ -271,16 +271,16 @@ def print_results(results: list[dict]) -> None:
 
 class BoxPercentagesNode(Node):
     """
-    Subscribes to /camera/color/image_raw, computes per-cell colour percentages
+    Subscribes to the camera color image, computes per-cell colour percentages
     and publishes JSON results + a debug image.
     """
 
-    def __init__(self):
+    def __init__(self, color_topic: str = "/camera/camera/color/image_raw"):
         super().__init__("box_percentages")
         self._bridge = CvBridge()
 
         self._sub = self.create_subscription(
-            Image, "/camera/color/image_raw", self._cb, 10)
+            Image, color_topic, self._cb, 10)
 
         self._pub_pct = self.create_publisher(
             String, "/jenga/box_percentages", 10)

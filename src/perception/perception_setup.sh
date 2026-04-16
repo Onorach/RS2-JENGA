@@ -12,7 +12,7 @@ echo "Installing Intel RealSense SDK"
 sudo apt install -y librealsense2-dev librealsense2-utils librealsense2-dkms
 
 echo "Installing ROS2 RealSense packages"
-sudo apt install -y ros-humble-librealsense2* ros-humble-realsense2-*
+sudo apt install -y ros-humble-librealsense2* ros-humble-realsense2-* ros-humble-realsense2-camera
 
 echo "Installing Python RealSense bindings"
 python3 -m pip install --upgrade pip

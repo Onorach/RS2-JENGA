@@ -302,21 +302,21 @@ class DepthAnalysisNode(Node):
     Subscribes to aligned colour + depth images, computes the tower centroid
     and publishes it as a PointStamped plus a debug overlay image.
 
-    Expects:
-        /camera/color/image_raw        (sensor_msgs/Image, bgr8)
-        /camera/aligned_depth_to_color/image_raw  (sensor_msgs/Image, 16UC1, mm)
-
-    If your RealSense driver uses different topic names adjust below.
+    Expects colour + aligned-depth topics (defaults match realsense2_camera rs_launch
+    with a namespace, e.g. camera/camera/...).
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        color_topic: str = "/camera/camera/color/image_raw",
+        depth_topic: str = "/camera/camera/aligned_depth_to_color/image_raw",
+    ):
         super().__init__("depth_analysis")
         self._bridge = CvBridge()
 
         from message_filters import ApproximateTimeSynchronizer, Subscriber
-        color_sub = Subscriber(self, Image, "/camera/color/image_raw")
-        depth_sub = Subscriber(self, Image,
-                               "/camera/aligned_depth_to_color/image_raw")
+        color_sub = Subscriber(self, Image, color_topic)
+        depth_sub = Subscriber(self, Image, depth_topic)
 
         self._sync = ApproximateTimeSynchronizer(
             [color_sub, depth_sub], queue_size=10, slop=0.05)

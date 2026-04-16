@@ -166,9 +166,10 @@ def classify_frame(bgr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     unclassified = np.ones((rh, rw), dtype=bool)
 
     for colour in HSV_RANGES:
-        mask = classify_hsv(hsv, colour) 
+        mask = classify_hsv(hsv, colour) & unclassified
         colour_img[mask]  = COLOUR_BGR[colour]
         label_grid[mask]  = colour
+        unclassified     &= ~mask
 
     return colour_img, label_grid
 
@@ -179,16 +180,16 @@ def classify_frame(bgr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 
 class ColourIdentificationNode(Node):
     """
-    Subscribes to /camera/color/image_raw, classifies every pixel in the ROI
-    and publishes the colour frame + label grid every frame.
+    Subscribes to the camera color image (default: RealSense rs_launch namespaced topic),
+    classifies every pixel in the ROI and publishes the colour frame + label grid every frame.
     """
 
-    def __init__(self):
+    def __init__(self, color_topic: str = "/camera/camera/color/image_raw"):
         super().__init__("colour_identification")
         self._bridge = CvBridge()
 
         self._sub = self.create_subscription(
-            Image, "/camera/color/image_raw", self._cb, 10)
+            Image, color_topic, self._cb, 10)
 
         self._pub_img = self.create_publisher(
             Image, "/jenga/colour_frame", 10)

@@ -25,18 +25,23 @@ Keyboard
 
 Usage
 -----
-    # Live camera
-    python play.py
+    # Live camera (opens RealSense via pyrealsense2 — exclusive with another process)
+    python play2.py
+
+    # Same image topic as `ros2 launch realsense2_camera rs_launch.py` — no USB open here
+    python play2.py --subscribe
 
     # Bag file (searched in camera_files/rgbd_raw/ and camera_files/rgbd_large/)
-    python play.py recording.bag
+    python play2.py recording.bag
 """
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
-from typing import Optional
+import threading
+from typing import Callable, Optional
 
 import cv2
 import numpy as np
@@ -62,11 +67,15 @@ from depth_analysis import DepthAnalysisNode
 try:
     import rclpy
     from rclpy.executors import SingleThreadedExecutor
+    from rclpy.node import Node
+    from sensor_msgs.msg import Image
+    from cv_bridge import CvBridge
     from colour_identification import ColourIdentificationNode
     from box_percentages import BoxPercentagesNode
     from colour_blobs import ColourBlobsNode
     _ROS_AVAILABLE = True
 except ImportError:
+    Node = object  # type: ignore[misc, assignment]
     _ROS_AVAILABLE = False
 
 # ============================================================================
@@ -169,10 +178,52 @@ def _start_pipeline(live: bool, bag_path: Optional[str]) -> rs.pipeline:
 
 
 # ============================================================================
+# ROS image source (subscribe-only mode; no RealSense USB open)
+# ============================================================================
+
+if _ROS_AVAILABLE:
+
+    class _Play2ImageNode(Node):
+        """Latest colour frame from sensor_msgs/Image (bgr8 or rgb8)."""
+
+        def __init__(self, color_topic: str) -> None:
+            super().__init__("play2_image_bridge")
+            self._bridge = CvBridge()
+            self._lock = threading.Lock()
+            self._bgr: Optional[np.ndarray] = None
+            self.create_subscription(Image, color_topic, self._cb, 10)
+            self.get_logger().info(f"play2: subscribed to {color_topic}")
+
+        def _cb(self, msg: Image) -> None:
+            try:
+                enc = (msg.encoding or "").lower()
+                if enc == "rgb8":
+                    rgb = self._bridge.imgmsg_to_cv2(msg, desired_encoding="rgb8")
+                    bgr = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
+                else:
+                    bgr = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
+            except Exception as e:  # noqa: BLE001 — cv_bridge reports decode issues
+                self.get_logger().warning(f"cv_bridge: {e}")
+                return
+            with self._lock:
+                self._bgr = bgr
+
+        def get_bgr(self) -> Optional[np.ndarray]:
+            with self._lock:
+                if self._bgr is None:
+                    return None
+                return self._bgr.copy()
+
+
+# ============================================================================
 # Main loop
 # ============================================================================
 
-def _run(pipeline: rs.pipeline) -> None:
+def _run_loop(get_bgr: Callable[[], Optional[np.ndarray]]) -> None:
+    """
+    Processing + OpenCV windows. *get_bgr* returns the latest full colour frame (BGR)
+    or None if not ready yet.
+    """
     roi_margin = 0.10
     frame_n    = 0
 
@@ -186,12 +237,11 @@ def _run(pipeline: rs.pipeline) -> None:
         cv2.namedWindow(win, cv2.WINDOW_NORMAL)
 
     while True:
-        frames = pipeline.wait_for_frames(timeout_ms=1000)
-        color_frame = frames.get_color_frame()
-        if color_frame is None:
+        bgr = get_bgr()
+        if bgr is None:
+            if (cv2.waitKey(10) & 0xFF) == ord("q"):
+                break
             continue
-
-        bgr = np.asanyarray(color_frame.get_data())
         ih, iw = bgr.shape[:2]
         frame_n += 1
 
@@ -244,33 +294,77 @@ def _run(pipeline: rs.pipeline) -> None:
             break
 
 
+def _run(pipeline: rs.pipeline) -> None:
+    def get_bgr() -> Optional[np.ndarray]:
+        frames = pipeline.wait_for_frames(timeout_ms=1000)
+        color_frame = frames.get_color_frame()
+        if color_frame is None:
+            return None
+        return np.asanyarray(color_frame.get_data())
+
+    _run_loop(get_bgr)
+
+
+def _run_subscribe(color_topic: str, ros_nodes: bool) -> None:
+    """Live processing from a ROS colour topic only (RealSense driver owns USB elsewhere)."""
+    assert _ROS_AVAILABLE
+    rclpy.init()
+    executor = SingleThreadedExecutor()
+    bridge = _Play2ImageNode(color_topic)
+    executor.add_node(bridge)
+    all_nodes: list = [bridge]
+
+    if ros_nodes:
+        extra = [
+            ColourIdentificationNode(color_topic),
+            BoxPercentagesNode(color_topic),
+            ColourBlobsNode(color_topic),
+            DepthAnalysisNode(color_topic),
+        ]
+        for n in extra:
+            executor.add_node(n)
+        all_nodes.extend(extra)
+
+    spin_thread = threading.Thread(target=executor.spin, daemon=True)
+    spin_thread.start()
+    try:
+        _run_loop(bridge.get_bgr)
+    finally:
+        executor.shutdown()
+        for n in all_nodes:
+            n.destroy_node()
+        rclpy.shutdown()
+
+
 # ============================================================================
 # ROS2 spin (optional — launches nodes alongside the CV loop)
 # ============================================================================
 
-def _run_with_ros(pipeline: rs.pipeline) -> None:
+def _run_with_ros(pipeline: rs.pipeline, color_topic: str) -> None:
     """
-    Initialise ROS2 nodes alongside the OpenCV loop.
-    The nodes receive frames via their /camera/color/image_raw subscription
-    (published by the RealSense ROS2 driver running separately).
-    The OpenCV windows are still driven directly here for low-latency display.
+    Initialise ROS2 publisher nodes on a background executor while the OpenCV loop
+    reads frames from pyrealsense2 in the main thread.
+
+    The nodes subscribe to *color_topic* (same stream the driver can publish when run
+    separately). Default matches ``realsense2_camera`` namespaced topics.
     """
     rclpy.init()
     executor = SingleThreadedExecutor()
     nodes = [
-        ColourIdentificationNode(),
-        BoxPercentagesNode(),
-        ColourBlobsNode(),
-        DepthAnalysisNode(),
+        ColourIdentificationNode(color_topic),
+        BoxPercentagesNode(color_topic),
+        ColourBlobsNode(color_topic),
+        DepthAnalysisNode(color_topic),
     ]
     for n in nodes:
         executor.add_node(n)
 
+    spin_thread = threading.Thread(target=executor.spin, daemon=True)
+    spin_thread.start()
     try:
         _run(pipeline)   # blocks until Q pressed
-        # Spin briefly to flush any pending callbacks
-        executor.spin_once(timeout_sec=0.0)
     finally:
+        executor.shutdown()
         for n in nodes:
             n.destroy_node()
         rclpy.shutdown()
@@ -281,15 +375,49 @@ def _run_with_ros(pipeline: rs.pipeline) -> None:
 # ============================================================================
 
 def main() -> None:
-    bag_arg  = sys.argv[1] if len(sys.argv) > 1 else None
-    live     = bag_arg is None
+    parser = argparse.ArgumentParser(description="Jenga perception from RealSense or ROS image topic.")
+    parser.add_argument(
+        "bag",
+        nargs="?",
+        help="Optional .bag file for playback (pyrealsense2; not used with --subscribe).",
+    )
+    parser.add_argument(
+        "--subscribe",
+        action="store_true",
+        help="Do not open the RealSense USB; subscribe to --color-topic (use while realsense2_camera runs).",
+    )
+    parser.add_argument(
+        "--color-topic",
+        default="/camera/camera/color/image_raw",
+        help="sensor_msgs/Image topic for colour (bgr8 or rgb8).",
+    )
+    parser.add_argument(
+        "--ros-nodes",
+        action="store_true",
+        help="With --subscribe, also run /jenga/* publisher nodes alongside the OpenCV windows.",
+    )
+    args = parser.parse_args()
+
+    bag_arg = args.bag
+    if args.subscribe:
+        if bag_arg is not None:
+            print("Cannot combine --subscribe with a bag file.", file=sys.stderr)
+            sys.exit(1)
+        if not _ROS_AVAILABLE:
+            print("ROS 2 (rclpy, cv_bridge, sensor_msgs) required for --subscribe.", file=sys.stderr)
+            sys.exit(1)
+        _run_subscribe(args.color_topic, args.ros_nodes)
+        cv2.destroyAllWindows()
+        return
+
+    live = bag_arg is None
     bag_path = _resolve_bag(bag_arg) if bag_arg else None
 
     pipeline = _start_pipeline(live, bag_path)
 
     try:
         if _ROS_AVAILABLE:
-            _run_with_ros(pipeline)
+            _run_with_ros(pipeline, args.color_topic)
         else:
             _run(pipeline)
     finally:

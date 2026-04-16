@@ -271,12 +271,12 @@ def build_debug_image(bgr_frame: np.ndarray,
 # ============================================================================
 
 class ColourBlobsNode(Node):
-    def __init__(self):
+    def __init__(self, color_topic: str = "/camera/camera/color/image_raw"):
         super().__init__("colour_blobs")
         self._bridge = CvBridge()
 
         self._sub = self.create_subscription(
-            Image, "/camera/color/image_raw", self._cb, 10)
+            Image, color_topic, self._cb, 10)
 
         self._pub_blobs = self.create_publisher(
             String, "/jenga/colour_blobs", 10)
