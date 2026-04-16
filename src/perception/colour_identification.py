@@ -124,7 +124,7 @@ def _odd(k: int) -> int:
 
 def classify_hsv(hsv: np.ndarray, colour: str) -> np.ndarray:
     """
-    Return a boolean mask (H×W) that is True wherever *hsv* matches *colour*.
+    Return a boolean mask (HxW) that is True wherever *hsv* matches *colour*.
 
     Applies median blur and morphological open to suppress fringe pixels before
     range matching.
@@ -166,10 +166,9 @@ def classify_frame(bgr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     unclassified = np.ones((rh, rw), dtype=bool)
 
     for colour in HSV_RANGES:
-        mask = classify_hsv(hsv, colour) & unclassified
+        mask = classify_hsv(hsv, colour) 
         colour_img[mask]  = COLOUR_BGR[colour]
         label_grid[mask]  = colour
-        unclassified     &= ~mask
 
     return colour_img, label_grid
 
