@@ -32,18 +32,8 @@ Published topics
     Visual debug window: white background, coloured pixels inside each quad,
     corner dots and labels, colour legend.
 
-Grid cells
-----------
-Each cell is defined by four (x, y) corner points in full-frame pixel coords,
-stored in order [TL, TR, BL, BR].  The winding is corrected to TL→TR→BR→BL
-before filling so the polygon is a proper parallelogram.
-
-Standalone use (no ROS)
------------------------
-    python box_percentages.py path/to/image.png
 """
 
-from __future__ import annotations
 
 import json
 import sys
@@ -63,10 +53,8 @@ except ImportError:
     _ROS_AVAILABLE = False
     Node = object
 
-from colour_identification import (
-    HSV_RANGES, COLOUR_BGR, classify_frame, compute_roi,
-    DIVIDE_LINE,
-)
+from colour_identification import classify_frame, compute_roi
+from perception_config import HSV_RANGES, COLOUR_BGR
 
 # ============================================================================
 # Grid cell definitions — full-frame pixel coords [TL, TR, BL, BR]

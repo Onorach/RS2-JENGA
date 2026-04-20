@@ -1,0 +1,169 @@
+"""
+play_runtime.py
+---------------
+Shared display loop and ROS wiring used by play_bag and play_live.
+"""
+
+import threading
+import cv2
+import numpy as np
+
+from colour_identification import classify_frame, compute_roi, ColourIdentificationNode
+from box_percentages import compute_percentages, build_debug_image as build_pct_debug, BoxPercentagesNode
+from perception_config import GRID_CORNERS, DIVIDE_LINE
+
+import rclpy
+from rclpy.executors import SingleThreadedExecutor
+from rclpy.node import Node
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+
+
+def _draw_grid(disp: np.ndarray, offset_x: int, offset_y: int) -> None:
+    def valid(p) -> bool:
+        return isinstance(p, (tuple, list)) and len(p) == 2
+
+    rows = len(GRID_CORNERS)
+    cols = len(GRID_CORNERS[0]) if rows else 0
+
+    for r in range(rows):
+        for c in range(cols - 1):
+            p1, p2 = GRID_CORNERS[r][c], GRID_CORNERS[r][c + 1]
+            if valid(p1) and valid(p2):
+                cv2.line(
+                    disp,
+                    (p1[0] - offset_x, p1[1] - offset_y),
+                    (p2[0] - offset_x, p2[1] - offset_y),
+                    (0, 255, 0),
+                    1,
+                )
+
+    for c in range(cols):
+        for r in range(rows - 1):
+            p1, p2 = GRID_CORNERS[r][c], GRID_CORNERS[r + 1][c]
+            if valid(p1) and valid(p2):
+                cv2.line(
+                    disp,
+                    (p1[0] - offset_x, p1[1] - offset_y),
+                    (p2[0] - offset_x, p2[1] - offset_y),
+                    (255, 100, 0),
+                    1,
+                )
+
+
+def _run_loop(get_bgr) -> None:
+    frame_n = 0
+    roi_margin = 0.10
+
+    while True:
+        bgr = get_bgr()
+        if bgr is None:
+            if (cv2.waitKey(10) & 0xFF) == ord("q"):
+                break
+            continue
+
+        ih, iw = bgr.shape[:2]
+        frame_n += 1
+
+        rx, ry, rw, rh = compute_roi(iw, ih)
+        mx, my = int(rw * roi_margin), int(rh * roi_margin)
+        dx1 = max(0, rx - mx)
+        dy1 = max(0, ry - my)
+        dx2 = min(iw, rx + rw + mx)
+        dy2 = min(ih, ry + rh + my)
+
+        live_disp = bgr[dy1:dy2, dx1:dx2].copy()
+        cv2.rectangle(
+            live_disp,
+            (rx - dx1, ry - dy1),
+            (rx + rw - dx1, ry + rh - dy1),
+            (255, 255, 0),
+            2,
+        )
+        _draw_grid(live_disp, dx1, dy1)
+
+        (fx1, fy1), (fx2, fy2) = DIVIDE_LINE
+        cv2.line(
+            live_disp,
+            (fx1 - dx1, fy1 - dy1),
+            (fx2 - dx1, fy2 - dy1),
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+        cv2.namedWindow("Live + grid", cv2.WINDOW_NORMAL)
+        cv2.imshow("Live + grid", live_disp)
+
+        colour_img, _ = classify_frame(bgr)
+        cv2.namedWindow("Colour mask", cv2.WINDOW_NORMAL)
+        cv2.imshow("Colour mask", colour_img)
+
+        if frame_n % 30 == 0:
+            cv2.namedWindow("Box percentages", cv2.WINDOW_NORMAL)
+            cv2.imshow("Box percentages", build_pct_debug(bgr, compute_percentages(bgr)))
+
+        if (cv2.waitKey(1) & 0xFF) == ord("q"):
+            break
+
+
+class _ImageBridge(Node):
+    def __init__(self, color_topic: str):
+        super().__init__("play_image_bridge")
+        self._bridge = CvBridge()
+        self._lock = threading.Lock()
+        self._bgr = None
+        self.create_subscription(Image, color_topic, self._cb, 10)
+
+    def _cb(self, msg: Image):
+        enc = (msg.encoding or "").lower()
+        bgr = (
+            cv2.cvtColor(self._bridge.imgmsg_to_cv2(msg, "rgb8"), cv2.COLOR_RGB2BGR)
+            if enc == "rgb8"
+            else self._bridge.imgmsg_to_cv2(msg, "bgr8")
+        )
+        with self._lock:
+            self._bgr = bgr
+
+    def get_bgr(self):
+        with self._lock:
+            return None if self._bgr is None else self._bgr.copy()
+
+
+def _start_executor(nodes: list) -> SingleThreadedExecutor:
+    executor = SingleThreadedExecutor()
+    for n in nodes:
+        executor.add_node(n)
+    threading.Thread(target=executor.spin, daemon=True).start()
+    return executor
+
+
+def _shutdown_executor(executor: SingleThreadedExecutor, nodes: list) -> None:
+    executor.shutdown()
+    for n in nodes:
+        n.destroy_node()
+    rclpy.shutdown()
+
+
+def run_with_pipeline(pipeline) -> None:
+    def get_bgr():
+        frames = pipeline.wait_for_frames(timeout_ms=1000)
+        color_frame = frames.get_color_frame()
+        return None if color_frame is None else np.asanyarray(color_frame.get_data())
+
+    _run_loop(get_bgr)
+
+
+def run_subscribe(color_topic: str, depth_topic: str) -> None:
+    rclpy.init()
+
+    bridge = _ImageBridge(color_topic)
+    colour_node = ColourIdentificationNode(color_topic)
+    box_node = BoxPercentagesNode(color_topic)
+
+    nodes = [bridge, colour_node, box_node]
+    executor = _start_executor(nodes)
+
+    try:
+        _run_loop(bridge.get_bgr)
+    finally:
+        _shutdown_executor(executor, nodes)
