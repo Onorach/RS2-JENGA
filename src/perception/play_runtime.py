@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 
 from colour_identification import classify_frame, compute_roi, ColourIdentificationNode
-from box_percentages import compute_percentages, build_debug_image, analyse_layer, GRID_CELLS, LAYER_CELLS
+from box_percentages import BoxPercentagesNode, compute_percentages, build_debug_image, analyse_layer, GRID_CELLS, LAYER_CELLS
 from edge_analysis import build_edge_display
 from saturation_mask import compute_hex_region, build_display
 from perception_config import GRID_CORNERS, DIVIDE_LINE
