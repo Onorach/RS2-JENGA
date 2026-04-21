@@ -1,43 +1,16 @@
 """
 box_percentages.py
 ------------------
-ROS2 node that subscribes to the colour label grid from colour_identification,
-maps it onto the predefined quadrilateral grid cells, and publishes the
-percentage of each colour within each cell.
+Per-cell colour percentages and single-layer tower analysis.
 
-Subscribes
-----------
-/jenga/colour_labels  (std_msgs/String)
-    JSON label grid produced by colour_identification.
-
-Published topics
-----------------
-/jenga/box_percentages  (std_msgs/String)
-    JSON list of per-box results:
-    [
-      {
-        "name": "left_cell",
-        "total_pixels": 1234,
-        "colours": {
-          "red":    {"count": 10,  "pct": 0.81},
-          "green":  {"count": 900, "pct": 72.94},
-          ...
-          "none":   {"count": 100, "pct": 8.10}
-        }
-      },
-      ...
-    ]
-
-/jenga/box_debug_image  (sensor_msgs/Image)
-    Visual debug window: white background, coloured pixels inside each quad,
-    corner dots and labels, colour legend.
-
+Standalone use
+--------------
+    python box_percentages.py path/to/image.png
 """
-
+from __future__ import annotations
 
 import json
 import sys
-from typing import Optional
 
 import cv2
 import numpy as np
@@ -54,33 +27,33 @@ except ImportError:
     Node = object
 
 from colour_identification import classify_frame, compute_roi
-from perception_config import HSV_RANGES, COLOUR_BGR
+from perception_config import HSV_RANGES, COLOUR_BGR, DIVIDE_LINE
 
-# ============================================================================
+# ---------------------------------------------------------------------------
 # Grid cell definitions — full-frame pixel coords [TL, TR, BL, BR]
-# ============================================================================
+# ---------------------------------------------------------------------------
+from perception_config import HSV_RANGES, COLOUR_BGR, DIVIDE_LINE, GRID_CORNERS
 
-GRID_CELLS: list[dict] = [
-    {
-        "name": "left_cell",
-        "corners": [(664, 197), (920, 217), (669, 282), (916, 315)],
-    },
-    {
-        "name": "right_cell",
-        "corners": [(920, 217), (1237, 215), (916, 315), (1228, 297)],
-    },
+LAYER_CELLS: list[list[dict]] = [
+    [
+        {"name": "left_cell",  "corners": [GRID_CORNERS[r][0], GRID_CORNERS[r][1], GRID_CORNERS[r+1][0], GRID_CORNERS[r+1][1]]},
+        {"name": "right_cell", "corners": [GRID_CORNERS[r][1], GRID_CORNERS[r][2], GRID_CORNERS[r+1][1], GRID_CORNERS[r+1][2]]},
+    ]
+    for r in range(len(GRID_CORNERS) - 1)
+    if None not in GRID_CORNERS[r] and None not in GRID_CORNERS[r + 1]
 ]
 
-# ============================================================================
-# Helpers
-# ============================================================================
+GRID_CELLS: list[dict] = [cell for layer in LAYER_CELLS for cell in layer]
 
-def _quad_mask(shape: tuple[int,int],
-               corners: list[tuple[int,int]]) -> np.ndarray:
-    """
-    Boolean mask (H×W) True inside the quad defined by [TL, TR, BL, BR].
-    Re-wound to TL→TR→BR→BL so it fills as a parallelogram, not an hourglass.
-    """
+DOMINANT_PCT = 55.0  # above this → side-on face
+MIN_COLOUR_PCT = 10.0  # colour must cover at least this % of the cell to count
+
+# ---------------------------------------------------------------------------
+# Core helpers
+# ---------------------------------------------------------------------------
+
+def _quad_mask(shape: tuple[int, int], corners: list[tuple[int, int]]) -> np.ndarray:
+    """Boolean mask (H×W) True inside the quad defined by [TL, TR, BL, BR]."""
     tl, tr, bl, br = corners
     pts = np.array([tl, tr, br, bl], dtype=np.int32).reshape(-1, 1, 2)
     mask = np.zeros(shape, dtype=np.uint8)
@@ -88,212 +61,204 @@ def _quad_mask(shape: tuple[int,int],
     return mask.astype(bool)
 
 
-def compute_percentages(
-    bgr_frame: np.ndarray,
-    cells: list[dict] | None = None,
-) -> list[dict]:
-    """
-    For each grid cell, count how many pixels fall into each colour class.
+def _divide_x_per_row(ih: int) -> np.ndarray:
+    """Return an (ih,) array of interpolated divide-line x values per image row."""
+    (lx1, ly1), (lx2, ly2) = DIVIDE_LINE
+    t = np.clip((np.arange(ih) - ly1) / (ly2 - ly1), 0.0, 1.0)
+    return (lx1 + t * (lx2 - lx1)).astype(np.float32)
 
-    Parameters
-    ----------
-    bgr_frame : Full-resolution BGR frame.
-    cells     : List of cell dicts (name + corners). Defaults to GRID_CELLS.
 
-    Returns
-    -------
-    List of dicts — one per cell — with keys: name, total_pixels, colours.
-    """
+# ---------------------------------------------------------------------------
+# Percentages
+# ---------------------------------------------------------------------------
+
+def compute_percentages(bgr_frame: np.ndarray,
+                        cells: list[dict] | None = None) -> list[dict]:
+    """Return per-cell colour percentage dicts for each cell in cells."""
     if cells is None:
         cells = GRID_CELLS
 
     ih, iw = bgr_frame.shape[:2]
-    hsv_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
+    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
 
-    # Build a full-frame classification label array (strings)
-    # We use the raw (non-clean) masks here for accurate pixel counts.
-    label_img = np.full((ih, iw), "none", dtype=object)
+    label_img    = np.full((ih, iw), "none", dtype=object)
     unclassified = np.ones((ih, iw), dtype=bool)
 
     for colour, ranges in HSV_RANGES.items():
         combined = np.zeros((ih, iw), dtype=np.uint8)
         for lo, hi in ranges:
-            combined |= cv2.inRange(hsv_frame,
-                                    np.array(lo, dtype=np.uint8),
-                                    np.array(hi, dtype=np.uint8))
+            combined |= cv2.inRange(hsv, np.array(lo, dtype=np.uint8),
+                                         np.array(hi, dtype=np.uint8))
         matched = combined.astype(bool) & unclassified
         label_img[matched] = colour
         unclassified &= ~matched
 
     results = []
-
     for cell in cells:
-        name    = cell["name"]
-        corners = cell["corners"]
-
-        quad = _quad_mask((ih, iw), corners)
+        quad  = _quad_mask((ih, iw), cell["corners"])
         total = int(quad.sum())
-
         if total == 0:
-            results.append({"name": name, "total_pixels": 0, "colours": {}})
+            results.append({"name": cell["name"], "total_pixels": 0, "colours": {}})
             continue
-
-        colour_counts: dict[str, int] = {c: 0 for c in HSV_RANGES}
-        colour_counts["none"] = 0
-
-        labels_in_quad = label_img[quad]
-        for c in colour_counts:
-            colour_counts[c] = int(np.sum(labels_in_quad == c))
-
+        labels = label_img[quad]
         colours_table = {
-            label: {"count": cnt, "pct": round(cnt / total * 100, 2)}
-            for label, cnt in colour_counts.items()
+            c: {"count": int(np.sum(labels == c)),
+                "pct":   round(float(np.sum(labels == c)) / total * 100, 2)}
+            for c in list(HSV_RANGES.keys()) + ["none"]
         }
-        results.append({
-            "name": name,
-            "total_pixels": total,
-            "colours": colours_table,
-        })
-
+        results.append({"name": cell["name"], "total_pixels": total,
+                        "colours": colours_table})
     return results
 
 
-def build_debug_image(
-    bgr_frame: np.ndarray,
-    results: list[dict],
-    cells: list[dict] | None = None,
-) -> np.ndarray:
+# ---------------------------------------------------------------------------
+# Layer analysis
+# ---------------------------------------------------------------------------
+
+def _colour_centroids(bgr_frame: np.ndarray, cell: dict) -> dict[str, float]:
+    ih, iw = bgr_frame.shape[:2]
+    hsv      = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
+    quad     = _quad_mask((ih, iw), cell["corners"])
+    divide_x = _divide_x_per_row(ih)
+    total    = int(quad.sum())
+
+    centroids: dict[str, float] = {}
+    for colour, ranges in HSV_RANGES.items():
+        combined = np.zeros((ih, iw), dtype=np.uint8)
+        for lo, hi in ranges:
+            combined |= cv2.inRange(hsv, np.array(lo, dtype=np.uint8),
+                                         np.array(hi, dtype=np.uint8))
+        mask = quad & combined.astype(bool)
+        ys, xs = np.where(mask)
+        if len(xs) == 0:
+            continue
+        if len(xs) / total * 100 < MIN_COLOUR_PCT:
+            continue
+        centroids[colour] = float(np.mean(xs)) - float(divide_x[int(np.mean(ys))])
+    return centroids
+
+def analyse_layer(bgr_frame: np.ndarray,
+                  left_result: dict, right_result: dict,
+                  left_cell: dict,  right_cell: dict) -> dict:
     """
-    Render the debug window: white background, pixels inside each quad painted
-    with their classification colour, corner dots + labels, legend.
+    Determine orientation and block positions for one layer.
+
+    Returns
+    -------
+    {
+        "orientation": "left" | "right",
+        "blocks": [
+            {"colour": str, "position": float, "present": bool},
+            ...
+        ]  # sorted front-to-back (smallest abs distance from divide line first)
+    }
     """
+    def _max_pct(result: dict) -> float:
+        pcts = [i["pct"] for c, i in result["colours"].items() if c != "none"]
+        return max(pcts, default=0.0)
+
+    left_dom  = _max_pct(left_result)  >= DOMINANT_PCT
+    right_dom = _max_pct(right_result) >= DOMINANT_PCT
+
+    if right_dom and not left_dom:
+        orientation, endon_cell = "left",  left_cell
+    elif left_dom and not right_dom:
+        orientation, endon_cell = "right", right_cell
+    else:
+        # Ambiguous — treat the less-dominant side as end-on
+        if _max_pct(left_result) <= _max_pct(right_result):
+            orientation, endon_cell = "left",  left_cell
+        else:
+            orientation, endon_cell = "right", right_cell
+
+    centroids = _colour_centroids(bgr_frame, endon_cell)
+    blocks = sorted(
+        [{"colour": c, "position": dist, "present": True}
+         for c, dist in centroids.items()],
+        key=lambda b: abs(b["position"])
+    )
+    return {"orientation": orientation, "blocks": blocks}
+
+
+# ---------------------------------------------------------------------------
+# Debug visualisation
+# ---------------------------------------------------------------------------
+
+def build_debug_image(bgr_frame: np.ndarray, results: list[dict],
+                      cells: list[dict] | None = None) -> np.ndarray:
     if cells is None:
         cells = GRID_CELLS
 
-    ih, iw = bgr_frame.shape[:2]
-    hsv_frame = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
+    ih, iw   = bgr_frame.shape[:2]
+    hsv      = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
 
     all_corners = [c for cell in cells for c in cell["corners"]]
-    if not all_corners:
-        return np.full((100, 100, 3), 255, dtype=np.uint8)
-
-    margin = 40
-    min_x = max(0, min(c[0] for c in all_corners) - margin)
-    min_y = max(0, min(c[1] for c in all_corners) - margin)
+    margin  = 40
+    min_x = max(0,  min(c[0] for c in all_corners) - margin)
+    min_y = max(0,  min(c[1] for c in all_corners) - margin)
     max_x = min(iw, max(c[0] for c in all_corners) + margin)
     max_y = min(ih, max(c[1] for c in all_corners) + margin)
-    cw, ch = max_x - min_x, max_y - min_y
-
-    canvas = np.full((ch, cw, 3), 255, dtype=np.uint8)
+    cw, ch  = max_x - min_x, max_y - min_y
+    canvas  = np.full((ch, cw, 3), 255, dtype=np.uint8)
 
     for cell in cells:
-        corners = cell["corners"]
-        quad = _quad_mask((ih, iw), corners)
+        quad         = _quad_mask((ih, iw), cell["corners"])
         unclassified = quad.copy()
 
         for colour, ranges in HSV_RANGES.items():
             combined = np.zeros((ih, iw), dtype=np.uint8)
             for lo, hi in ranges:
-                combined |= cv2.inRange(hsv_frame,
-                                        np.array(lo, dtype=np.uint8),
-                                        np.array(hi, dtype=np.uint8))
+                combined |= cv2.inRange(hsv, np.array(lo, dtype=np.uint8),
+                                             np.array(hi, dtype=np.uint8))
             matched = quad & combined.astype(bool) & unclassified
             unclassified &= ~matched
-            bgr = COLOUR_BGR[colour]
-            canvas[matched[min_y:max_y, min_x:max_x]] = bgr
+            canvas[matched[min_y:max_y, min_x:max_x]] = COLOUR_BGR[colour]
 
         canvas[unclassified[min_y:max_y, min_x:max_x]] = COLOUR_BGR["none"]
 
-        # Quad outline + corner dots
         tl, tr, bl, br = cell["corners"]
-        local = [(x - min_x, y - min_y) for x, y in [tl, tr, br, bl]]
-        poly = np.array(local, dtype=np.int32)
-        cv2.polylines(canvas, [poly], True, (255, 255, 255), 1)
-
-        for (lx, ly), (ox, oy) in zip(
-                [(x - min_x, y - min_y) for x, y in cell["corners"]],
-                cell["corners"]):
-            cv2.circle(canvas, (lx, ly), 5, (30, 30, 30), -1)
-            cv2.circle(canvas, (lx, ly), 5, (255, 255, 255), 1)
-            label = f"({ox},{oy})"
-            tx = min(lx + 8, cw - len(label) * 7)
-            ty = max(ly - 8, 12)
-            cv2.putText(canvas, label, (tx, ty),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.38, (230, 230, 230),
-                        1, cv2.LINE_AA)
+        poly = np.array([(x - min_x, y - min_y) for x, y in [tl, tr, br, bl]], dtype=np.int32)
+        cv2.polylines(canvas, [poly], True, (180, 180, 180), 1)
+        for ox, oy in cell["corners"]:
+            lx, ly = ox - min_x, oy - min_y
+            cv2.circle(canvas, (lx, ly), 4, (30, 30, 30), -1)
 
     # Legend
-    items = list(COLOUR_BGR.items())
-    lx0 = 6
-    ly0 = ch - len(items) * 16 - 6
-    for i, (name, bgr) in enumerate(items):
-        ly = ly0 + i * 16
-        cv2.rectangle(canvas, (lx0, ly), (lx0 + 12, ly + 12), bgr, -1)
-        cv2.rectangle(canvas, (lx0, ly), (lx0 + 12, ly + 12), (100, 100, 100), 1)
-        cv2.putText(canvas, name, (lx0 + 16, ly + 10),
+    for i, (name, bgr) in enumerate(COLOUR_BGR.items()):
+        ly = ch - (len(COLOUR_BGR) - i) * 16
+        cv2.rectangle(canvas, (6, ly), (18, ly + 12), bgr, -1)
+        cv2.putText(canvas, name, (22, ly + 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, (30, 30, 30), 1, cv2.LINE_AA)
 
     return canvas
 
 
-def print_results(results: list[dict]) -> None:
-    sep = "─" * 52
-    print(sep)
-    for box in results:
-        print(f"  Box: {box['name']}   ({box['total_pixels']} pixels)")
-        if not box["colours"]:
-            print("    [no pixels — check corners are within frame]")
-            continue
-        print(f"  {'Colour':<10}  {'Count':>7}  {'Percent':>8}")
-        print(f"  {'──────':<10}  {'─────':>7}  {'───────':>8}")
-        for label, info in box["colours"].items():
-            bar = "█" * int(info["pct"] / 2)
-            print(f"  {label:<10}  {info['count']:>7}  {info['pct']:>7.2f}%  {bar}")
-        print()
-    print(sep)
-
-
-# ============================================================================
-# ROS2 node
-# ============================================================================
+# ---------------------------------------------------------------------------
+# ROS node
+# ---------------------------------------------------------------------------
 
 class BoxPercentagesNode(Node):
-    """
-    Subscribes to the camera color image, computes per-cell colour percentages
-    and publishes JSON results + a debug image.
-    """
-
     def __init__(self, color_topic: str = "/camera/camera/color/image_raw"):
         super().__init__("box_percentages")
         self._bridge = CvBridge()
-
-        self._sub = self.create_subscription(
-            Image, color_topic, self._cb, 10)
-
-        self._pub_pct = self.create_publisher(
-            String, "/jenga/box_percentages", 10)
-        self._pub_img = self.create_publisher(
-            Image, "/jenga/box_debug_image", 10)
-
+        self.create_subscription(Image, color_topic, self._cb, 10)
+        self._pub_pct = self.create_publisher(String, "/jenga/box_percentages", 10)
+        self._pub_img = self.create_publisher(Image,  "/jenga/box_debug_image", 10)
         self.get_logger().info("BoxPercentagesNode ready")
 
     def _cb(self, msg: Image) -> None:
-        bgr = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
-
+        bgr     = self._bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
         results = compute_percentages(bgr)
-
         pct_msg = String()
         pct_msg.data = json.dumps(results)
         self._pub_pct.publish(pct_msg)
-
-        debug_img = build_debug_image(bgr, results)
         self._pub_img.publish(
-            self._bridge.cv2_to_imgmsg(debug_img, encoding="bgr8"))
+            self._bridge.cv2_to_imgmsg(build_debug_image(bgr, results), encoding="bgr8"))
 
 
-# ============================================================================
+# ---------------------------------------------------------------------------
 # Entry points
-# ============================================================================
+# ---------------------------------------------------------------------------
 
 def main_ros():
     rclpy.init()
@@ -312,11 +277,24 @@ def main_standalone(image_path: str):
         sys.exit(1)
 
     results = compute_percentages(bgr)
-    print_results(results)
+    for cell in results:
+        print(f"\n{cell['name']}  ({cell['total_pixels']} px)")
+        for colour, info in cell["colours"].items():
+            if info["pct"] > 0:
+                print(f"  {colour:<10} {info['pct']:>6.1f}%")
 
-    debug = build_debug_image(bgr, results)
+    left  = next(r for r in results if r["name"] == "left_cell")
+    right = next(r for r in results if r["name"] == "right_cell")
+    lc    = next(c for c in GRID_CELLS if c["name"] == "left_cell")
+    rc    = next(c for c in GRID_CELLS if c["name"] == "right_cell")
+    layer = analyse_layer(bgr, left, right, lc, rc)
+    print(f"\nOrientation: {layer['orientation']}")
+    for i, b in enumerate(layer["blocks"]):
+        print(f"  pos {i}: {b['colour']:<10}  dist={b['position']:+.1f}px")
+
     cv2.namedWindow("Box percentages", cv2.WINDOW_NORMAL)
-    cv2.imshow("Box percentages", debug)
+    cv2.resizeWindow("Box percentages", 960, 300)
+    cv2.imshow("Box percentages", build_debug_image(bgr, results))
     cv2.waitKey(0)
     cv2.destroyAllWindows()
 

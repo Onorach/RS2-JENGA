@@ -9,7 +9,9 @@ import cv2
 import numpy as np
 
 from colour_identification import classify_frame, compute_roi, ColourIdentificationNode
-from box_percentages import compute_percentages, build_debug_image as build_pct_debug, BoxPercentagesNode
+from box_percentages import compute_percentages, build_debug_image, analyse_layer, GRID_CELLS, LAYER_CELLS
+from edge_analysis import build_edge_display
+from saturation_mask import compute_hex_region, build_display
 from perception_config import GRID_CORNERS, DIVIDE_LINE
 
 import rclpy
@@ -52,6 +54,14 @@ def _draw_grid(disp: np.ndarray, offset_x: int, offset_y: int) -> None:
 
 
 def _run_loop(get_bgr) -> None:
+    cv2.namedWindow("Live + grid", cv2.WINDOW_NORMAL)
+    cv2.namedWindow("Colour mask", cv2.WINDOW_NORMAL)
+    cv2.namedWindow("Box percentages", cv2.WINDOW_NORMAL)
+    cv2.namedWindow("Edges (grey)", cv2.WINDOW_NORMAL)
+    cv2.namedWindow("Edges (hue)",  cv2.WINDOW_NORMAL) 
+    cv2.namedWindow("Saturation region", cv2.WINDOW_NORMAL)
+
+
     frame_n = 0
     roi_margin = 0.10
 
@@ -65,46 +75,45 @@ def _run_loop(get_bgr) -> None:
         ih, iw = bgr.shape[:2]
         frame_n += 1
 
+        # --- live view ---
         rx, ry, rw, rh = compute_roi(iw, ih)
         mx, my = int(rw * roi_margin), int(rh * roi_margin)
-        dx1 = max(0, rx - mx)
-        dy1 = max(0, ry - my)
-        dx2 = min(iw, rx + rw + mx)
-        dy2 = min(ih, ry + rh + my)
+        dx1 = max(0, rx - mx);  dy1 = max(0, ry - my)
+        dx2 = min(iw, rx + rw + mx);  dy2 = min(ih, ry + rh + my)
 
         live_disp = bgr[dy1:dy2, dx1:dx2].copy()
-        cv2.rectangle(
-            live_disp,
-            (rx - dx1, ry - dy1),
-            (rx + rw - dx1, ry + rh - dy1),
-            (255, 255, 0),
-            2,
-        )
+        cv2.rectangle(live_disp, (rx - dx1, ry - dy1), (rx + rw - dx1, ry + rh - dy1), (255, 255, 0), 2)
         _draw_grid(live_disp, dx1, dy1)
-
         (fx1, fy1), (fx2, fy2) = DIVIDE_LINE
-        cv2.line(
-            live_disp,
-            (fx1 - dx1, fy1 - dy1),
-            (fx2 - dx1, fy2 - dy1),
-            (255, 255, 255),
-            1,
-            cv2.LINE_AA,
-        )
-        cv2.namedWindow("Live + grid", cv2.WINDOW_NORMAL)
+        cv2.line(live_disp, (fx1 - dx1, fy1 - dy1), (fx2 - dx1, fy2 - dy1), (255, 255, 255), 1, cv2.LINE_AA)
         cv2.imshow("Live + grid", live_disp)
 
+        # --- colour mask ---
         colour_img, _ = classify_frame(bgr)
-        cv2.namedWindow("Colour mask", cv2.WINDOW_NORMAL)
         cv2.imshow("Colour mask", colour_img)
 
+        # --- edge detection ---
+        disp_grey, disp_hue = build_edge_display(colour_img)
+        cv2.imshow("Edges (grey)", disp_grey)
+        cv2.imshow("Edges (hue)",  disp_hue)
+
+        pts = compute_hex_region(bgr)
+        cv2.imshow("Saturation region", build_display(bgr, pts))    
+
         if frame_n % 30 == 0:
-            cv2.namedWindow("Box percentages", cv2.WINDOW_NORMAL)
-            cv2.imshow("Box percentages", build_pct_debug(bgr, compute_percentages(bgr)))
+            pct_results = compute_percentages(bgr)
+            cv2.imshow("Box percentages", build_debug_image(bgr, pct_results))
+
+            # pct_results is ordered the same as GRID_CELLS: [l0, r0, l1, r1, ...]
+            for i, (left_cell, right_cell) in enumerate(LAYER_CELLS):
+                left_result  = pct_results[i * 2]
+                right_result = pct_results[i * 2 + 1]
+                layer = analyse_layer(bgr, left_result, right_result, left_cell, right_cell)
+                print(f"layer {i}  orientation={layer['orientation']}  "
+                    + "  ".join(f"{b['colour']}({b['position']:+.0f}px)" for b in layer["blocks"]))
 
         if (cv2.waitKey(1) & 0xFF) == ord("q"):
             break
-
 
 class _ImageBridge(Node):
     def __init__(self, color_topic: str):

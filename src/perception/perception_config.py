@@ -49,11 +49,7 @@ DIVIDE_LINE = ((920, 217), (914, 850))
 GRID_CORNERS: list[list[tuple[int, int] | None]] = [
     [(664, 197), (920, 217), (1237, 215)],
     [(669, 282), (916, 315), (1228, 297)],
-    [None, None, None],
-    [None, None, None],
-    [None, None, None],
-    [None, None, None],
-    [None, None, None],
+    [(675, 359), (918, 410), (1224, 380)],
 ]
 
 # Initial OpenCV window size (width, height) for all play windows.
