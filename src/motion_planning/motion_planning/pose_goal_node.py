@@ -26,6 +26,7 @@ Flow
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 
@@ -39,7 +40,7 @@ from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import PoseStamped, WrenchStamped
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import PlanningOptions
-from std_msgs.msg import Bool
+from std_msgs.msg import Bool, String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from ur3e_controller.move_client import UR3E_JOINT_NAMES
@@ -99,6 +100,17 @@ class PoseGoalNode(Node):
         self._exec_goal_handle = None
         self._handle_lock = threading.Lock()
 
+        # Status publisher (same JSON contract as rmrc_planning_node / moveit_cartesian_node)
+        self._status_topic = str(
+            self.declare_parameter("status_topic", "moveit_status").value
+        )
+        self._status_pub = self.create_publisher(
+            String, self._status_topic, 10
+        )
+        self._status_lock = threading.Lock()
+        self._status_phase: str = "idle"
+        self._executions_completed: int = 0
+
         # E-stop state — set by subscriptions below; checked in _on_goal to reject
         # new pose goals while the e-stop is active.
         self._estop_active = False
@@ -113,9 +125,35 @@ class PoseGoalNode(Node):
             Bool, "/estop", self._on_estop_direct, 1, callback_group=self._cbg
         )
 
+        self._emit_status()
         self.get_logger().info(
             "PoseGoalNode started.  Publish geometry_msgs/PoseStamped to '/goal_pose'."
         )
+
+    # ── Status ──────────────────────────────────────────────────────────────
+
+    def _set_status_phase(self, phase: str) -> None:
+        with self._status_lock:
+            self._status_phase = phase
+        self._emit_status()
+
+    def _emit_status(self) -> None:
+        with self._status_lock:
+            phase = self._status_phase
+            completed = self._executions_completed
+        with self._busy_lock:
+            busy = self._busy
+        with self._estop_lock:
+            estop = self._estop_active
+        payload = {
+            "state": phase,
+            "busy": busy,
+            "executions_completed": completed,
+            "estop_active": estop,
+        }
+        out = String()
+        out.data = json.dumps(payload, separators=(",", ":"))
+        self._status_pub.publish(out)
 
     # ── F/T ──────────────────────────────────────────────────────────────────
 
@@ -187,6 +225,7 @@ class PoseGoalNode(Node):
                 return
             self._busy = True
 
+        self._set_status_phase("planning")
         pos = msg.pose.position
         frame = msg.header.frame_id or "(no frame)"
         self.get_logger().info(
@@ -309,6 +348,7 @@ class PoseGoalNode(Node):
             self._set_free()
             return
 
+        self._set_status_phase("executing")
         goal_msg = FollowJointTrajectory.Goal()
         goal_msg.trajectory = joint_traj
         future = self._joint_ac.send_goal_async(goal_msg)
@@ -365,6 +405,10 @@ class PoseGoalNode(Node):
     def _set_free(self) -> None:
         with self._busy_lock:
             self._busy = False
+        with self._status_lock:
+            self._executions_completed += 1
+            self._status_phase = "idle"
+        self._emit_status()
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

@@ -1,7 +1,11 @@
 # Copyright 2025 RS2-JENGA
 # BSD-3-Clause
 
-"""RMRC test: optional joint-space home, rectangle pose goals above tower, then joint home."""
+"""
+Planner test: optional joint-space home, rectangle pose goals above the Jenga
+tower, then joint home.  Works with any of the three planning backends
+(rmrc, moveit, moveit_cartesian) by auto-selecting the correct status topic.
+"""
 
 import json
 import sys
@@ -28,6 +32,12 @@ UR3E_JOINT_NAMES = [
 ]
 
 HOME_DEG = [0.0, -90.0, 0.0, -90.0, 0.0, 0.0]
+
+PLANNER_STATUS_TOPICS = {
+    "rmrc": "rmrc_status",
+    "moveit": "moveit_status",
+    "moveit_cartesian": "moveit_cartesian_status",
+}
 
 
 def _move_joint_home(
@@ -111,8 +121,9 @@ def quat_tool_down_face_point(
 
 def main(args=None):
     rclpy.init(args=args)
-    node = Node("test_rmrc_pose")
-    execution_mode = str(node.declare_parameter("execution_mode", "trajectory").value).lower()
+    node = Node("test_planner_pose")
+
+    planner = str(node.declare_parameter("planner", "rmrc").value).lower()
     goal_frame = node.declare_parameter("goal_frame", "world").value
     margin_xy = float(node.declare_parameter("rectangle_margin_xy", 0.05).value)
     z_clearance = float(node.declare_parameter("z_clearance_above_tower", 0.05).value)
@@ -125,7 +136,14 @@ def main(args=None):
     sleep_between_poses_sec = float(
         node.declare_parameter("sleep_between_poses_sec", 8.0).value
     )
-    status_topic = str(node.declare_parameter("status_topic", "rmrc_status").value)
+
+    # Auto-detect status topic from planner, allow explicit override.
+    status_topic_param = str(node.declare_parameter("status_topic", "").value)
+    if status_topic_param:
+        status_topic = status_topic_param
+    else:
+        status_topic = PLANNER_STATUS_TOPICS.get(planner, "rmrc_status")
+
     start_with_home_joints = bool(
         node.declare_parameter("start_with_home_joints", True).value
     )
@@ -135,9 +153,14 @@ def main(args=None):
     joint_home_duration_sec = int(
         node.declare_parameter("joint_home_duration_sec", 6).value
     )
+
+    node.get_logger().info(
+        f"Planner: '{planner}', status topic: '{status_topic}'"
+    )
+
     latest_status = {"executions_completed": 0}
 
-    def _on_rmrc_status(msg: String) -> None:
+    def _on_planner_status(msg: String) -> None:
         try:
             d = json.loads(msg.data)
             latest_status["executions_completed"] = int(d.get("executions_completed", 0))
@@ -145,7 +168,7 @@ def main(args=None):
             pass
 
     if wait_for_goal_completion:
-        node.create_subscription(String, status_topic, _on_rmrc_status, 10)
+        node.create_subscription(String, status_topic, _on_planner_status, 10)
 
     pub = node.create_publisher(PoseStamped, "goal_pose", 10)
     joint_ac = ActionClient(
@@ -153,12 +176,12 @@ def main(args=None):
         FollowJointTrajectory,
         "/joint_trajectory_controller/follow_joint_trajectory",
     )
-    # Allow rmrc_planning_node (robot_description, TF) to come up before first goal.
+    # Allow planning node (robot_description, TF, move_group) to come up.
     time.sleep(1.0)
 
     if start_with_home_joints:
         node.get_logger().info(
-            "Moving to HOME_DEG via joint_trajectory_controller (before RMRC rectangle)."
+            "Moving to HOME_DEG via joint_trajectory_controller (before rectangle)."
         )
         _move_joint_home(
             node,
@@ -170,7 +193,7 @@ def main(args=None):
     # Tower in WORLD frame from ur3e_workspace.world.
     tower_cx, tower_cy = 0.35, 0.0
     tower_half_x, tower_half_y = 0.075 / 2.0, 0.075 / 2.0
-    tower_top_z = 1.08 + (8 * 0.015) + 0.02 # highest block center + half height + half height of the tower
+    tower_top_z = 1.08 + (8 * 0.015) + 0.02
     z = tower_top_z + z_clearance
 
     x_min = tower_cx - tower_half_x - margin_xy
@@ -178,7 +201,6 @@ def main(args=None):
     y_min = tower_cy - tower_half_y - margin_xy
     y_max = tower_cy + tower_half_y + margin_xy
 
-    # Point tool down (-base Z) and yaw toward tower centre for a natural approach.
     corners = [
         (x_min, y_min),
         (x_max, y_min),
@@ -197,12 +219,13 @@ def main(args=None):
     )
     if wait_for_goal_completion:
         node.get_logger().info(
-            "wait_for_goal_completion=true — advancing after each pose when rmrc_status "
-            "reports executions_completed (see rmrc_planning_node)."
+            f"wait_for_goal_completion=true — advancing after each pose when "
+            f"'{status_topic}' reports executions_completed."
         )
     else:
         node.get_logger().info(
-            f"wait_for_goal_completion=false — using sleep_between_poses_sec={sleep_between_poses_sec:.1f} "
+            f"wait_for_goal_completion=false — using sleep_between_poses_sec="
+            f"{sleep_between_poses_sec:.1f} "
             "(poses may overwrite buffered goals if faster than execution)."
         )
 
@@ -241,22 +264,13 @@ def main(args=None):
                     break
             if not ok:
                 node.get_logger().error(
-                    f"Timed out waiting for RMRC completion (executions_completed > {baseline}). "
-                    f"Is rmrc_planning_node running and publishing '{status_topic}'?"
+                    f"Timed out waiting for planner completion "
+                    f"(executions_completed > {baseline}). "
+                    f"Is the planning node running and publishing '{status_topic}'?"
                 )
                 break
         else:
             time.sleep(sleep_between_poses_sec)
-
-    if execution_mode == "velocity":
-        node.get_logger().info(
-            "Rectangle complete. Skipping end joint home in velocity mode "
-            "(set execution_mode:=trajectory for joint home at end)."
-        )
-        node.get_logger().info("Done.")
-        node.destroy_node()
-        rclpy.shutdown()
-        return 0
 
     if end_with_home_joints:
         node.get_logger().info("Rectangle complete. Returning to home joint pose.")

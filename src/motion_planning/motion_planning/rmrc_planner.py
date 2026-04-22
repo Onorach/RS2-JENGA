@@ -531,7 +531,7 @@ class RMRCPlanner:
         if use_joint_secondary:
             w_eps = max(float(joint_secondary_w_epsilon), 0.0)
             w_mag = max(float(joint_secondary_weight), 0.0) * w_eps
-            Wdiag = np.zeros(n_j, dtype=np.float64)
+            Wdiag = np.full(n_j, w_eps, dtype=np.float64)
             if n_j > 2:
                 Wdiag[1] = w_mag
                 Wdiag[2] = w_mag

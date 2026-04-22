@@ -49,8 +49,8 @@ from motion_planning.moveit_planning import DEFAULT_PLANNING_FRAME, DEFAULT_EE_L
 DEFAULT_JOINT_ACTION = "/joint_trajectory_controller/follow_joint_trajectory"
 DEFAULT_PATH_RESOLUTION_M = 0.002
 DEFAULT_MAX_VELOCITY = 0.2
-DEFAULT_D_SAFE = 0.065
-DEFAULT_K_REPULSION = 0.55
+DEFAULT_D_SAFE = 0.15
+DEFAULT_K_REPULSION = 1.0
 DEFAULT_EXEC_START_DELAY = 1.0
 DEFAULT_GOAL_TIME_TOLERANCE = 2.0
 DEFAULT_MAX_JOINT_VELOCITY = 0.25
@@ -62,21 +62,23 @@ DEFAULT_EXECUTION_MODE = "trajectory"
 DEFAULT_KINEMATICS_BACKEND = "hybrid"
 DEFAULT_VELOCITY_COMMAND_TOPIC = "/joint_group_velocity_controller/commands"
 DEFAULT_IK_SEED_GAIN = 0.0
-DEFAULT_BODY_LINK_WEIGHT = 0.55
+DEFAULT_BODY_LINK_WEIGHT = 1.5
 DEFAULT_MAX_CART_REPULSION_LINEAR = 0.75
 DEFAULT_USE_MULTI_POINT_REPULSION = True
 DEFAULT_POSTURE_BIAS_GAIN = 0.0
-DEFAULT_POSTURE_SHOULDER_LIFT_RAD = -1.25
-DEFAULT_POSTURE_ELBOW_RAD = 0.85
+DEFAULT_POSTURE_APPLY_SHOULDER_LIFT = True
+DEFAULT_POSTURE_APPLY_ELBOW = True
+DEFAULT_POSTURE_SHOULDER_LIFT_RAD = -1.57
+DEFAULT_POSTURE_ELBOW_RAD = 0.87
 DEFAULT_IK_SCORE_MODE = "composite"
-DEFAULT_IK_SCORE_W_ELBOW = 1.0
+DEFAULT_IK_SCORE_W_ELBOW = 10000000000.0
 DEFAULT_IK_SCORE_W_CLEARANCE = 0.08
 DEFAULT_IK_SCORE_W_START = 0.35
-DEFAULT_JOINT_SECONDARY_WEIGHT = 0.0
+DEFAULT_JOINT_SECONDARY_WEIGHT = 1000000000.0
 DEFAULT_JOINT_SECONDARY_GAIN = 1.5
 DEFAULT_JOINT_SECONDARY_W_EPSILON = 0.025
 DEFAULT_JOINT_SECONDARY_PREF_CLIP = 0.45
-DEFAULT_REPULSION_SMOOTH_ALPHA = 0.45
+DEFAULT_REPULSION_SMOOTH_ALPHA = 0.85
 DEFAULT_REPULSION_DIST_SCALE = True
 DEFAULT_REPULSION_OUT_GRAD_CAP = 120.0
 DEFAULT_ORIENTATION_ERROR_GAIN = 1.15
@@ -198,7 +200,7 @@ class RMRCPlanningNode(Node):
             self.declare_parameter("posture_bias_gain", DEFAULT_POSTURE_BIAS_GAIN).value
         )
         self._posture_apply_shoulder_lift = bool(
-            self.declare_parameter("posture_apply_shoulder_lift", False).value
+            self.declare_parameter("posture_apply_shoulder_lift", DEFAULT_POSTURE_APPLY_SHOULDER_LIFT).value
         )
         self._posture_shoulder_lift_rad = float(
             self.declare_parameter(
@@ -206,7 +208,7 @@ class RMRCPlanningNode(Node):
             ).value
         )
         self._posture_apply_elbow = bool(
-            self.declare_parameter("posture_apply_elbow", False).value
+            self.declare_parameter("posture_apply_elbow", DEFAULT_POSTURE_APPLY_ELBOW).value
         )
         self._posture_elbow_rad = float(
             self.declare_parameter("posture_elbow_target_rad", DEFAULT_POSTURE_ELBOW_RAD).value
@@ -395,7 +397,7 @@ class RMRCPlanningNode(Node):
         if not rd or not isinstance(rd, str):
             self.get_logger().error(
                 "robot_description parameter not set. Pass it via the launch file "
-                "(e.g. use_rmrc:=true with motion_planning.launch)."
+                "(e.g. planner:=rmrc with motion_planning.launch)."
             )
             return None
         try:

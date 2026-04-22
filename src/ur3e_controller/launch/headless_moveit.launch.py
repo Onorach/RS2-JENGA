@@ -3,9 +3,13 @@
 
 """
 Launch Gazebo sim + MoveIt + motion planning without RViz (headless).
-Use for testing RMRC or MoveIt planning via CLI/scripts without the GUI.
+Use for testing RMRC, MoveIt OMPL, or MoveIt Cartesian planning via CLI/scripts.
 
-With use_rmrc:=true, uses RMRC planning (no MoveIt needed for planning).
+planner:=rmrc       → RMRC planning (no MoveIt needed for planning).
+planner:=moveit     → MoveIt OMPL joint-space planning.
+planner:=moveit_cartesian → MoveIt Cartesian straight-line + OMPL fallback.
+
+Both MoveIt planners start the move_group node automatically.
 """
 
 from launch import LaunchDescription
@@ -15,12 +19,15 @@ from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.substitutions import FindPackageShare
 
-
 def generate_launch_description():
-    use_rmrc_arg = DeclareLaunchArgument(
-        "use_rmrc",
-        default_value="true",
-        description="Use RMRC planning (true) or MoveIt pose_goal (false).",
+    planner_arg = DeclareLaunchArgument(
+        "planner",
+        default_value="rmrc",
+        choices=["rmrc", "moveit", "moveit_cartesian"],
+        description=(
+            "Planning backend: 'rmrc' (DIY RMRC, no MoveIt), 'moveit' (OMPL), "
+            "'moveit_cartesian' (Cartesian straight-line + OMPL fallback)."
+        ),
     )
 
     # Gazebo sim (no RViz)
@@ -33,34 +40,40 @@ def generate_launch_description():
         }.items(),
     )
 
-    # MoveIt (no RViz) - only when not using RMRC
+    # MoveIt (no RViz) — started for both 'moveit' and 'moveit_cartesian' planners
     moveit_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             [FindPackageShare("ur_moveit_config"), "/launch", "/ur_moveit.launch.py"]
         ),
         condition=IfCondition(
-            PythonExpression(["'", LaunchConfiguration("use_rmrc"), "' == 'false'"])
+            PythonExpression(["'", LaunchConfiguration("planner"), "' != 'rmrc'"])
         ),
         launch_arguments={
             "ur_type": "ur3e",
             "use_sim_time": "true",
             "launch_rviz": "false",
             "use_fake_hardware": "true",
+            # Prevent launch-arg name collision with ur3e_sim_control.launch.py which also declares
+            # a global "description_file" defaulting to "ur3e_workspace.urdf.xacro".
+            # ur_moveit.launch.py defaults description_package to "ur_description", so explicitly
+            # pairing it with a valid file avoids the /opt/ros/.../ur3e_workspace... missing-file error.
+            "description_package": "ur_description",
+            "description_file": "ur.urdf.xacro",
         }.items(),
     )
 
-    # Motion planning (RMRC or MoveIt)
+    # Motion planning (RMRC, MoveIt OMPL, or MoveIt Cartesian)
     motion_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             [FindPackageShare("motion_planning"), "/launch", "/motion_planning.launch.py"]
         ),
         launch_arguments={
-            "use_rmrc": LaunchConfiguration("use_rmrc"),
+            "planner": LaunchConfiguration("planner"),
         }.items(),
     )
 
     return LaunchDescription([
-        use_rmrc_arg,
+        planner_arg,
         sim_launch,
         moveit_launch,
         motion_launch,

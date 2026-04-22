@@ -10,18 +10,19 @@ exclusion_zones:
   - type: box
     id: wheeled_cabinet
     frame_id: base_link
-    # Top surface at z=0; centre z = -cabinet_half_height
-    position: [0.20, 0.0, -0.54]
-    size: [0.735, 0.71, 1.08]
+    # Top surface at z=-0.03 (1.5 cm below base_link) so padding does not
+    # create a false collision between base_link and the cabinet.
+    position: [0.0, 0.20, -0.555]
+    size: [0.71, 0.735, 1.05]
 
   - type: box
     id: platform
     frame_id: base_link
-    position: [0.35, 0.0, 0.006]
-    size: [0.320, 0.500, 0.012]
+    position: [0.0, 0.35, 0.006]
+    size: [0.500, 0.320, 0.012]
 
   - type: box
     id: jenga_tower
     frame_id: base_link
-    position: [0.35, 0.0, 0.072]
+    position: [0.0, 0.35, 0.072]
     size: [0.085, 0.085, 0.135]

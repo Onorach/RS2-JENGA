@@ -22,6 +22,7 @@ from moveit_msgs.msg import (
     RobotTrajectory,
 )
 from moveit_msgs.msg import PlanningScene, PlanningSceneWorld, CollisionObject
+from moveit_msgs.srv import GetCartesianPath
 from shape_msgs.msg import SolidPrimitive
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from builtin_interfaces.msg import Duration
@@ -108,6 +109,75 @@ def build_motion_plan_request(
     req.max_velocity_scaling_factor = 1.0
     req.max_acceleration_scaling_factor = 1.0
     return req
+
+
+def build_cartesian_path_request(
+    goal_pose: Pose,
+    group_name: str = DEFAULT_PLANNING_GROUP,
+    link_name: str = DEFAULT_EE_LINK,
+    max_step: float = 0.005,
+    jump_threshold: float = 5.0,
+    avoid_collisions: bool = True,
+    max_velocity_scaling_factor: float = 0.1,
+    max_acceleration_scaling_factor: float = 0.1,
+    frame_id: str = DEFAULT_PLANNING_FRAME,
+    waypoints: list[Pose] | None = None,
+) -> GetCartesianPath.Request:
+    """Build a GetCartesianPath service request for a straight-line path.
+
+    If *waypoints* is provided it is used directly; otherwise a single-element
+    list ``[goal_pose]`` is used.  The service interpolates from the robot's
+    current state through each waypoint using *max_step* as the Cartesian
+    resolution.
+
+    *frame_id* sets the reference frame for the waypoints.  Callers should
+    pass the frame that the goal pose is expressed in (e.g. ``"world"``);
+    MoveIt will transform to the planning frame internally.
+
+    *max_velocity_scaling_factor* and *max_acceleration_scaling_factor* are
+    accepted for caller compatibility but are **not** set on the request
+    (Humble's ``GetCartesianPath`` lacks these fields).  Apply
+    :func:`scale_trajectory_timing` to the resulting trajectory instead.
+    """
+    req = GetCartesianPath.Request()
+    req.header.frame_id = frame_id
+    req.start_state.is_diff = True
+    req.group_name = group_name
+    req.link_name = link_name
+    req.waypoints = waypoints if waypoints is not None else [goal_pose]
+    req.max_step = max_step
+    req.jump_threshold = jump_threshold
+    req.avoid_collisions = avoid_collisions
+    return req
+
+
+def scale_trajectory_timing(
+    robot_trajectory: RobotTrajectory,
+    velocity_scaling: float = 1.0,
+    acceleration_scaling: float = 1.0,
+) -> RobotTrajectory:
+    """Scale ``time_from_start`` of every trajectory point for speed control.
+
+    Humble's ``GetCartesianPath`` service does not accept velocity/acceleration
+    scaling factors, so we apply them after planning by stretching the timeline.
+    A *velocity_scaling* of 0.1 means the robot moves at 10 % of full speed,
+    implemented as a 10x stretch of every timestamp.
+    """
+    scale = 1.0 / max(min(velocity_scaling, acceleration_scaling), 0.01)
+    if scale == 1.0:
+        return robot_trajectory
+    inv_scale = 1.0 / scale
+    inv_scale2 = inv_scale * inv_scale
+    for pt in robot_trajectory.joint_trajectory.points:
+        total_ns = pt.time_from_start.sec * 1_000_000_000 + pt.time_from_start.nanosec
+        scaled_ns = int(total_ns * scale)
+        pt.time_from_start.sec = scaled_ns // 1_000_000_000
+        pt.time_from_start.nanosec = scaled_ns % 1_000_000_000
+        if pt.velocities:
+            pt.velocities = [v * inv_scale for v in pt.velocities]
+        if pt.accelerations:
+            pt.accelerations = [a * inv_scale2 for a in pt.accelerations]
+    return robot_trajectory
 
 
 def robot_trajectory_to_joint_trajectory(

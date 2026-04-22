@@ -3,19 +3,25 @@
 Launch Motion Planning and Control: pose goal node, exclusion zones, and e-stop node.
 Start this after MoveIt2 and the robot (sim or hardware) are running.
 
-use_rmrc:=true by default, runs RMRC planning node instead of MoveIt pose_goal_node
-(no MoveIt GUI required). RMRC needs robot_description, built from the same workspace
-xacro as ur3e_sim_control (ur3e_workspace.urdf.xacro).
+planner:=rmrc (default) runs the DIY RMRC planning node (no MoveIt needed).
+planner:=moveit runs the MoveIt OMPL pose_goal_node.
+planner:=moveit_cartesian runs the MoveIt Cartesian node (straight-line first,
+OMPL fallback on collision).
+
+Both MoveIt planners require move_group to be running (e.g. via ur_moveit_config).
+RMRC needs robot_description, built from the same workspace xacro as
+ur3e_sim_control (ur3e_workspace.urdf.xacro).
 """
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
-from launch.conditions import IfCondition, UnlessCondition
+from launch.conditions import IfCondition
 from launch.substitutions import (
     Command,
     FindExecutable,
     LaunchConfiguration,
     PathJoinSubstitution,
+    PythonExpression,
 )
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -77,10 +83,48 @@ def generate_launch_description():
         default_value="/joint_trajectory_controller/follow_joint_trajectory",
         description="FollowJointTrajectory action used by estop_node to cancel all goals.",
     )
-    use_rmrc_arg = DeclareLaunchArgument(
-        "use_rmrc",
-        default_value="true",
-        description="If true, run RMRC planning node instead of pose_goal_node (no MoveIt GUI).",
+    planner_arg = DeclareLaunchArgument(
+        "planner",
+        default_value="rmrc",
+        choices=["rmrc", "moveit", "moveit_cartesian"],
+        description=(
+            "Planning backend: 'rmrc' (DIY RMRC), 'moveit' (OMPL via MoveGroup), "
+            "'moveit_cartesian' (Cartesian straight-line + OMPL fallback)."
+        ),
+    )
+    max_step_arg = DeclareLaunchArgument(
+        "max_step",
+        default_value="0.005",
+        description=(
+            "moveit_cartesian: maximum Cartesian distance (m) between consecutive "
+            "trajectory points.  Smaller = smoother but slower to compute."
+        ),
+    )
+    jump_threshold_arg = DeclareLaunchArgument(
+        "jump_threshold",
+        default_value="5.0",
+        description=(
+            "moveit_cartesian: joint-space jump filter.  Steps where any joint "
+            "moves more than this factor times the average step are truncated."
+        ),
+    )
+    cartesian_fraction_threshold_arg = DeclareLaunchArgument(
+        "cartesian_fraction_threshold",
+        default_value="1.0",
+        description=(
+            "moveit_cartesian: minimum fraction of the Cartesian path that must "
+            "be collision-free to accept it.  1.0 = require full path, else OMPL fallback."
+        ),
+    )
+    max_velocity_scaling_factor_arg = DeclareLaunchArgument(
+        "max_velocity_scaling_factor",
+        default_value="0.1",
+        description="moveit_cartesian: scale factor (0,1] for maximum joint velocities.",
+    )
+    max_acceleration_scaling_factor_arg = DeclareLaunchArgument(
+        "max_acceleration_scaling_factor",
+        default_value="0.1",
+        description="moveit_cartesian: scale factor (0,1] for maximum joint accelerations.",
     )
     exec_start_delay_arg = DeclareLaunchArgument(
         "execution_start_delay",
@@ -308,11 +352,45 @@ def generate_launch_description():
         executable="pose_goal_node",
         name="pose_goal_node",
         output="screen",
-        condition=UnlessCondition(LaunchConfiguration("use_rmrc")),
+        condition=IfCondition(
+            PythonExpression(["'", LaunchConfiguration("planner"), "' == 'moveit'"])
+        ),
         parameters=[
             {
                 "plan_only": LaunchConfiguration("plan_only"),
                 "move_action_name": LaunchConfiguration("move_action_name"),
+            },
+        ],
+    )
+
+    moveit_cartesian_node = Node(
+        package=pkg_planning,
+        executable="moveit_cartesian_node",
+        name="moveit_cartesian_node",
+        output="screen",
+        condition=IfCondition(
+            PythonExpression(
+                ["'", LaunchConfiguration("planner"), "' == 'moveit_cartesian'"]
+            )
+        ),
+        parameters=[
+            {
+                "plan_only": LaunchConfiguration("plan_only"),
+                "move_action_name": LaunchConfiguration("move_action_name"),
+                "joint_trajectory_action": LaunchConfiguration(
+                    "joint_trajectory_action"
+                ),
+                "max_step": LaunchConfiguration("max_step"),
+                "jump_threshold": LaunchConfiguration("jump_threshold"),
+                "cartesian_fraction_threshold": LaunchConfiguration(
+                    "cartesian_fraction_threshold"
+                ),
+                "max_velocity_scaling_factor": LaunchConfiguration(
+                    "max_velocity_scaling_factor"
+                ),
+                "max_acceleration_scaling_factor": LaunchConfiguration(
+                    "max_acceleration_scaling_factor"
+                ),
             },
         ],
     )
@@ -322,7 +400,9 @@ def generate_launch_description():
         executable="rmrc_planning_node",
         name="rmrc_planning_node",
         output="screen",
-        condition=IfCondition(LaunchConfiguration("use_rmrc")),
+        condition=IfCondition(
+            PythonExpression(["'", LaunchConfiguration("planner"), "' == 'rmrc'"])
+        ),
         parameters=[
             {
                 "robot_description": robot_description_content,
@@ -417,7 +497,12 @@ def generate_launch_description():
         plan_only_arg,
         move_action_arg,
         joint_action_arg,
-        use_rmrc_arg,
+        planner_arg,
+        max_step_arg,
+        jump_threshold_arg,
+        cartesian_fraction_threshold_arg,
+        max_velocity_scaling_factor_arg,
+        max_acceleration_scaling_factor_arg,
         exec_start_delay_arg,
         goal_time_tolerance_arg,
         max_joint_velocity_arg,
@@ -449,6 +534,7 @@ def generate_launch_description():
         base_height_arg,
         world_to_base_tf_node,
         pose_goal_node,
+        moveit_cartesian_node,
         rmrc_planning_node,
         exclusion_zones_node,
         estop_node,

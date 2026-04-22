@@ -9,35 +9,6 @@ import numpy as np
 if TYPE_CHECKING:
     import PyKDL as kdl  # type: ignore
 
-
-# #region agent log
-def _agent_log(hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    import json
-    import time
-
-    payload = {
-        "sessionId": "ce088f",
-        "runId": "pre-fix",
-        "hypothesisId": str(hypothesis_id),
-        "location": str(location),
-        "message": str(message),
-        "data": data,
-        "timestamp": int(time.time() * 1000),
-    }
-    try:
-        with open(
-            "/home/fergus/ros2_ws/src/RS2-JENGA/.cursor/debug-ce088f.log",
-            "a",
-            encoding="utf-8",
-        ) as f:
-            f.write(json.dumps(payload, separators=(",", ":")) + "\n")
-    except Exception:
-        pass
-
-
-# #endregion
-
-
 def _rotation_matrix_to_quaternion(R: np.ndarray) -> np.ndarray:
     trace = np.trace(R)
     if trace > 0:
@@ -190,42 +161,11 @@ class PyKDLKinematicsBackend(KinematicsBackend):
         self._name_to_kdl_index = {name: idx for idx, name in enumerate(self._kdl_joint_names)}
         missing = [name for name in self._joint_names if name not in self._name_to_kdl_index]
         if missing:
-            # #region agent log
-            _agent_log(
-                "D",
-                "kinematics_backends.py:__init__",
-                "KDL joint mapping missing requested joints",
-                {
-                    "segments_debug": seg_debug[:50],
-                    "segments_debug_count": int(len(seg_debug)),
-                    "kdl_joint_names_chain": list(self._kdl_joint_names),
-                    "kdl_joint_count": int(self._kdl_joint_count),
-                    "requested_joint_names": list(self._joint_names),
-                },
-            )
-            # #endregion
             raise ValueError(
                 f"Requested joint names not present in KDL chain: {missing}. "
                 f"Available: {self._kdl_joint_names}"
             )
         self._active_indices = [self._name_to_kdl_index[name] for name in self._joint_names]
-        # #region agent log
-        _agent_log(
-            "A",
-            "kinematics_backends.py:__init__",
-            "PyKDL backend initialized",
-            {
-                "joint_names_requested": list(self._joint_names),
-                "kdl_joint_names_chain": list(self._kdl_joint_names),
-                "kdl_joint_count": int(self._kdl_joint_count),
-                "active_indices": list(self._active_indices),
-                "segments": int(chain.getNrOfSegments()),
-                "joints": int(chain.getNrOfJoints()),
-                "base_link": str(base_link),
-                "ee_link": str(ee_link),
-            },
-        )
-        # #endregion
 
     @property
     def joint_names(self) -> list[str]:
@@ -236,23 +176,6 @@ class PyKDLKinematicsBackend(KinematicsBackend):
             raise ValueError(
                 f"Expected {len(self._joint_names)} active joints, got {q_active.shape[0]}."
             )
-        # #region agent log
-        try:
-            qf = np.array(q_active, dtype=np.float64).reshape(-1)
-            _agent_log(
-                "B",
-                "kinematics_backends.py:_to_kdl_jnt_array",
-                "Building KDL joint array",
-                {
-                    "q_active_len": int(qf.shape[0]),
-                    "q_active_min": float(np.nanmin(qf)) if qf.size else None,
-                    "q_active_max": float(np.nanmax(qf)) if qf.size else None,
-                    "q_active_nonfinite": int(np.count_nonzero(~np.isfinite(qf))),
-                },
-            )
-        except Exception:
-            pass
-        # #endregion
         arr = self._kdl.JntArray(self._kdl_joint_count)
         for idx in range(self._kdl_joint_count):
             arr[idx] = 0.0
@@ -262,31 +185,10 @@ class PyKDLKinematicsBackend(KinematicsBackend):
 
     def compute_fk(self, q: np.ndarray) -> Pose:
         q_np = np.array(q, dtype=np.float64).reshape(-1)
-        # #region agent log
-        _agent_log(
-            "A",
-            "kinematics_backends.py:compute_fk:entry",
-            "FK requested",
-            {
-                "q_len": int(q_np.shape[0]),
-                "q_min": float(np.nanmin(q_np)) if q_np.size else None,
-                "q_max": float(np.nanmax(q_np)) if q_np.size else None,
-                "q_nonfinite": int(np.count_nonzero(~np.isfinite(q_np))),
-            },
-        )
-        # #endregion
         q_arr = self._to_kdl_jnt_array(q_np)
         frame = self._kdl.Frame()
         status = self._fk_solver.JntToCart(q_arr, frame)
         if status < 0:
-            # #region agent log
-            _agent_log(
-                "C",
-                "kinematics_backends.py:compute_fk:fail",
-                "FK failed",
-                {"status": int(status), "q_nonfinite": int(np.count_nonzero(~np.isfinite(q_np)))},
-            )
-            # #endregion
             raise RuntimeError(f"PyKDL FK failed with code {status}.")
         pos = np.array([frame.p[0], frame.p[1], frame.p[2]], dtype=np.float64)
         rot = np.array(
