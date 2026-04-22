@@ -198,15 +198,15 @@ def main(args=None):
 
     x_min = tower_cx - tower_half_x - margin_xy
     x_max = tower_cx + tower_half_x + margin_xy
-    y_min = tower_cy - tower_half_y - margin_xy
-    y_max = tower_cy + tower_half_y + margin_xy
+    y_min = tower_cy - tower_half_y - 2*margin_xy
+    y_max = tower_cy + tower_half_y + 2*margin_xy
 
     corners = [
-        (x_min, y_min),
-        (x_max, y_min),
         (x_max, y_max),
         (x_min, y_max),
         (x_min, y_min),
+        (x_max, y_min),
+        (x_max, y_max),
     ]
     poses = []
     for x, y in corners:

@@ -45,7 +45,7 @@ from rclpy.node import Node
 from control_msgs.action import FollowJointTrajectory
 from geometry_msgs.msg import Pose, PoseStamped, Point, Quaternion
 from moveit_msgs.action import MoveGroup
-from moveit_msgs.msg import PlanningOptions, RobotState
+from moveit_msgs.msg import JointConstraint, PlanningOptions, RobotState
 from moveit_msgs.srv import GetCartesianPath
 from std_msgs.msg import Bool, String
 from tf2_ros import Buffer, TransformListener
@@ -66,7 +66,7 @@ DEFAULT_MOVE_ACTION = "/move_action"
 DEFAULT_JOINT_ACTION = "/joint_trajectory_controller/follow_joint_trajectory"
 DEFAULT_CARTESIAN_SERVICE = "/compute_cartesian_path"
 DEFAULT_MAX_STEP = 0.005
-DEFAULT_JUMP_THRESHOLD = 0.25
+DEFAULT_JUMP_THRESHOLD = 5.0
 DEFAULT_CARTESIAN_FRACTION_THRESHOLD = 1.0
 DEFAULT_VELOCITY_SCALING = 0.1
 DEFAULT_ACCELERATION_SCALING = 0.1
