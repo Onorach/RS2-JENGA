@@ -29,7 +29,6 @@ Standalone use (no ROS)
 from __future__ import annotations
 
 import json
-import sys
 
 import cv2
 import numpy as np
@@ -318,32 +317,3 @@ def main_ros():
         rclpy.shutdown()
 
 
-def main_standalone(image_path: str):
-    bgr = cv2.imread(image_path)
-    if bgr is None:
-        print(f"Cannot read: {image_path}")
-        sys.exit(1)
-
-    blobs, roi_x, roi_y = find_blobs(bgr)
-
-    total = sum(len(v) for v in blobs.values())
-    print(f"Found {total} blobs:")
-    for colour, quads in blobs.items():
-        if quads:
-            print(f"  {colour}: {len(quads)}")
-
-    debug = build_debug_image(bgr, blobs, roi_x, roi_y)
-    cv2.namedWindow("Colour blobs", cv2.WINDOW_NORMAL)
-    cv2.imshow("Colour blobs", debug)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
-
-if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        main_standalone(sys.argv[1])
-    elif _ROS_AVAILABLE:
-        main_ros()
-    else:
-        print("Usage: python colour_blobs.py <image_path>")
-        sys.exit(1)

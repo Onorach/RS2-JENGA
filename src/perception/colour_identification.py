@@ -12,7 +12,6 @@ Published topics
 """
 
 import json
-import sys
 
 import cv2
 import numpy as np
@@ -119,32 +118,3 @@ def main_ros():
         node.destroy_node()
         rclpy.shutdown()
 
-
-def main_standalone(image_path: str):
-    bgr = cv2.imread(image_path)
-    if bgr is None:
-        print(f"Cannot read: {image_path}")
-        sys.exit(1)
-
-    colour_img, label_grid = classify_frame(bgr)
-
-    colours, counts = np.unique(label_grid, return_counts=True)
-    total = label_grid.size
-    print(f"ROI size: {label_grid.shape[1]}×{label_grid.shape[0]}")
-    for c, n in sorted(zip(colours, counts), key=lambda x: -x[1]):
-        print(f"  {c:<10} {n:>7} px  ({n / total * 100:.1f}%)")
-
-    cv2.namedWindow("Colour identification", cv2.WINDOW_NORMAL)
-    cv2.imshow("Colour identification", colour_img)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
-
-if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        main_standalone(sys.argv[1])
-    elif _ROS_AVAILABLE:
-        main_ros()
-    else:
-        print("Usage: python colour_identification.py <image_path>")
-        sys.exit(1)

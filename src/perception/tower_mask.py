@@ -1,30 +1,21 @@
 """
-saturation_mask.py
-------------------
+tower_mask.py
+-------------
 Finds the high-saturation foreground (the Jenga tower) and fits a
 6-sided convex hull around it to use as a clean search region.
-
-Standalone use
---------------
-    python saturation_mask.py path/to/image.png
 """
 from __future__ import annotations
 
-import sys
 import cv2
 import numpy as np
 from colour_identification import compute_roi
-
-
-# ---------------------------------------------------------------------------
-# Tunable parameters
-# ---------------------------------------------------------------------------
-
-SAT_MIN        = 200    # minimum saturation to be considered foreground
-VAL_MIN        = 0    # minimum value (brightness) — filters dark shadows
-MORPH_CLOSE_PX = 15    # close small gaps in the saturation mask
-MORPH_OPEN_PX  = 10    # remove small noise blobs
-MIN_AREA_PX    = 5000  # ignore tiny foreground regions
+from perception_config import (
+    TOWER_MASK_SAT_MIN,
+    TOWER_MASK_VAL_MIN,
+    TOWER_MASK_MORPH_CLOSE_PX,
+    TOWER_MASK_MORPH_OPEN_PX,
+    TOWER_MASK_MIN_AREA_PX,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -35,18 +26,18 @@ def compute_saturation_mask(bgr: np.ndarray) -> np.ndarray:
     """Return a binary mask (H×W uint8) of high-saturation pixels."""
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     mask = (
-        (hsv[:, :, 1] >= SAT_MIN) &
-        (hsv[:, :, 2] >= VAL_MIN)
+        (hsv[:, :, 1] >= TOWER_MASK_SAT_MIN) &
+        (hsv[:, :, 2] >= TOWER_MASK_VAL_MIN)
     ).astype(np.uint8) * 255
 
     def _odd(k: int) -> int:
         return k if k % 2 == 1 else k + 1
 
-    if MORPH_CLOSE_PX > 0:
-        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_odd(MORPH_CLOSE_PX),) * 2)
+    if TOWER_MASK_MORPH_CLOSE_PX > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_odd(TOWER_MASK_MORPH_CLOSE_PX),) * 2)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
-    if MORPH_OPEN_PX > 0:
-        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_odd(MORPH_OPEN_PX),) * 2)
+    if TOWER_MASK_MORPH_OPEN_PX > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_odd(TOWER_MASK_MORPH_OPEN_PX),) * 2)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
 
     return mask
@@ -68,11 +59,11 @@ def compute_hex_region(bgr: np.ndarray) -> np.ndarray | None:
         return None
 
     largest = max(contours, key=cv2.contourArea)
-    if cv2.contourArea(largest) < MIN_AREA_PX:
+    if cv2.contourArea(largest) < TOWER_MASK_MIN_AREA_PX:
         return None
 
-    hull  = cv2.convexHull(largest)
-    peri  = cv2.arcLength(hull, True)
+    hull = cv2.convexHull(largest)
+    peri = cv2.arcLength(hull, True)
     for factor in np.arange(0.02, 0.5, 0.01):
         approx = cv2.approxPolyDP(hull, factor * peri, True)
         if len(approx) <= 6:
@@ -104,7 +95,6 @@ def build_display(bgr: np.ndarray, pts: np.ndarray | None) -> np.ndarray:
     sat_colour = cv2.cvtColor(sat_colour, cv2.COLOR_GRAY2BGR)
 
     overlay = bgr.copy()
-    # Draw the original ROI in yellow
     cv2.rectangle(overlay, (rx, ry), (rx + rw, ry + rh), (0, 255, 255), 1)
 
     if pts is not None:
@@ -118,37 +108,3 @@ def build_display(bgr: np.ndarray, pts: np.ndarray | None) -> np.ndarray:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 200, 255), 1, cv2.LINE_AA)
 
     return np.hstack([overlay, sat_colour])
-
-
-# ---------------------------------------------------------------------------
-# Standalone
-# ---------------------------------------------------------------------------
-
-def main_standalone(image_path: str) -> None:
-    bgr = cv2.imread(image_path)
-    if bgr is None:
-        print(f"Cannot read: {image_path}")
-        sys.exit(1)
-
-    pts = compute_hex_region(bgr)
-    if pts is None:
-        print("No foreground region found — try lowering SAT_MIN.")
-    else:
-        print(f"Hex region ({len(pts)} vertices):")
-        for i, (x, y) in enumerate(pts):
-            print(f"  {i}: ({x}, {y})")
-
-    disp = build_display(bgr, pts)
-    cv2.namedWindow("Saturation region", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Saturation region", 1280, 540)
-    cv2.imshow("Saturation region", disp)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
-
-if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        main_standalone(sys.argv[1])
-    else:
-        print("Usage: python saturation_mask.py <image_path>")
-        sys.exit(1)

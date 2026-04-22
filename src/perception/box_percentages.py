@@ -10,7 +10,6 @@ Standalone use
 from __future__ import annotations
 
 import json
-import sys
 
 import cv2
 import numpy as np
@@ -269,41 +268,3 @@ def main_ros():
         node.destroy_node()
         rclpy.shutdown()
 
-
-def main_standalone(image_path: str):
-    bgr = cv2.imread(image_path)
-    if bgr is None:
-        print(f"Cannot read: {image_path}")
-        sys.exit(1)
-
-    results = compute_percentages(bgr)
-    for cell in results:
-        print(f"\n{cell['name']}  ({cell['total_pixels']} px)")
-        for colour, info in cell["colours"].items():
-            if info["pct"] > 0:
-                print(f"  {colour:<10} {info['pct']:>6.1f}%")
-
-    left  = next(r for r in results if r["name"] == "left_cell")
-    right = next(r for r in results if r["name"] == "right_cell")
-    lc    = next(c for c in GRID_CELLS if c["name"] == "left_cell")
-    rc    = next(c for c in GRID_CELLS if c["name"] == "right_cell")
-    layer = analyse_layer(bgr, left, right, lc, rc)
-    print(f"\nOrientation: {layer['orientation']}")
-    for i, b in enumerate(layer["blocks"]):
-        print(f"  pos {i}: {b['colour']:<10}  dist={b['position']:+.1f}px")
-
-    cv2.namedWindow("Box percentages", cv2.WINDOW_NORMAL)
-    cv2.resizeWindow("Box percentages", 960, 300)
-    cv2.imshow("Box percentages", build_debug_image(bgr, results))
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
-
-if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        main_standalone(sys.argv[1])
-    elif _ROS_AVAILABLE:
-        main_ros()
-    else:
-        print("Usage: python box_percentages.py <image_path>")
-        sys.exit(1)

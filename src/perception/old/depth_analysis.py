@@ -48,8 +48,6 @@ Press Q to quit.
 
 from __future__ import annotations
 
-import os
-import sys
 from typing import Optional
 
 import cv2
@@ -357,95 +355,6 @@ class DepthAnalysisNode(Node):
 # Standalone (direct RealSense SDK — no ROS broker needed)
 # ============================================================================
 
-def _resolve_bag(path: str) -> str:
-    base = os.path.dirname(__file__)
-    for candidate in [
-        path,
-        os.path.join(base, "camera_files", "rgbd_raw",   path),
-        os.path.join(base, "camera_files", "rgbd_large", path),
-    ]:
-        if os.path.exists(candidate):
-            return candidate
-    return os.path.join(base, "camera_files", "rgbd_raw", path)
-
-
-def main_standalone(bag_arg: Optional[str] = None) -> None:
-    pipeline = rs.pipeline()
-    config   = rs.config()
-
-    if bag_arg is None:
-        # Live camera — enable both colour and depth
-        config.enable_stream(rs.stream.color, 1920, 1080, rs.format.bgr8,  30)
-        config.enable_stream(rs.stream.depth, 1280, 720,  rs.format.z16,   30)
-    else:
-        bag_path = _resolve_bag(bag_arg)
-        rs.config.enable_device_from_file(config, bag_path, repeat_playback=True)
-        config.enable_stream(rs.stream.color)
-        config.enable_stream(rs.stream.depth)
-
-    profile  = pipeline.start(config)
-    align    = rs.align(rs.stream.color)   # aligns depth → colour frame
-
-    cv2.namedWindow(DEPTH_WINDOW, cv2.WINDOW_NORMAL)
-    cv2.namedWindow(DEBUG_MASKS_WINDOW, cv2.WINDOW_NORMAL)
-
-    try:
-        while True:
-            frames         = pipeline.wait_for_frames(timeout_ms=1000)
-            aligned        = align.process(frames)
-            color_frame    = aligned.get_color_frame()
-            depth_frame    = aligned.get_depth_frame()
-
-            if not color_frame or not depth_frame:
-                continue
-
-            color_bgr = np.asanyarray(color_frame.get_data())
-            depth_mm  = np.asanyarray(depth_frame.get_data())   # uint16, mm
-
-            ih, iw = color_bgr.shape[:2]
-            rx, ry, rw, rh = compute_roi(iw, ih)
-
-            color_roi = color_bgr[ry:ry + rh, rx:rx + rw]
-            depth_roi = depth_mm [ry:ry + rh, rx:rx + rw]
-
-            centroid = compute_centroid(color_roi, depth_roi)
-            overlay  = build_depth_overlay(color_roi, depth_roi, centroid)
-            masks_dbg = build_debug_masks_visual(color_roi, depth_roi)
-
-            if centroid:
-                print(
-                    f"centroid  x={centroid['cx_px']:6.1f}px  "
-                    f"y={centroid['cy_px']:6.1f}px  "
-                    f"depth={centroid['depth_m']:.4f}m  "
-                    f"({centroid['n_pixels']} px)"
-                )
-            else:
-                print("centroid  no valid classified pixels")
-
-            # Quick scalar debug stats to explain dim overlay regions.
-            valid_depth_n = int((depth_roi > DEPTH_INVALID_MM).sum())
-            hsv = cv2.cvtColor(color_roi, cv2.COLOR_BGR2HSV)
-            from colour_identification import HSV_RANGES, classify_hsv
-            classified = np.zeros(hsv.shape[:2], dtype=bool)
-            for colour in HSV_RANGES:
-                classified |= classify_hsv(hsv, colour)
-            classified_n = int(classified.sum())
-            used_n = int((classified & (depth_roi > DEPTH_INVALID_MM)).sum())
-            total_n = depth_roi.size
-            print(
-                f"mask stats  valid_depth={valid_depth_n}/{total_n}  "
-                f"classified={classified_n}/{total_n}  used={used_n}/{total_n}"
-            )
-
-            cv2.imshow(DEPTH_WINDOW, overlay)
-            cv2.imshow(DEBUG_MASKS_WINDOW, masks_dbg)
-            if (cv2.waitKey(1) & 0xFF) == ord("q"):
-                break
-    finally:
-        pipeline.stop()
-        cv2.destroyAllWindows()
-
-
 def main_ros() -> None:
     rclpy.init()
     node = DepthAnalysisNode()
@@ -455,10 +364,3 @@ def main_ros() -> None:
         node.destroy_node()
         rclpy.shutdown()
 
-
-if __name__ == "__main__":
-    bag_arg = sys.argv[1] if len(sys.argv) > 1 else None
-    if _ROS_AVAILABLE and bag_arg is None:
-        main_ros()
-    else:
-        main_standalone(bag_arg)

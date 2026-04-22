@@ -5,21 +5,32 @@ Shared display loop and ROS wiring used by play_bag and play_live.
 """
 
 import threading
+from collections import deque
 import cv2
 import numpy as np
 
 from colour_identification import classify_frame, compute_roi, ColourIdentificationNode
 from box_percentages import compute_percentages, build_debug_image, analyse_layer, GRID_CELLS, LAYER_CELLS
-from edge_analysis import build_edge_display
-from saturation_mask import compute_hex_region, build_display
-from perception_config import GRID_CORNERS, DIVIDE_LINE
+from edge_analysis import build_edge_display, draw_lines, merge_parallel_lines
+from tower_mask import compute_hex_region, build_display
+from tower_analysis import build_depth_feed_display, estimate_tower_depth_stats, estimate_tower_offset
+from perception_config import (
+    GRID_CORNERS,
+    DIVIDE_LINE,
+    tower_analysis,
+    PLAY_RUNTIME_ROI_MARGIN,
+    TOWER_FINDER_GROW_RATIO,
+    EDGE_DETECTION_ENABLED,
+    EDGE_HISTORY_FRAMES,
+    EDGE_MERGE_PERP_DIST_PX,
+    EDGE_MERGE_MAX_ANGLE_DEG,
+)
 
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
-
 
 def _draw_grid(disp: np.ndarray, offset_x: int, offset_y: int) -> None:
     def valid(p) -> bool:
@@ -53,20 +64,56 @@ def _draw_grid(disp: np.ndarray, offset_x: int, offset_y: int) -> None:
                 )
 
 
-def _run_loop(get_bgr) -> None:
+def _crop_tower_finder_display(
+    tower_disp: np.ndarray,
+    pts: np.ndarray | None,
+    frame_width: int,
+    frame_height: int,
+    grow_ratio: float = TOWER_FINDER_GROW_RATIO,
+) -> np.ndarray:
+    """Crop Tower finder view to a box grown around the detected hex."""
+    if pts is None:
+        return tower_disp
+
+    raw_x_min = int(np.min(pts[:, 0]))
+    raw_x_max = int(np.max(pts[:, 0]))
+    raw_y_min = int(np.min(pts[:, 1]))
+    raw_y_max = int(np.max(pts[:, 1]))
+    hex_w = max(1, raw_x_max - raw_x_min)
+    hex_h = max(1, raw_y_max - raw_y_min)
+    grow_x = int(round(hex_w * grow_ratio * 0.5))
+    grow_y = int(round(hex_h * grow_ratio * 0.5))
+
+    x_min = max(0, raw_x_min - grow_x)
+    x_max = min(frame_width, raw_x_max + grow_x)
+    y_min = max(0, raw_y_min - grow_y)
+    y_max = min(frame_height, raw_y_max + grow_y)
+
+    left = tower_disp[y_min:y_max, x_min:x_max]
+    right = tower_disp[y_min:y_max, frame_width + x_min:frame_width + x_max]
+    return np.hstack([left, right])
+
+
+def _run_loop(get_frame_pair) -> None:
     cv2.namedWindow("Live + grid", cv2.WINDOW_NORMAL)
     cv2.namedWindow("Colour mask", cv2.WINDOW_NORMAL)
     cv2.namedWindow("Box percentages", cv2.WINDOW_NORMAL)
-    cv2.namedWindow("Edges (grey)", cv2.WINDOW_NORMAL)
-    cv2.namedWindow("Edges (hue)",  cv2.WINDOW_NORMAL) 
-    cv2.namedWindow("Saturation region", cv2.WINDOW_NORMAL)
+    if EDGE_DETECTION_ENABLED:
+        cv2.namedWindow("Edges (grey)", cv2.WINDOW_NORMAL)
+        cv2.namedWindow("Edges (grey history)", cv2.WINDOW_NORMAL)
+        cv2.namedWindow("Edges (grey merged)", cv2.WINDOW_NORMAL)
+    if tower_analysis:
+        cv2.namedWindow("Tower finder", cv2.WINDOW_NORMAL)
+    if tower_analysis:
+        cv2.namedWindow("Depth feed", cv2.WINDOW_NORMAL)
 
 
     frame_n = 0
-    roi_margin = 0.10
+    roi_margin = PLAY_RUNTIME_ROI_MARGIN
+    grey_line_history: deque[list[tuple]] = deque(maxlen=EDGE_HISTORY_FRAMES)
 
     while True:
-        bgr = get_bgr()
+        bgr, depth_mm = get_frame_pair()
         if bgr is None:
             if (cv2.waitKey(10) & 0xFF) == ord("q"):
                 break
@@ -93,12 +140,73 @@ def _run_loop(get_bgr) -> None:
         cv2.imshow("Colour mask", colour_img)
 
         # --- edge detection ---
-        disp_grey, disp_hue = build_edge_display(colour_img)
-        cv2.imshow("Edges (grey)", disp_grey)
-        cv2.imshow("Edges (hue)",  disp_hue)
+        if EDGE_DETECTION_ENABLED:
+            disp_grey, lines_grey = build_edge_display(colour_img)
+            grey_line_history.append(lines_grey)
+            history_disp = np.zeros_like(disp_grey)
+            for hist_lines in grey_line_history:
+                history_disp = draw_lines(history_disp, hist_lines)
+            history_lines_flat = [line for hist_lines in grey_line_history for line in hist_lines]
+            merged_lines = merge_parallel_lines(
+                history_lines_flat,
+                EDGE_MERGE_PERP_DIST_PX,
+                EDGE_MERGE_MAX_ANGLE_DEG,
+            )
+            merged_disp = draw_lines(np.zeros_like(disp_grey), merged_lines)
+            cv2.imshow("Edges (grey)", disp_grey)
+            cv2.imshow("Edges (grey history)", history_disp)
+            cv2.imshow("Edges (grey merged)", merged_disp)
 
-        pts = compute_hex_region(bgr)
-        cv2.imshow("Saturation region", build_display(bgr, pts))    
+        pts = compute_hex_region(bgr) if tower_analysis else None
+        sat_disp = build_display(bgr, pts) if tower_analysis else None
+        tower_depth = estimate_tower_depth_stats(depth_mm, pts) if tower_analysis else None
+        tower_offset = (
+            estimate_tower_offset(
+                pts=pts,
+                image_width_px=iw,
+                depth_m=None if tower_depth is None else tower_depth["far_top5_mean_m"],
+            )
+            if tower_analysis
+            else None
+        )
+        if tower_analysis and sat_disp is not None:
+            if tower_depth is not None:
+                cv2.putText(
+                    sat_disp,
+                    f"Tower depth top5 mean ~ {tower_depth['far_top5_mean_m']:.3f} m",
+                    (10, 26),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (255, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+            if tower_offset is not None:
+                if tower_offset["lateral_m"] is not None:
+                    cv2.putText(
+                        sat_disp,
+                        f"Offset from center: {tower_offset['dx_px']:+.0f}px  (~{tower_offset['lateral_m']:+.3f} m)",
+                        (10, 52),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.50,
+                        (255, 255, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
+                else:
+                    cv2.putText(
+                        sat_disp,
+                        f"Offset from center: {tower_offset['dx_px']:+.0f}px",
+                        (10, 52),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.50,
+                        (255, 255, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
+            cv2.imshow("Tower finder", _crop_tower_finder_display(sat_disp, pts, iw, ih))
+        if tower_analysis:
+            cv2.imshow("Depth feed", build_depth_feed_display(depth_mm, bgr.shape, pts))
 
         if frame_n % 30 == 0:
             pct_results = compute_percentages(bgr)
@@ -111,17 +219,39 @@ def _run_loop(get_bgr) -> None:
                 layer = analyse_layer(bgr, left_result, right_result, left_cell, right_cell)
                 print(f"layer {i}  orientation={layer['orientation']}  "
                     + "  ".join(f"{b['colour']}({b['position']:+.0f}px)" for b in layer["blocks"]))
+            if tower_analysis and tower_depth is not None:
+                print(
+                    "tower depth "
+                    + f"top5_mean={tower_depth['far_top5_mean_m']:.3f}m  "
+                    + f"(n={tower_depth['n_pixels']})"
+                )
+            elif tower_analysis:
+                print("tower distance unavailable (no valid depth in hex)")
+            if tower_analysis and tower_offset is not None:
+                if tower_offset["lateral_m"] is None:
+                    print(
+                        "tower offset "
+                        + f"dx_px={tower_offset['dx_px']:+.1f}px"
+                    )
+                else:
+                    print(
+                        "tower offset "
+                        + f"dx_px={tower_offset['dx_px']:+.1f}px  "
+                        + f"lateral={tower_offset['lateral_m']:+.3f}m"
+                    )
 
         if (cv2.waitKey(1) & 0xFF) == ord("q"):
             break
 
 class _ImageBridge(Node):
-    def __init__(self, color_topic: str):
+    def __init__(self, color_topic: str, depth_topic: str):
         super().__init__("play_image_bridge")
         self._bridge = CvBridge()
         self._lock = threading.Lock()
         self._bgr = None
+        self._depth_mm = None
         self.create_subscription(Image, color_topic, self._cb, 10)
+        self.create_subscription(Image, depth_topic, self._depth_cb, 10)
 
     def _cb(self, msg: Image):
         enc = (msg.encoding or "").lower()
@@ -133,9 +263,20 @@ class _ImageBridge(Node):
         with self._lock:
             self._bgr = bgr
 
-    def get_bgr(self):
+    def _depth_cb(self, msg: Image):
+        enc = (msg.encoding or "").lower()
+        if "16uc1" in enc or "mono16" in enc:
+            depth_mm = self._bridge.imgmsg_to_cv2(msg, "16UC1")
+        else:
+            return
         with self._lock:
-            return None if self._bgr is None else self._bgr.copy()
+            self._depth_mm = depth_mm
+
+    def get_frame_pair(self):
+        with self._lock:
+            bgr = None if self._bgr is None else self._bgr.copy()
+            depth_mm = None if self._depth_mm is None else self._depth_mm.copy()
+            return bgr, depth_mm
 
 
 def _start_executor(nodes: list) -> SingleThreadedExecutor:
@@ -154,18 +295,44 @@ def _shutdown_executor(executor: SingleThreadedExecutor, nodes: list) -> None:
 
 
 def run_with_pipeline(pipeline) -> None:
-    def get_bgr():
-        frames = pipeline.wait_for_frames(timeout_ms=1000)
-        color_frame = frames.get_color_frame()
-        return None if color_frame is None else np.asanyarray(color_frame.get_data())
+    import pyrealsense2 as rs
 
-    _run_loop(get_bgr)
+    align = rs.align(rs.stream.color)
+
+    def get_frame_pair():
+        frames = pipeline.wait_for_frames(timeout_ms=1000)
+        aligned = align.process(frames)
+        color_frame = aligned.get_color_frame()
+        depth_frame = aligned.get_depth_frame()
+        if color_frame is None or not color_frame:
+            return None, None
+
+        frame = np.asanyarray(color_frame.get_data())
+        frame_format = str(color_frame.profile.format()).lower()
+
+        # Newer recordings may be RGB8; normalize to BGR for OpenCV pipeline/display.
+        if "rgb8" in frame_format and "bgr8" not in frame_format:
+            bgr = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        else:
+            bgr = frame
+
+        if depth_frame is None or not depth_frame:
+            depth_mm = None
+        else:
+            try:
+                depth_mm = np.asanyarray(depth_frame.get_data())
+            except RuntimeError:
+                # Some bags expose an invalid depth handle on certain frames.
+                depth_mm = None
+        return bgr, depth_mm
+
+    _run_loop(get_frame_pair)
 
 
 def run_subscribe(color_topic: str, depth_topic: str) -> None:
     rclpy.init()
 
-    bridge = _ImageBridge(color_topic)
+    bridge = _ImageBridge(color_topic, depth_topic)
     colour_node = ColourIdentificationNode(color_topic)
     box_node = BoxPercentagesNode(color_topic)
 
@@ -173,6 +340,6 @@ def run_subscribe(color_topic: str, depth_topic: str) -> None:
     executor = _start_executor(nodes)
 
     try:
-        _run_loop(bridge.get_bgr)
+        _run_loop(bridge.get_frame_pair)
     finally:
         _shutdown_executor(executor, nodes)

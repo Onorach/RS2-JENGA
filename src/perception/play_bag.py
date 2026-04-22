@@ -35,6 +35,7 @@ def _start_pipeline(bag_path: str) -> rs.pipeline:
 
     rs.config.enable_device_from_file(config, bag_path, repeat_playback=True)
     config.enable_stream(rs.stream.color)
+    config.enable_stream(rs.stream.depth)
 
     profile = pipeline.start(config)
 
