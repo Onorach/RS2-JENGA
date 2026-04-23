@@ -61,8 +61,37 @@ def build_depth_feed_display(
     return canvas[y_min:y_max, x_min:x_max]
 
 
+def explain_tower_depth_skip(
+    bgr: np.ndarray,
+    depth_mm: np.ndarray | None,
+    pts: np.ndarray | None,
+) -> str:
+    """
+    Human-readable reason when ``estimate_tower_depth_stats`` is None, for live debugging.
+    """
+    if depth_mm is None:
+        return (
+            "no depth image (enable depth in rs_launch, subscribe to "
+            "aligned_depth_to_color, and ensure encoding is 16UC1/32FC1)"
+        )
+    hc, wc = bgr.shape[:2]
+    hd, wd = depth_mm.shape[:2]
+    if (hc, wc) != (hd, wd):
+        return (
+            f"depth {wd}x{hd} != colour {wc}x{hc} — use aligned depth-to-colour, not raw depth"
+        )
+    if pts is None:
+        return "no tower hex detected (contrast/ROI; tune tower_mask in perception_config)"
+
+    hex_mask = build_hex_mask(depth_mm.shape, pts) > 0
+    valid = (depth_mm > 0) & hex_mask
+    if not np.any(valid):
+        return "zero/invalid depth inside hex (out of range, IR glare, or reflectivity)"
+    return "internal error"  # stats should be non-None if we reach here
+
+
 def estimate_tower_depth_stats(depth_mm: np.ndarray | None, pts: np.ndarray | None) -> dict | None:
-    """Estimate tower depth as mean of farthest 5% inside the hex."""
+    """Estimate tower depth as mean of the 95th-98th percentile band inside the hex."""
     if depth_mm is None or pts is None:
         return None
 
@@ -75,10 +104,13 @@ def estimate_tower_depth_stats(depth_mm: np.ndarray | None, pts: np.ndarray | No
     depth_used_m = depth_mm[used].astype(np.float32) / 1000.0
     sorted_depth_m = np.sort(depth_used_m)
     n = int(sorted_depth_m.size)
-    top_5_n = max(1, int(np.ceil(n * 0.05)))
+    i95 = min(n - 1, max(0, int(np.floor(0.95 * (n - 1)))))
+    i98 = min(n, max(i95 + 1, int(np.ceil(0.98 * (n - 1))) + 1))
+    band = sorted_depth_m[i95:i98]
+    if band.size == 0:
+        band = sorted_depth_m[-1:]
     return {
-        "far_top5_mean_m": float(sorted_depth_m[-top_5_n:].mean()),
-        "n_pixels": n,
+        "tower_depth_m": float(band.mean()),
     }
 
 

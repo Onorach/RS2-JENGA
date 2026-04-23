@@ -10,14 +10,20 @@ import cv2
 import numpy as np
 
 from colour_identification import classify_frame, compute_roi, ColourIdentificationNode
-from box_percentages import compute_percentages, build_debug_image, analyse_layer, GRID_CELLS, LAYER_CELLS
+from box_percentages import BoxPercentagesNode, compute_percentages, build_debug_image, analyse_layer, LAYER_CELLS
 from edge_analysis import build_edge_display, draw_lines, merge_parallel_lines
 from tower_mask import compute_hex_region, build_display
-from tower_analysis import build_depth_feed_display, estimate_tower_depth_stats, estimate_tower_offset
+from tower_analysis import (
+    build_depth_feed_display,
+    explain_tower_depth_skip,
+    estimate_tower_depth_stats,
+    estimate_tower_offset,
+)
 from perception_config import (
     GRID_CORNERS,
     DIVIDE_LINE,
     tower_analysis,
+    BOX_PERCENTAGES_ENABLED,
     PLAY_RUNTIME_ROI_MARGIN,
     TOWER_FINDER_GROW_RATIO,
     EDGE_DETECTION_ENABLED,
@@ -97,7 +103,8 @@ def _crop_tower_finder_display(
 def _run_loop(get_frame_pair) -> None:
     cv2.namedWindow("Live + grid", cv2.WINDOW_NORMAL)
     cv2.namedWindow("Colour mask", cv2.WINDOW_NORMAL)
-    cv2.namedWindow("Box percentages", cv2.WINDOW_NORMAL)
+    if BOX_PERCENTAGES_ENABLED:
+        cv2.namedWindow("Box percentages", cv2.WINDOW_NORMAL)
     if EDGE_DETECTION_ENABLED:
         cv2.namedWindow("Edges (grey)", cv2.WINDOW_NORMAL)
         cv2.namedWindow("Edges (grey history)", cv2.WINDOW_NORMAL)
@@ -164,7 +171,7 @@ def _run_loop(get_frame_pair) -> None:
             estimate_tower_offset(
                 pts=pts,
                 image_width_px=iw,
-                depth_m=None if tower_depth is None else tower_depth["far_top5_mean_m"],
+                depth_m=None if tower_depth is None else tower_depth["tower_depth_m"],
             )
             if tower_analysis
             else None
@@ -173,7 +180,7 @@ def _run_loop(get_frame_pair) -> None:
             if tower_depth is not None:
                 cv2.putText(
                     sat_disp,
-                    f"Tower depth top5 mean ~ {tower_depth['far_top5_mean_m']:.3f} m",
+                    f"Tower depth ~ {tower_depth['tower_depth_m']:.3f} m",
                     (10, 26),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.6,
@@ -209,24 +216,25 @@ def _run_loop(get_frame_pair) -> None:
             cv2.imshow("Depth feed", build_depth_feed_display(depth_mm, bgr.shape, pts))
 
         if frame_n % 30 == 0:
-            pct_results = compute_percentages(bgr)
-            cv2.imshow("Box percentages", build_debug_image(bgr, pct_results))
+            if BOX_PERCENTAGES_ENABLED:
+                pct_results = compute_percentages(bgr)
+                cv2.imshow("Box percentages", build_debug_image(bgr, pct_results))
 
-            # pct_results is ordered the same as GRID_CELLS: [l0, r0, l1, r1, ...]
-            for i, (left_cell, right_cell) in enumerate(LAYER_CELLS):
-                left_result  = pct_results[i * 2]
-                right_result = pct_results[i * 2 + 1]
-                layer = analyse_layer(bgr, left_result, right_result, left_cell, right_cell)
-                print(f"layer {i}  orientation={layer['orientation']}  "
-                    + "  ".join(f"{b['colour']}({b['position']:+.0f}px)" for b in layer["blocks"]))
+                # pct_results order matches grid cells: [l0, r0, l1, r1, ...]
+                for i, (left_cell, right_cell) in enumerate(LAYER_CELLS):
+                    left_result = pct_results[i * 2]
+                    right_result = pct_results[i * 2 + 1]
+                    layer = analyse_layer(bgr, left_result, right_result, left_cell, right_cell)
+                    print(
+                        f"layer {i}  orientation={layer['orientation']}  "
+                        + "  ".join(
+                            f"{b['colour']}({b['position']:+.0f}px)" for b in layer["blocks"]
+                        )
+                    )
             if tower_analysis and tower_depth is not None:
-                print(
-                    "tower depth "
-                    + f"top5_mean={tower_depth['far_top5_mean_m']:.3f}m  "
-                    + f"(n={tower_depth['n_pixels']})"
-                )
+                print("tower depth = " + f"{tower_depth['tower_depth_m']:.3f}m")
             elif tower_analysis:
-                print("tower distance unavailable (no valid depth in hex)")
+                print("tower distance unavailable — " + explain_tower_depth_skip(bgr, depth_mm, pts))
             if tower_analysis and tower_offset is not None:
                 if tower_offset["lateral_m"] is None:
                     print(
@@ -244,14 +252,28 @@ def _run_loop(get_frame_pair) -> None:
             break
 
 class _ImageBridge(Node):
-    def __init__(self, color_topic: str, depth_topic: str):
+    def __init__(self, color_topic: str, depth_topic: str | list[str] | tuple[str, ...]):
         super().__init__("play_image_bridge")
         self._bridge = CvBridge()
         self._lock = threading.Lock()
         self._bgr = None
         self._depth_mm = None
+        self._depth_enc_warned = False
+        self._active_depth_topic: str | None = None
+        self._depth_subscriptions = []
         self.create_subscription(Image, color_topic, self._cb, 10)
-        self.create_subscription(Image, depth_topic, self._depth_cb, 10)
+        depth_topics = [depth_topic] if isinstance(depth_topic, str) else list(depth_topic)
+        for topic in depth_topics:
+            sub = self.create_subscription(
+                Image,
+                topic,
+                lambda msg, t=topic: self._depth_cb(msg, t),
+                10,
+            )
+            self._depth_subscriptions.append(sub)
+        self.get_logger().info(
+            "Depth topic candidates: " + ", ".join(depth_topics)
+        )
 
     def _cb(self, msg: Image):
         enc = (msg.encoding or "").lower()
@@ -263,14 +285,32 @@ class _ImageBridge(Node):
         with self._lock:
             self._bgr = bgr
 
-    def _depth_cb(self, msg: Image):
+    def _depth_cb(self, msg: Image, topic_name: str):
+        if self._active_depth_topic is not None and topic_name != self._active_depth_topic:
+            return
         enc = (msg.encoding or "").lower()
         if "16uc1" in enc or "mono16" in enc:
             depth_mm = self._bridge.imgmsg_to_cv2(msg, "16UC1")
+        elif "32fc1" in enc:
+            # Some stacks publish depth in metres
+            m = self._bridge.imgmsg_to_cv2(msg, "32FC1")
+            depth_mm = np.clip(m * 1000.0, 0, 65_535).astype(np.uint16)
         else:
+            if not self._depth_enc_warned:
+                self.get_logger().warning(
+                    "Ignoring depth: encoding %r (need 16UC1/mono16 or 32FC1). "
+                    "No depth will be used until the driver publishes a supported type."
+                    % (msg.encoding,)
+                )
+                self._depth_enc_warned = True
             return
         with self._lock:
             self._depth_mm = depth_mm
+        if self._active_depth_topic is None:
+            self._active_depth_topic = topic_name
+            self.get_logger().info(
+                f"Using depth topic: {topic_name} (encoding={msg.encoding})"
+            )
 
     def get_frame_pair(self):
         with self._lock:
@@ -329,14 +369,17 @@ def run_with_pipeline(pipeline) -> None:
     _run_loop(get_frame_pair)
 
 
-def run_subscribe(color_topic: str, depth_topic: str) -> None:
+def run_subscribe(
+    color_topic: str,
+    depth_topic: str | list[str] | tuple[str, ...],
+) -> None:
     rclpy.init()
 
     bridge = _ImageBridge(color_topic, depth_topic)
     colour_node = ColourIdentificationNode(color_topic)
-    box_node = BoxPercentagesNode(color_topic)
-
-    nodes = [bridge, colour_node, box_node]
+    nodes: list = [bridge, colour_node]
+    if BOX_PERCENTAGES_ENABLED:
+        nodes.append(BoxPercentagesNode(color_topic))
     executor = _start_executor(nodes)
 
     try:

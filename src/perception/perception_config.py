@@ -6,6 +6,19 @@ Sections are grouped by file/purpose.
 """
 
 
+# ---------------------------------------------------------------------------
+# Runtime toggles — which analyses run (play_runtime, play_live / subscribe)
+# ---------------------------------------------------------------------------
+# Tower finder, depth feed, depth/offset metrics and related prints.
+tower_analysis = True
+
+# Grey edge windows (Edges grey / history / merged).
+EDGE_DETECTION_ENABLED = False
+
+# Box-percentages window, layer stdout, and BoxPercentages ROS node in subscribe mode.
+BOX_PERCENTAGES_ENABLED = False
+
+
 # HSV ranges per colour (changes classification sensitivity).
 HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
     "red": [
@@ -37,7 +50,7 @@ COLOUR_BGR: dict[str, tuple[int, int, int]] = {
 }
 
 # Search ROI: (cx_frac, cy_frac, w_frac, h_frac).
-ROI_FRACS = (0.495, 0.485, 0.32, 0.62)  # Bigger w/h = wider search; cx/cy shifts ROI.
+ROI_FRACS = (0.5, 0.43, 0.26, 0.56)  # Bigger w/h = wider search; cx/cy shifts ROI.
 
 # Face-dividing line in full-frame coordinates.
 DIVIDE_LINE = ((920, 217), (914, 850))  # Moves left/right position sign reference.
@@ -52,12 +65,10 @@ GRID_CORNERS: list[list[tuple[int, int] | None]] = [
 # Initial OpenCV window size (width, height) for play windows.
 DEFAULT_WINDOW_SIZE = (960, 540)  # UI sizing only; no processing effect.
 
-# ---------------------------------------------------------------------------
-# play_runtime.py
-# ---------------------------------------------------------------------------
 
-# Enable tower finder/depth feed and tower depth/offset metrics.
-tower_analysis = False  # False disables all tower-analysis windows/metrics.
+# ---------------------------------------------------------------------------
+# play_runtime.py — timing / geometry (non-toggle)
+# ---------------------------------------------------------------------------
 
 # Live view crop margin around ROI.
 PLAY_RUNTIME_ROI_MARGIN = 0.10  # Higher = more context around ROI.
@@ -67,9 +78,6 @@ TOWER_FINDER_GROW_RATIO = 0.30  # Higher = larger Tower finder crop.
 
 # Number of frames accumulated in grey-edge history.
 EDGE_HISTORY_FRAMES = 30  # Higher = longer line trails.
-
-# Master toggle for all edge-detection processing/windows.
-EDGE_DETECTION_ENABLED = False  # False disables grey/grey-history/grey-merged.
 
 # Grey-line merge controls for "Edges (grey merged)".
 EDGE_MERGE_PERP_DIST_PX = 5  # Max perpendicular separation to merge.
@@ -106,10 +114,10 @@ MAX_VERT_DEG = 5.0  # Higher = accepts more slanted verticals.
 # ---------------------------------------------------------------------------
 
 # Min saturation for tower-mask foreground.
-TOWER_MASK_SAT_MIN = 100  # Lower = includes duller colours.
+TOWER_MASK_SAT_MIN = 130  # Lower = includes duller colours.
 
 # Min brightness/value for tower-mask foreground.
-TOWER_MASK_VAL_MIN = 80  # Lower = includes darker/shadow pixels.
+TOWER_MASK_VAL_MIN = 60  # Lower = includes darker/shadow pixels.
 
 # Morphological close kernel size (pixels) on tower mask.
 TOWER_MASK_MORPH_CLOSE_PX = 15  # Higher = fills larger mask gaps.
@@ -130,4 +138,3 @@ CAMERA_HFOV_DEG = 69.0  # Higher = larger lateral metres for same px shift.
 
 # Pixel padding around tower hex for depth-feed crop.
 TOWER_ANALYSIS_DEPTH_PAD_PX = 30  # Higher = larger depth-feed crop.
-
