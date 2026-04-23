@@ -11,7 +11,12 @@ import numpy as np
 
 from colour_identification import classify_frame, compute_roi, ColourIdentificationNode
 from box_percentages import BoxPercentagesNode, compute_percentages, build_debug_image, analyse_layer, LAYER_CELLS
-from edge_analysis import build_edge_display, draw_lines, merge_parallel_lines
+from grid_generation import (
+    build_edge_display,
+    classify_lines,
+    draw_classified_lines,
+    find_hv_intersections_from_classified,
+)
 from tower_mask import compute_hex_region, build_display
 from tower_analysis import (
     build_depth_feed_display,
@@ -22,14 +27,14 @@ from tower_analysis import (
 from perception_config import (
     GRID_CORNERS,
     DIVIDE_LINE,
-    tower_analysis,
+    TOWER_ANALYSIS_ENABLED,
     BOX_PERCENTAGES_ENABLED,
     PLAY_RUNTIME_ROI_MARGIN,
     TOWER_FINDER_GROW_RATIO,
     EDGE_DETECTION_ENABLED,
     EDGE_HISTORY_FRAMES,
-    EDGE_MERGE_PERP_DIST_PX,
-    EDGE_MERGE_MAX_ANGLE_DEG,
+    GRID_POINTS_ENABLED,
+    GRID_POINTS_MAX_INPUT_LINES,
 )
 
 import rclpy
@@ -108,10 +113,9 @@ def _run_loop(get_frame_pair) -> None:
     if EDGE_DETECTION_ENABLED:
         cv2.namedWindow("Edges (grey)", cv2.WINDOW_NORMAL)
         cv2.namedWindow("Edges (grey history)", cv2.WINDOW_NORMAL)
-        cv2.namedWindow("Edges (grey merged)", cv2.WINDOW_NORMAL)
-    if tower_analysis:
+    if TOWER_ANALYSIS_ENABLED:
         cv2.namedWindow("Tower finder", cv2.WINDOW_NORMAL)
-    if tower_analysis:
+    if TOWER_ANALYSIS_ENABLED:
         cv2.namedWindow("Depth feed", cv2.WINDOW_NORMAL)
 
 
@@ -150,33 +154,44 @@ def _run_loop(get_frame_pair) -> None:
         if EDGE_DETECTION_ENABLED:
             disp_grey, lines_grey = build_edge_display(colour_img)
             grey_line_history.append(lines_grey)
-            history_disp = np.zeros_like(disp_grey)
-            for hist_lines in grey_line_history:
-                history_disp = draw_lines(history_disp, hist_lines)
-            history_lines_flat = [line for hist_lines in grey_line_history for line in hist_lines]
-            merged_lines = merge_parallel_lines(
-                history_lines_flat,
-                EDGE_MERGE_PERP_DIST_PX,
-                EDGE_MERGE_MAX_ANGLE_DEG,
+            history_lines_flat: list[tuple] = []
+            line_cap = max(1, int(GRID_POINTS_MAX_INPUT_LINES))
+            for hist_lines in reversed(grey_line_history):
+                for line in hist_lines:
+                    history_lines_flat.append(line)
+                    if len(history_lines_flat) >= line_cap:
+                        break
+                if len(history_lines_flat) >= line_cap:
+                    break
+            horiz_hist, vert_hist = classify_lines(history_lines_flat)
+            history_disp = draw_classified_lines(
+                np.zeros_like(disp_grey),
+                horiz_hist,
+                vert_hist,
             )
-            merged_disp = draw_lines(np.zeros_like(disp_grey), merged_lines)
+            if GRID_POINTS_ENABLED:
+                for ix, iy in find_hv_intersections_from_classified(
+                    horiz_hist,
+                    vert_hist,
+                    history_disp.shape,
+                ):
+                    cv2.circle(history_disp, (ix, iy), 3, (0, 0, 255), -1)
             cv2.imshow("Edges (grey)", disp_grey)
             cv2.imshow("Edges (grey history)", history_disp)
-            cv2.imshow("Edges (grey merged)", merged_disp)
 
-        pts = compute_hex_region(bgr) if tower_analysis else None
-        sat_disp = build_display(bgr, pts) if tower_analysis else None
-        tower_depth = estimate_tower_depth_stats(depth_mm, pts) if tower_analysis else None
+        pts = compute_hex_region(bgr) if TOWER_ANALYSIS_ENABLED else None
+        sat_disp = build_display(bgr, pts) if TOWER_ANALYSIS_ENABLED else None
+        tower_depth = estimate_tower_depth_stats(depth_mm, pts) if TOWER_ANALYSIS_ENABLED else None
         tower_offset = (
             estimate_tower_offset(
                 pts=pts,
                 image_width_px=iw,
                 depth_m=None if tower_depth is None else tower_depth["tower_depth_m"],
             )
-            if tower_analysis
+            if TOWER_ANALYSIS_ENABLED
             else None
         )
-        if tower_analysis and sat_disp is not None:
+        if TOWER_ANALYSIS_ENABLED and sat_disp is not None:
             if tower_depth is not None:
                 cv2.putText(
                     sat_disp,
@@ -212,7 +227,7 @@ def _run_loop(get_frame_pair) -> None:
                         cv2.LINE_AA,
                     )
             cv2.imshow("Tower finder", _crop_tower_finder_display(sat_disp, pts, iw, ih))
-        if tower_analysis:
+        if TOWER_ANALYSIS_ENABLED:
             cv2.imshow("Depth feed", build_depth_feed_display(depth_mm, bgr.shape, pts))
 
         if frame_n % 30 == 0:
@@ -231,11 +246,11 @@ def _run_loop(get_frame_pair) -> None:
                             f"{b['colour']}({b['position']:+.0f}px)" for b in layer["blocks"]
                         )
                     )
-            if tower_analysis and tower_depth is not None:
+            if TOWER_ANALYSIS_ENABLED and tower_depth is not None:
                 print("tower depth = " + f"{tower_depth['tower_depth_m']:.3f}m")
-            elif tower_analysis:
+            elif TOWER_ANALYSIS_ENABLED:
                 print("tower distance unavailable — " + explain_tower_depth_skip(bgr, depth_mm, pts))
-            if tower_analysis and tower_offset is not None:
+            if TOWER_ANALYSIS_ENABLED and tower_offset is not None:
                 if tower_offset["lateral_m"] is None:
                     print(
                         "tower offset "

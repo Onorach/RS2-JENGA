@@ -16,7 +16,7 @@ import json
 import cv2
 import numpy as np
 
-from perception_config import HSV_RANGES, COLOUR_BGR, ROI_FRACS
+from perception_config import HSV_RANGES, COLOUR_BGR, SEARCH_AREA
 
 try:
     import rclpy
@@ -36,7 +36,7 @@ PREFILTER_OPEN_PX   = 5  # 0 = disabled
 
 def compute_roi(iw: int, ih: int) -> tuple[int, int, int, int]:
     """Return (x, y, w, h) of the search ROI in full-frame pixel coords."""
-    cx_f, cy_f, w_f, h_f = ROI_FRACS
+    cx_f, cy_f, w_f, h_f = SEARCH_AREA
     cw = int(iw * w_f)
     ch = int(ih * h_f)
     x = max(0, min(int(iw * cx_f) - cw // 2, iw - cw))
