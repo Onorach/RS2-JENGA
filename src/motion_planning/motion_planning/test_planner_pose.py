@@ -47,12 +47,12 @@ def _move_joint_home(
     log_label: str,
 ) -> bool:
     """
-    Send FollowJointTrajectory to HOME_DEG via joint_trajectory_controller.
+    Send FollowJointTrajectory to HOME_DEG.
     Returns True if the goal completed with error_code == 0.
     """
     if not joint_ac.wait_for_server(timeout_sec=5.0):
         node.get_logger().error(
-            f"{log_label}: joint_trajectory_controller action server unavailable."
+            f"{log_label}: FollowJointTrajectory action server unavailable."
         )
         return False
     home_rad = [math.radians(v) for v in HOME_DEG]
@@ -127,6 +127,7 @@ def main(args=None):
     goal_frame = node.declare_parameter("goal_frame", "world").value
     margin_xy = float(node.declare_parameter("rectangle_margin_xy", 0.05).value)
     z_clearance = float(node.declare_parameter("z_clearance_above_tower", 0.05).value)
+    base_height = float(node.declare_parameter("base_height", 1.08).value)
     wait_for_goal_completion = bool(
         node.declare_parameter("wait_for_goal_completion", True).value
     )
@@ -170,18 +171,19 @@ def main(args=None):
     if wait_for_goal_completion:
         node.create_subscription(String, status_topic, _on_planner_status, 10)
 
-    pub = node.create_publisher(PoseStamped, "goal_pose", 10)
-    joint_ac = ActionClient(
-        node,
-        FollowJointTrajectory,
+    jta = str(node.declare_parameter(
+        "joint_trajectory_action",
         "/joint_trajectory_controller/follow_joint_trajectory",
-    )
+    ).value)
+
+    pub = node.create_publisher(PoseStamped, "goal_pose", 10)
+    joint_ac = ActionClient(node, FollowJointTrajectory, jta)
     # Allow planning node (robot_description, TF, move_group) to come up.
     time.sleep(1.0)
 
     if start_with_home_joints:
         node.get_logger().info(
-            "Moving to HOME_DEG via joint_trajectory_controller (before rectangle)."
+            f"Moving to HOME_DEG via {jta} (before rectangle)."
         )
         _move_joint_home(
             node,
@@ -193,7 +195,7 @@ def main(args=None):
     # Tower in WORLD frame from ur3e_workspace.world.
     tower_cx, tower_cy = 0.35, 0.0
     tower_half_x, tower_half_y = 0.075 / 2.0, 0.075 / 2.0
-    tower_top_z = 1.08 + (8 * 0.015) + 0.02
+    tower_top_z = base_height + (8 * 0.015) + 0.02
     z = tower_top_z + z_clearance
 
     x_min = tower_cx - tower_half_x - margin_xy

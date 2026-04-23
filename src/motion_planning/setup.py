@@ -23,6 +23,7 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
+            "jenga_tower_node = motion_planning.jenga_tower_node:main",
             "pose_goal_node = motion_planning.pose_goal_node:main",
             "exclusion_zones_node = motion_planning.exclusion_zones_loader:main",
             "rmrc_planning_node = motion_planning.rmrc_planning_node:main",

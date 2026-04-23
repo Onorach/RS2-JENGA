@@ -63,7 +63,7 @@ ros2 launch ur_simulation_gazebo ur_sim_moveit.launch.py
 #### 2. Launch driver and RViz
 
 ```bash
-source /opt/ros/iron/setup.bash
+source /opt/ros/humble/setup.bash
 ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=192.168.56.101 launch_rviz:=true
 ```
 
@@ -77,6 +77,27 @@ ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=192.168
 - Press the green button (normal mode).
 - Press the red "Off" button.
 - Power off the tablet; choose "do not save" if prompted.
+
+#### 5. Real robot + MoveIt motion planning
+
+After completing steps 1-3 above (driver running, external control active), open a **second terminal** to launch MoveIt and the motion planning stack together:
+
+```bash
+source /opt/ros/iron/setup.bash
+source ~/ros2_ws/install/setup.bash
+ros2 launch ur3e_controller ur3e_hw_moveit.launch.py planner:=moveit
+```
+
+Available planners: `moveit` (OMPL), `moveit_cartesian` (Cartesian straight-line + OMPL fallback), `rmrc` (RMRC, no MoveIt move_group).
+
+Then send a goal pose:
+
+```bash
+ros2 topic pub --once /goal_pose geometry_msgs/msg/PoseStamped \
+  "{header: {frame_id: 'base_link'}, pose: {position: {x: 0.3, y: 0.0, z: 0.4}, orientation: {w: 1.0}}}"
+```
+
+*Note: On real hardware the driver uses `scaled_joint_trajectory_controller` (respects the teach-pendant speed slider). The `ur3e_hw_moveit.launch.py` launch file handles this override automatically.*
 
 ---
 
@@ -93,9 +114,9 @@ ros2 run ur3e_controller move_ur3e_demo
 ros2 run ur3e_controller initials_demo
 ```
 
-### Motion planning (pose goals)
+### Motion planning — simulation (pose goals)
 
-1. Start the robot and MoveIt2 (e.g. `ur3e_sim_moveit.launch.py` or `ur_moveit_config` with real robot).
+1. Start the simulation with MoveIt2 (e.g. `ur3e_sim_moveit.launch.py`).
 2. Launch the motion planning stack:
 
 ```bash
@@ -109,10 +130,14 @@ ros2 topic pub --once /goal_pose geometry_msgs/msg/PoseStamped \
   "{header: {frame_id: 'base_link'}, pose: {position: {x: 0.3, y: 0.0, z: 0.4}, orientation: {w: 1.0}}}"
 ```
 
-### RMRC planning (headless, no MoveIt GUI)
+### Motion planning — real robot
+
+See [Option 2 step 5](#5-real-robot--moveit-motion-planning) above.
+
+### RMRC planning (headless simulation, no MoveIt GUI)
 
 ```bash
-ros2 launch ur3e_controller headless_moveit.launch.py use_rmrc:=true
+ros2 launch ur3e_controller headless_moveit.launch.py planner:=rmrc
 ```
 
 Then send goal poses as above, or run:

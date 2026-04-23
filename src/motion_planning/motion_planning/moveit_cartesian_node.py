@@ -49,6 +49,7 @@ from moveit_msgs.msg import JointConstraint, PlanningOptions, RobotState
 from moveit_msgs.srv import GetCartesianPath
 from std_msgs.msg import Bool, String
 from tf2_ros import Buffer, TransformListener
+import tf2_geometry_msgs  # noqa: F401 – registers PoseStamped transform
 
 from ur3e_controller.move_client import UR3E_JOINT_NAMES
 from motion_planning.moveit_planning import (
@@ -103,9 +104,10 @@ class MoveItCartesianNode(Node):
         move_action = self.declare_parameter(
             "move_action_name", DEFAULT_MOVE_ACTION
         ).value
-        joint_action = self.declare_parameter(
+        self._joint_action_name = self.declare_parameter(
             "joint_trajectory_action", DEFAULT_JOINT_ACTION
         ).value
+        joint_action = self._joint_action_name
         cartesian_service = self.declare_parameter(
             "cartesian_service_name", DEFAULT_CARTESIAN_SERVICE
         ).value
@@ -278,6 +280,30 @@ class MoveItCartesianNode(Node):
             f"Goal pose received: xyz=({pos.x:.3f}, {pos.y:.3f}, {pos.z:.3f})  "
             f"frame='{frame}'"
         )
+
+        # MoveIt's SRDF virtual joint defines world = base_link (identity),
+        # so goals in any other frame must be transformed to base_link before
+        # MoveIt will interpret them correctly.
+        if msg.header.frame_id and msg.header.frame_id != DEFAULT_PLANNING_FRAME:
+            try:
+                msg = self._tf_buffer.transform(
+                    msg,
+                    DEFAULT_PLANNING_FRAME,
+                    timeout=rclpy.duration.Duration(seconds=1.0),
+                )
+                p = msg.pose.position
+                self.get_logger().info(
+                    f"Transformed to '{DEFAULT_PLANNING_FRAME}': "
+                    f"xyz=({p.x:.3f}, {p.y:.3f}, {p.z:.3f})"
+                )
+            except Exception as exc:
+                self.get_logger().error(
+                    f"Cannot transform goal from '{frame}' to "
+                    f"'{DEFAULT_PLANNING_FRAME}': {exc}"
+                )
+                self._set_free()
+                return
+
         self._set_status_phase("planning_cartesian")
         self._do_cartesian_plan(msg)
 
@@ -521,7 +547,7 @@ class MoveItCartesianNode(Node):
 
         if not self._joint_ac.wait_for_server(timeout_sec=5.0):
             self.get_logger().error(
-                "joint_trajectory_controller action server not available."
+                f"{self._joint_action_name} action server not available."
             )
             self._set_free()
             return
@@ -542,7 +568,7 @@ class MoveItCartesianNode(Node):
 
         if not goal_handle or not goal_handle.accepted:
             self.get_logger().error(
-                "joint_trajectory_controller rejected the execution goal."
+                f"{self._joint_action_name} rejected the execution goal."
             )
             self._set_free()
             return
@@ -617,10 +643,10 @@ def main(args=None) -> int:
         )
 
     if node._joint_ac.wait_for_server(timeout_sec=10.0):
-        node.get_logger().info("Connected to joint_trajectory_controller.")
+        node.get_logger().info(f"Connected to {node._joint_action_name}.")
     else:
         node.get_logger().warn(
-            "joint_trajectory_controller not found — check controller state."
+            f"{node._joint_action_name} not found — check controller state."
         )
 
     node.get_logger().info(

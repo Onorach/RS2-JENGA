@@ -308,6 +308,16 @@ def generate_launch_description():
             "Z translation for world->base_link static TF (metres). Must match robot spawn height."
         ),
     )
+    base_yaw_arg = DeclareLaunchArgument(
+        "base_yaw",
+        default_value="-1.5707963",
+        description=(
+            "Yaw rotation (radians) for world->base_link static TF. "
+            "Default -pi/2 matches the sim workspace URDF. Set to 0 for "
+            "an identity rotation, or flip sign if the hardware robot is "
+            "rotated in the opposite direction."
+        ),
+    )
 
     # robot_description for RMRC: same workspace xacro as ur3e_sim_control (single world->base TF)
     robot_description_content = Command(
@@ -453,7 +463,7 @@ def generate_launch_description():
             "0",
             "0",
             LaunchConfiguration("base_height"),
-            "0",
+            LaunchConfiguration("base_yaw"),
             "0",
             "0",
             "world",
@@ -532,6 +542,7 @@ def generate_launch_description():
         path_fb_scale_cap_arg,
         publish_world_to_base_tf_arg,
         base_height_arg,
+        base_yaw_arg,
         world_to_base_tf_node,
         pose_goal_node,
         moveit_cartesian_node,

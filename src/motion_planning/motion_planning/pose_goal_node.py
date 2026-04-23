@@ -41,6 +41,8 @@ from geometry_msgs.msg import PoseStamped, WrenchStamped
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import PlanningOptions
 from std_msgs.msg import Bool, String
+from tf2_ros import Buffer, TransformListener
+import tf2_geometry_msgs  # noqa: F401 – registers PoseStamped transform
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from ur3e_controller.move_client import UR3E_JOINT_NAMES
@@ -48,6 +50,7 @@ from motion_planning.moveit_planning import (
     build_motion_plan_request,
     pose_stamped_to_goal_constraints,
     robot_trajectory_to_joint_trajectory,
+    DEFAULT_PLANNING_FRAME,
 )
 
 DEFAULT_MOVE_ACTION = "/move_action"
@@ -65,6 +68,9 @@ class PoseGoalNode(Node):
         joint_action = self.declare_parameter("joint_trajectory_action", DEFAULT_JOINT_ACTION).value
         ft_topic     = self.declare_parameter("ft_topic",               DEFAULT_FT_TOPIC).value
         self._plan_only = self.declare_parameter("plan_only", False).value
+
+        self._tf_buffer = Buffer()
+        self._tf_listener = TransformListener(self._tf_buffer, self)
 
         # All subscriptions, action clients, and their callback chains share one
         # ReentrantCallbackGroup so they can run concurrently without deadlocking.
@@ -231,6 +237,30 @@ class PoseGoalNode(Node):
         self.get_logger().info(
             f"Goal pose received: xyz=({pos.x:.3f}, {pos.y:.3f}, {pos.z:.3f})  frame='{frame}'"
         )
+
+        # MoveIt's SRDF virtual joint defines world = base_link (identity),
+        # so goals in any other frame must be transformed to base_link before
+        # MoveIt will interpret them correctly.
+        if msg.header.frame_id and msg.header.frame_id != DEFAULT_PLANNING_FRAME:
+            try:
+                msg = self._tf_buffer.transform(
+                    msg,
+                    DEFAULT_PLANNING_FRAME,
+                    timeout=rclpy.duration.Duration(seconds=1.0),
+                )
+                p = msg.pose.position
+                self.get_logger().info(
+                    f"Transformed to '{DEFAULT_PLANNING_FRAME}': "
+                    f"xyz=({p.x:.3f}, {p.y:.3f}, {p.z:.3f})"
+                )
+            except Exception as exc:
+                self.get_logger().error(
+                    f"Cannot transform goal from '{frame}' to "
+                    f"'{DEFAULT_PLANNING_FRAME}': {exc}"
+                )
+                self._set_free()
+                return
+
         self._do_plan(msg)
 
     # ── Step 2: send plan request to MoveGroup ───────────────────────────────
