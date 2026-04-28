@@ -10,7 +10,8 @@ import cv2
 import numpy as np
 
 from colour_identification import classify_frame, compute_roi, ColourIdentificationNode
-from box_percentages import BoxPercentagesNode, compute_percentages, build_debug_image, analyse_layer, LAYER_CELLS
+from box_percentages import BoxPercentagesNode, compute_percentages, build_debug_image, LAYER_CELLS
+from layer_analysis import analyse_tower, build_tower_image
 from grid_generation import (
     build_edge_display,
     classify_lines,
@@ -35,6 +36,9 @@ from perception_config import (
     EDGE_HISTORY_FRAMES,
     GRID_POINTS_ENABLED,
     GRID_POINTS_MAX_INPUT_LINES,
+    POINTS_OVERLAY_PAUSE_FRAMES,
+    POINT_VALID_SIDE_BAND_PCT,
+    POINT_VALID_CENTER_BAND_PCT,
 )
 
 import rclpy
@@ -105,11 +109,106 @@ def _crop_tower_finder_display(
     return np.hstack([left, right])
 
 
-def _run_loop(get_frame_pair) -> None:
+def _ensure_window_open(name: str) -> None:
+    """Create/recreate a window if it is missing or closed."""
+    try:
+        visible = cv2.getWindowProperty(name, cv2.WND_PROP_VISIBLE)
+        if visible < 1:
+            cv2.namedWindow(name, cv2.WINDOW_NORMAL)
+    except cv2.error:
+        cv2.namedWindow(name, cv2.WINDOW_NORMAL)
+
+
+def _filter_points_by_x_bands(
+    points_roi: list[tuple[int, int]],
+    roi_width: int,
+) -> list[tuple[int, int]]:
+    """Keep only points in left/right outer bands and center band."""
+    if roi_width <= 0 or not points_roi:
+        return []
+
+    side_frac = max(0.0, min(0.5, float(POINT_VALID_SIDE_BAND_PCT) / 100.0))
+    center_frac = max(0.0, min(1.0, float(POINT_VALID_CENTER_BAND_PCT) / 100.0))
+    half_center = center_frac * 0.5
+    center_lo = 0.5 - half_center
+    center_hi = 0.5 + half_center
+
+    filtered: list[tuple[int, int]] = []
+    denom = float(max(1, roi_width - 1))
+    for ix, iy in points_roi:
+        x_frac = float(ix) / denom
+        in_left_outer = x_frac <= side_frac
+        in_right_outer = x_frac >= (1.0 - side_frac)
+        in_center = center_lo <= x_frac <= center_hi
+        if in_left_outer or in_center or in_right_outer:
+            filtered.append((ix, iy))
+    return filtered
+
+
+def _build_cells_from_locked_points(
+    points_roi: list[tuple[int, int]],
+    roi_xywh: tuple[int, int, int, int],
+) -> list[list[dict]]:
+    """
+    Map detected points onto GRID_CORNERS template and build dynamic layer cells.
+    """
+    rx, ry, _, _ = roi_xywh
+    if not points_roi:
+        return []
+
+    # Convert ROI points to full-frame coords.
+    detected_full = np.array(
+        [(int(ix + rx), int(iy + ry)) for ix, iy in points_roi],
+        dtype=np.float32,
+    )
+
+    # Keep exactly rows*cols points, ordered top-to-bottom then left-to-right.
+    rows = len(GRID_CORNERS)
+    cols = len(GRID_CORNERS[0]) if rows else 0
+    expected = rows * cols
+    if rows == 0 or cols == 0 or len(detected_full) < expected:
+        return []
+
+    y_order = np.argsort(detected_full[:, 1])
+    selected = detected_full[y_order][:expected]
+
+    mapped_grid: list[list[tuple[int, int] | None]] = []
+    for r in range(rows):
+        row_points = selected[r * cols:(r + 1) * cols]
+        if len(row_points) < cols:
+            return []
+        row_x_order = np.argsort(row_points[:, 0])
+        ordered_row = row_points[row_x_order]
+        mapped_grid.append(
+            [(int(px), int(py)) for px, py in ordered_row]
+        )
+
+    dynamic_layers: list[list[dict]] = []
+    for r in range(len(mapped_grid) - 1):
+        top = mapped_grid[r]
+        bot = mapped_grid[r + 1]
+        if len(top) < 3 or len(bot) < 3:
+            continue
+
+        left_corners = [top[0], top[1], bot[0], bot[1]]
+        right_corners = [top[1], top[2], bot[1], bot[2]]
+        if any(c is None for c in left_corners + right_corners):
+            continue
+
+        dynamic_layers.append(
+            [
+                {"name": f"left_cell_r{r}", "corners": left_corners},
+                {"name": f"right_cell_r{r}", "corners": right_corners},
+            ]
+        )
+    return dynamic_layers
+
+
+def _run_loop(get_frame_pair, on_points_locked=None) -> None:
     cv2.namedWindow("Live + grid", cv2.WINDOW_NORMAL)
     cv2.namedWindow("Colour mask", cv2.WINDOW_NORMAL)
-    if BOX_PERCENTAGES_ENABLED:
-        cv2.namedWindow("Box percentages", cv2.WINDOW_NORMAL)
+    cv2.namedWindow("Box percentages", cv2.WINDOW_NORMAL)
+    cv2.namedWindow("Layer Analysis", cv2.WINDOW_NORMAL)
     if EDGE_DETECTION_ENABLED:
         cv2.namedWindow("Edges (grey)", cv2.WINDOW_NORMAL)
         cv2.namedWindow("Edges (grey history)", cv2.WINDOW_NORMAL)
@@ -122,6 +221,12 @@ def _run_loop(get_frame_pair) -> None:
     frame_n = 0
     roi_margin = PLAY_RUNTIME_ROI_MARGIN
     grey_line_history: deque[list[tuple]] = deque(maxlen=EDGE_HISTORY_FRAMES)
+    points_locked = False
+    locked_layer_cells: list[list[dict]] = []
+    live_valid_points_full: list[tuple[int, int]] = []
+    _last_pct_results: list[dict] = []
+    _last_tower_img: np.ndarray | None = None
+    ANALYSIS_INTERVAL = 5  # re-run heavy analysis every N frames after lock
 
     while True:
         bgr, depth_mm = get_frame_pair()
@@ -132,6 +237,7 @@ def _run_loop(get_frame_pair) -> None:
 
         ih, iw = bgr.shape[:2]
         frame_n += 1
+        last_grid_points: list[tuple[int, int]] = []
 
         # --- live view ---
         rx, ry, rw, rh = compute_roi(iw, ih)
@@ -144,54 +250,89 @@ def _run_loop(get_frame_pair) -> None:
         _draw_grid(live_disp, dx1, dy1)
         (fx1, fy1), (fx2, fy2) = DIVIDE_LINE
         cv2.line(live_disp, (fx1 - dx1, fy1 - dy1), (fx2 - dx1, fy2 - dy1), (255, 255, 255), 1, cv2.LINE_AA)
+        if frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES)):
+            for px, py in live_valid_points_full:
+                lx, ly = int(px - dx1), int(py - dy1)
+                if 0 <= lx < live_disp.shape[1] and 0 <= ly < live_disp.shape[0]:
+                    cv2.circle(live_disp, (lx, ly), 2, (0, 0, 255), -1)
         cv2.imshow("Live + grid", live_disp)
 
+        colour_img = None
         # --- colour mask ---
-        colour_img, _ = classify_frame(bgr)
-        cv2.imshow("Colour mask", colour_img)
+        # After lock, only classify if BOX_PERCENTAGES_ENABLED needs it; edge
+        # detection history is frozen so we skip the expensive classify+edge path.
+        if not points_locked or BOX_PERCENTAGES_ENABLED:
+            colour_img, _ = classify_frame(bgr)
+            cv2.imshow("Colour mask", colour_img)
 
         # --- edge detection ---
-        if EDGE_DETECTION_ENABLED:
-            disp_grey, lines_grey = build_edge_display(colour_img)
-            grey_line_history.append(lines_grey)
-            history_lines_flat: list[tuple] = []
-            line_cap = max(1, int(GRID_POINTS_MAX_INPUT_LINES))
-            for hist_lines in reversed(grey_line_history):
-                for line in hist_lines:
-                    history_lines_flat.append(line)
+        if EDGE_DETECTION_ENABLED and colour_img is not None:
+            disp_grey, lines_grey = build_edge_display(colour_img, bgr)
+            if not points_locked:
+                grey_line_history.append(lines_grey)
+                history_lines_flat: list[tuple] = []
+                line_cap = max(1, int(GRID_POINTS_MAX_INPUT_LINES))
+                for hist_lines in reversed(grey_line_history):
+                    for line in hist_lines:
+                        history_lines_flat.append(line)
+                        if len(history_lines_flat) >= line_cap:
+                            break
                     if len(history_lines_flat) >= line_cap:
                         break
-                if len(history_lines_flat) >= line_cap:
-                    break
-            horiz_hist, vert_hist = classify_lines(history_lines_flat)
-            history_disp = draw_classified_lines(
-                np.zeros_like(disp_grey),
-                horiz_hist,
-                vert_hist,
-            )
-            if GRID_POINTS_ENABLED:
-                for ix, iy in find_hv_intersections_from_classified(
+                horiz_hist, vert_hist = classify_lines(history_lines_flat)
+                history_disp = draw_classified_lines(
+                    np.zeros_like(disp_grey),
                     horiz_hist,
                     vert_hist,
-                    history_disp.shape,
-                ):
-                    cv2.circle(history_disp, (ix, iy), 3, (0, 0, 255), -1)
+                )
+                if GRID_POINTS_ENABLED:
+                    last_grid_points = find_hv_intersections_from_classified(
+                        horiz_hist,
+                        vert_hist,
+                        history_disp.shape,
+                    )
+                    last_grid_points = _filter_points_by_x_bands(last_grid_points, rw)
+                    if frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES)):
+                        live_valid_points_full = [
+                            (int(ix + rx), int(iy + ry)) for ix, iy in last_grid_points
+                        ]
+                    for ix, iy in last_grid_points:
+                        cv2.circle(history_disp, (ix, iy), 3, (0, 0, 255), -1)
+            else:
+                history_disp = disp_grey.copy()
             cv2.imshow("Edges (grey)", disp_grey)
             cv2.imshow("Edges (grey history)", history_disp)
 
-        pts = compute_hex_region(bgr) if TOWER_ANALYSIS_ENABLED else None
-        sat_disp = build_display(bgr, pts) if TOWER_ANALYSIS_ENABLED else None
-        tower_depth = estimate_tower_depth_stats(depth_mm, pts) if TOWER_ANALYSIS_ENABLED else None
+        if (
+            frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES))
+            and EDGE_DETECTION_ENABLED
+            and not points_locked
+            and GRID_POINTS_ENABLED
+            and last_grid_points
+        ):
+            locked_layer_cells = _build_cells_from_locked_points(
+                last_grid_points,
+                (rx, ry, rw, rh),
+            )
+            if locked_layer_cells:
+                points_locked = True
+                if on_points_locked is not None:
+                    on_points_locked()
+
+        tower_analysis_active = TOWER_ANALYSIS_ENABLED
+        pts = compute_hex_region(bgr) if tower_analysis_active else None
+        sat_disp = build_display(bgr, pts) if tower_analysis_active else None
+        tower_depth = estimate_tower_depth_stats(depth_mm, pts) if tower_analysis_active else None
         tower_offset = (
             estimate_tower_offset(
                 pts=pts,
                 image_width_px=iw,
                 depth_m=None if tower_depth is None else tower_depth["tower_depth_m"],
             )
-            if TOWER_ANALYSIS_ENABLED
+            if tower_analysis_active
             else None
         )
-        if TOWER_ANALYSIS_ENABLED and sat_disp is not None:
+        if tower_analysis_active and sat_disp is not None:
             if tower_depth is not None:
                 cv2.putText(
                     sat_disp,
@@ -227,41 +368,57 @@ def _run_loop(get_frame_pair) -> None:
                         cv2.LINE_AA,
                     )
             cv2.imshow("Tower finder", _crop_tower_finder_display(sat_disp, pts, iw, ih))
-        if TOWER_ANALYSIS_ENABLED:
+        if tower_analysis_active:
             cv2.imshow("Depth feed", build_depth_feed_display(depth_mm, bgr.shape, pts))
 
-        if frame_n % 30 == 0:
-            if BOX_PERCENTAGES_ENABLED:
-                pct_results = compute_percentages(bgr)
-                cv2.imshow("Box percentages", build_debug_image(bgr, pct_results))
-
-                # pct_results order matches grid cells: [l0, r0, l1, r1, ...]
-                for i, (left_cell, right_cell) in enumerate(LAYER_CELLS):
-                    left_result = pct_results[i * 2]
-                    right_result = pct_results[i * 2 + 1]
-                    layer = analyse_layer(bgr, left_result, right_result, left_cell, right_cell)
+        # --- box percentages + layer analysis (always active after lock) ---
+        if points_locked:
+            if frame_n % ANALYSIS_INTERVAL == 0:
+                active_cells = [cell for layer in locked_layer_cells for cell in layer]
+                _last_pct_results = compute_percentages(bgr, cells=active_cells)
+                row_cells = [(layer[0], layer[1]) for layer in locked_layer_cells]
+                tower = analyse_tower(bgr, row_cells)
+                _last_tower_img = build_tower_image(tower)
+                for i, layer_data in enumerate(tower):
                     print(
-                        f"layer {i}  orientation={layer['orientation']}  "
+                        f"layer {i}  orientation={layer_data['orientation']}  "
                         + "  ".join(
-                            f"{b['colour']}({b['position']:+.0f}px)" for b in layer["blocks"]
+                            f"{b['colour']}({'present' if b['present'] else 'missing'})"
+                            for b in layer_data["blocks"]
                         )
                     )
-            if TOWER_ANALYSIS_ENABLED and tower_depth is not None:
-                print("tower depth = " + f"{tower_depth['tower_depth_m']:.3f}m")
-            elif TOWER_ANALYSIS_ENABLED:
-                print("tower distance unavailable — " + explain_tower_depth_skip(bgr, depth_mm, pts))
-            if TOWER_ANALYSIS_ENABLED and tower_offset is not None:
-                if tower_offset["lateral_m"] is None:
-                    print(
-                        "tower offset "
-                        + f"dx_px={tower_offset['dx_px']:+.1f}px"
-                    )
-                else:
-                    print(
-                        "tower offset "
-                        + f"dx_px={tower_offset['dx_px']:+.1f}px  "
-                        + f"lateral={tower_offset['lateral_m']:+.3f}m"
-                    )
+            if _last_pct_results:
+                active_cells = [cell for layer in locked_layer_cells for cell in layer]
+                _ensure_window_open("Box percentages")
+                cv2.imshow(
+                    "Box percentages",
+                    build_debug_image(bgr, _last_pct_results, cells=active_cells),
+                )
+            if _last_tower_img is not None:
+                _ensure_window_open("Layer Analysis")
+                cv2.imshow("Layer Analysis", _last_tower_img)
+        elif BOX_PERCENTAGES_ENABLED and frame_n % 30 == 0:
+            # Pre-lock periodic display using static LAYER_CELLS
+            active_cells = [cell for layer in LAYER_CELLS for cell in layer]
+            pct_results = compute_percentages(bgr, cells=active_cells)
+            _ensure_window_open("Box percentages")
+            cv2.imshow("Box percentages", build_debug_image(bgr, pct_results, cells=active_cells))
+        if TOWER_ANALYSIS_ENABLED and tower_depth is not None:
+            print("tower depth = " + f"{tower_depth['tower_depth_m']:.3f}m")
+        elif TOWER_ANALYSIS_ENABLED:
+            print("tower distance unavailable — " + explain_tower_depth_skip(bgr, depth_mm, pts))
+        if TOWER_ANALYSIS_ENABLED and tower_offset is not None:
+            if tower_offset["lateral_m"] is None:
+                print(
+                    "tower offset "
+                    + f"dx_px={tower_offset['dx_px']:+.1f}px"
+                )
+            else:
+                print(
+                    "tower offset "
+                    + f"dx_px={tower_offset['dx_px']:+.1f}px  "
+                    + f"lateral={tower_offset['lateral_m']:+.3f}m"
+                )
 
         if (cv2.waitKey(1) & 0xFF) == ord("q"):
             break
@@ -391,13 +548,21 @@ def run_subscribe(
     rclpy.init()
 
     bridge = _ImageBridge(color_topic, depth_topic)
-    colour_node = ColourIdentificationNode(color_topic)
-    nodes: list = [bridge, colour_node]
-    if BOX_PERCENTAGES_ENABLED:
-        nodes.append(BoxPercentagesNode(color_topic))
+    nodes: list = [bridge]
+    if EDGE_DETECTION_ENABLED:
+        nodes.append(ColourIdentificationNode(color_topic))
     executor = _start_executor(nodes)
+    box_node: BoxPercentagesNode | None = None
+
+    def _start_box_percentages_node() -> None:
+        nonlocal box_node
+        if not BOX_PERCENTAGES_ENABLED or box_node is not None:
+            return
+        box_node = BoxPercentagesNode(color_topic)
+        nodes.append(box_node)
+        executor.add_node(box_node)
 
     try:
-        _run_loop(bridge.get_frame_pair)
+        _run_loop(bridge.get_frame_pair, on_points_locked=_start_box_percentages_node)
     finally:
         _shutdown_executor(executor, nodes)

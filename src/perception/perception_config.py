@@ -10,7 +10,7 @@ Centralize values used by active runtime modules.
 # ---------------------------------------------------------------------------
 
 # Search Area: (cx_frac, cy_frac, w_frac, h_frac).
-SEARCH_AREA = (0.5, 0.49, 0.32, 0.64)  # Bigger w/h = wider search; cx/cy shifts ROI.
+SEARCH_AREA = (0.6, 0.45, 0.35, 0.44) # Bigger w/h = wider search; cx/cy shifts ROI.
 
 # HSV ranges per colour (changes classification sensitivity).
 HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
@@ -25,10 +25,10 @@ HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] =
         ((40, 120, 100), (85, 255, 255)),
     ],
     "blue": [
-        ((100, 220, 130), (110, 255, 255)),
+        ((90, 160, 130), (104, 255, 255)),
     ],
     "purple": [
-        ((110, 110, 50), (175, 255, 200)),
+        ((105, 160, 50), (175, 255, 255)),
     ],
 }
 
@@ -110,15 +110,30 @@ EDGE_DETECTION_ENABLED = True
 # Number of frames accumulated in grey-edge history.
 EDGE_HISTORY_FRAMES = 30  # Higher = longer line trails.
 
+# Pause every N frames and show points on original image.
+POINTS_OVERLAY_PAUSE_FRAMES = 30
+
+# Valid-point horizontal bands in ROI coordinates (percent of ROI width):
+# valid = left outer band + center band + right outer band.
+# With defaults below:
+#   valid:   0-15%, 42.5-57.5%, 85-100%
+#   invalid: 15-42.5%, 57.5-85%
+POINT_VALID_SIDE_BAND_PCT = 15.0
+POINT_VALID_CENTER_BAND_PCT = 15.0
+
+# Max pixel distance when assigning detected points to template grid corners.
+# Increase if lock often fails due to camera angle/pose variation.
+POINT_LOCK_MAX_ASSIGN_DIST_PX = 120
+
 # Grey Canny thresholds.
 CANNY_GREY_LOW = 30   # Lower = more edges/noise.
-CANNY_GREY_HIGH = 100  # Higher = fewer, stronger edges.
+CANNY_GREY_HIGH = 80  # Higher = fewer, stronger edges.
 
 # Hough votes needed before accepting a line.
 HOUGH_THRESHOLD = 10  # Higher = fewer false lines, may miss weak lines.
 
 # Minimum accepted Hough line length (pixels).
-HOUGH_MIN_LENGTH = 60  # Higher = keeps longer/stabler segments.
+HOUGH_MIN_LENGTH = 30  # Higher = keeps longer/stabler segments.
 
 # Max gap (pixels) for connecting broken line segments.
 HOUGH_MAX_GAP = 20  # Higher = merges more fragmented segments.
@@ -180,4 +195,4 @@ CLUSTER_MERGE_RADIUS_PX = 12
 # ---------------------------------------------------------------------------
 
 # Box-percentages window, layer stdout, and BoxPercentages ROS node.
-BOX_PERCENTAGES_ENABLED = False
+BOX_PERCENTAGES_ENABLED = True

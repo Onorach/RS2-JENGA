@@ -21,6 +21,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from colour_identification import compute_roi
 from perception_config import (
     CANNY_GREY_LOW,
     CANNY_GREY_HIGH,
@@ -65,6 +66,37 @@ def compute_edges(colour_img: np.ndarray) -> np.ndarray:
     cleaned = clean_colour_mask(colour_img)
     grey = cv2.cvtColor(cleaned, cv2.COLOR_BGR2GRAY)
     return cv2.Canny(grey, CANNY_GREY_LOW, CANNY_GREY_HIGH)
+
+
+def compute_combined_edges(
+    colour_img: np.ndarray,
+    original_bgr_img: np.ndarray | None = None,
+) -> np.ndarray:
+    """
+    Combine edges from the generated colour mask and original BGR frame.
+
+    The colour-mask edges remain the primary signal; optional original-frame
+    edges are OR-combined to recover boundaries that may be weak in the mask.
+    """
+    mask_edges = compute_edges(colour_img)
+    if original_bgr_img is None:
+        return mask_edges
+
+    roi_x, roi_y, roi_w, roi_h = compute_roi(
+        int(original_bgr_img.shape[1]),
+        int(original_bgr_img.shape[0]),
+    )
+    original_roi = original_bgr_img[roi_y:roi_y + roi_h, roi_x:roi_x + roi_w]
+    if original_roi.shape[:2] != colour_img.shape[:2]:
+        original_roi = cv2.resize(
+            original_roi,
+            (int(colour_img.shape[1]), int(colour_img.shape[0])),
+            interpolation=cv2.INTER_LINEAR,
+        )
+
+    original_grey = cv2.cvtColor(original_roi, cv2.COLOR_BGR2GRAY)
+    original_edges = cv2.Canny(original_grey, CANNY_GREY_LOW, CANNY_GREY_HIGH)
+    return cv2.bitwise_or(mask_edges, original_edges)
 
 
 def find_lines(edges: np.ndarray) -> list[tuple]:
@@ -408,12 +440,20 @@ def draw_lines(base_img: np.ndarray, lines: list[tuple]) -> np.ndarray:
     return draw_classified_lines(base_img, horiz_lines, vert_lines)
 
 
-def build_edge_display(colour_img: np.ndarray) -> tuple[np.ndarray, list[tuple]]:
+def build_edge_display(
+    colour_img: np.ndarray,
+    original_bgr_img: np.ndarray | None = None,
+) -> tuple[np.ndarray, list[tuple]]:
     """
-    Full pipeline: colour mask → (clean) → Canny edges → classified Hough lines.
+    Full pipeline: combined edges → classified Hough lines.
+
+    Edges are extracted from:
+      1) generated colour mask (with optional pre-clean), and
+      2) original BGR frame (when provided),
+    then merged prior to Hough and point generation.
     Returns the display image and raw line list for history accumulation.
     """
-    edges_grey = compute_edges(colour_img)
+    edges_grey = compute_combined_edges(colour_img, original_bgr_img)
     lines_grey = find_lines(edges_grey)
     horiz_lines, vert_lines = classify_lines(lines_grey)
     disp_grey = draw_classified_lines(
