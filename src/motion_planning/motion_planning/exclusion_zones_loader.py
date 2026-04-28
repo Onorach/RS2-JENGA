@@ -1,6 +1,3 @@
-# Copyright 2025 RS2-JENGA
-# BSD-3-Clause
-
 """
 General-purpose MoveIt2 exclusion-zone manager.
 

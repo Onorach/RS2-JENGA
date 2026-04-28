@@ -1,6 +1,3 @@
-# Copyright 2025 RS2-JENGA
-# BSD-3-Clause
-
 """
 Force/torque feedback from the robot gripper (or tool flange).
 Subscribes to the FT sensor topic and caches the latest wrench for use in control or monitoring.

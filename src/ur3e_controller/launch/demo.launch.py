@@ -1,6 +1,3 @@
-# Copyright 2025 RS2-JENGA
-# BSD-3-Clause
-
 """Launch the UR3e demo node (sends a short trajectory). Start sim or real robot first."""
 
 from launch import LaunchDescription

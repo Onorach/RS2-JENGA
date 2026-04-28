@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-# Copyright 2025 RS2-JENGA
-# BSD-3-Clause
-
 """
 Demo node: sends a short joint trajectory to the UR3e.
 Works with both Gazebo simulation and real hardware (same action interface).

@@ -1,7 +1,4 @@
 #!/usr/bin/env python3
-# Copyright 2025 RS2-JENGA
-# BSD-3-Clause
-
 """
 Tkinter GUI for controlling the UR3e robot (simulation or hardware).
 

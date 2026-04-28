@@ -1,6 +1,3 @@
-# Copyright 2025 RS2-JENGA
-# BSD-3-Clause
-
 """
 Planner test: optional joint-space home, rectangle pose goals above the Jenga
 tower, then joint home.  Works with any of the three planning backends

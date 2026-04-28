@@ -1,5 +1,3 @@
-# Copyright 2025 RS2-JENGA
-# SPDX-License-Identifier: BSD-3-Clause
 
 """Run the MTC pick/place action server (C++). Start MoveIt separately (e.g. ur3e_hw_moveit).
 

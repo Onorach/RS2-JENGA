@@ -1,6 +1,3 @@
-# Copyright 2025 RS2-JENGA
-# BSD-3-Clause
-
 """
 Emergency Stop Node.
 

@@ -1,6 +1,3 @@
-# Copyright 2025 RS2-JENGA
-# BSD-3-Clause
-
 """Client helper for sending joint trajectory goals to UR3e (simulation or hardware)."""
 
 import rclpy

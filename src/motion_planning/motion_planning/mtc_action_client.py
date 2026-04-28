@@ -1,6 +1,3 @@
-# Copyright 2025 RS2-JENGA
-# BSD-3-Clause
-
 """
 Thin JengaPickPlace action client. Waits for the mtc_pick_place action server, sends one
 pick/place goal (default poses), and prints the result. Use for smoke tests; prefer

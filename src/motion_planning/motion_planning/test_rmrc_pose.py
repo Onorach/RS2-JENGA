@@ -1,6 +1,3 @@
-# Copyright 2025 RS2-JENGA
-# BSD-3-Clause
-
 """RMRC test: optional joint-space home, rectangle pose goals above tower, then joint home."""
 
 import json
