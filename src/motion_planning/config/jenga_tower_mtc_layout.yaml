@@ -1,0 +1,33 @@
+# MTC Jenga: parametric 6 x 3 block tower (tune to your workspace / calibration).
+# goal_frame: world (expected by mtc_pick_place for pick; place uses same)
+
+layout: parametric
+
+# Remove a loaded zone (id from ur3e_workspace.yaml) so the arm can work in the tower area.
+# Example: the default `jenga_tower` box may block the column; remove if it overlaps your stack.
+remove_zones_before_start: ["jenga_tower"]
+
+# After layer L is fully placed (3 blocks for blocks_per_layer: 3), publish removals.
+# remove_zones_after_layer: []
+
+parametric:
+  stock:
+    first_block: {x: 0.2, y: 0.45, z: 0.02}
+    step_along_x: 0.025
+  tower:
+    base: {x: 0.0, y: 0.35, z: 0.02}
+    blocks_per_layer: 3
+    layers: 6
+    layer_dz: 0.015
+    slot_dx: 0.025
+  orientation_pick: {x: 0.0, y: 0.0, z: 1.0, w: 1.0}
+  orientation_place: {x: 0.0, y: 0.0, z: 1.0, w: 1.0}
+
+# Example explicit mode (uncomment, set `layout: explicit` and add steps):
+# layout: explicit
+# blocks_per_layer: 3
+# steps:
+#   - pick: {x: 0.30, y: -0.20, z: 0.02}
+#     place: {x: 0.35, y: 0.05, z: 0.02}
+#   - pick: {x: 0.325, y: -0.20, z: 0.02}
+#     place: {x: 0.35, y: 0.05, z: 0.036}

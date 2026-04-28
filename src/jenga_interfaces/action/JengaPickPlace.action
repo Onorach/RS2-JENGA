@@ -1,0 +1,12 @@
+# Goal: where to pick and place
+geometry_msgs/PoseStamped pick_pose
+geometry_msgs/PoseStamped place_pose
+---
+# Result: outcome
+bool success
+string message
+uint8 error_code
+---
+# Feedback: progress
+string current_stage
+float32 progress_pct

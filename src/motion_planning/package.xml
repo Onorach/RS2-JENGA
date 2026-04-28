@@ -23,8 +23,11 @@
 
   <!-- Execution via ur3e_controller move_client -->
   <depend>ur3e_controller</depend>
+  <depend>jenga_interfaces</depend>
 
   <!-- MoveIt for pose_goal_node (when use_rmrc=false) -->
+  <exec_depend>ur_onrobot_control</exec_depend>
+  <exec_depend>ur_onrobot_moveit_config</exec_depend>
   <exec_depend>ur_moveit_config</exec_depend>
 
   <!-- ur_description for robot_description when using RMRC -->

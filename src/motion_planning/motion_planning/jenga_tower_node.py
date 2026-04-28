@@ -4,6 +4,10 @@ Jenga tower sequencer: publishes Cartesian goals to /goal_pose in order.
 
 Use with rmrc_planning_node, pose_goal_node, or moveit_cartesian_node (already running).
 Waits on planner status JSON (executions_completed) between steps, same contract as test_rmrc_pose.
+
+For mtc_pick_place_server: use ``status_topic:=mtc_status`` and set the server's ``mode`` to
+``single_pose`` so each /goal_pose is a MoveIt move (full MTC pick+place is via the
+``jenga_pick_place`` action; see test_mtc_pick_place).
 """
 
 from __future__ import annotations

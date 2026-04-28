@@ -148,6 +148,33 @@ ros2 run motion_planning test_rmrc_pose
 
 ---
 
+## UR3e + OnRobot RG2 (ur_onrobot) and MoveIt Task Constructor (MTC)
+
+Build `jenga_interfaces`, `mtc_pick_place`, `motion_planning`, and the `ur_onrobot_*` packages, source the workspace, and install `moveit_task_constructor` for your distro if not already available.
+
+**Option A — three terminals (manual order)**
+
+1. Driver + mock or hardware:  
+   `ros2 launch ur_onrobot_control start_robot.launch.py ur_type:=ur3e onrobot_type:=rg2 use_fake_hardware:=true launch_rviz:=false`
+2. MoveIt:  
+   `ros2 launch ur_onrobot_moveit_config ur_onrobot_moveit.launch.py ur_type:=ur3e onrobot_type:=rg2 launch_rviz:=true launch_servo:=false`
+3. Exclusion zones + e-stop + MTC server:  
+   `ros2 launch motion_planning motion_planning.launch.py planner:=mtc mtc_server_mode:=single_pose joint_trajectory_action:=/scaled_joint_trajectory_controller/follow_joint_trajectory publish_world_to_base_tf:=true base_height:=0.0 base_yaw:=0.0`
+
+**Option B — one launch (delayed motion_planning for move_group warm-up)**
+
+`ros2 launch motion_planning ur_onrobot_mtc_bringup.launch.py`
+
+Tweak `use_fake_hardware`, `robot_ip`, `base_height` / `base_yaw` for the real base pose, and `motion_planning_delay_sec` as needed.
+
+**Six-layer Jenga (parametric 18 pick–place steps)** after the stack and action server are up:
+
+`ros2 run motion_planning jenga_tower_mtc_sequencer --ros-args -p pre_wait_sec:=8.0`
+
+Edit [`motion_planning/config/jenga_tower_mtc_layout.yaml`](src/motion_planning/config/jenga_tower_mtc_layout.yaml) for stock and tower frame positions; add `jenga_tower` to `remove_zones_before_start` if the default planning-scene box blocks the stack (see the motion_planning README).
+
+---
+
 ## Documentation
 
 - [ur3e_controller](src/ur3e_controller/README.md) – joint control, launch files, move client API

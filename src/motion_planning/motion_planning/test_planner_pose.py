@@ -37,6 +37,7 @@ PLANNER_STATUS_TOPICS = {
     "rmrc": "rmrc_status",
     "moveit": "moveit_status",
     "moveit_cartesian": "moveit_cartesian_status",
+    "mtc": "mtc_status",
 }
 
 

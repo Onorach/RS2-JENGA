@@ -38,7 +38,7 @@ def generate_launch_description():
                 description=(
                     "Planner status JSON topic (executions_completed). Use rmrc_status for "
                     "planner:=rmrc, moveit_status for planner:=moveit, moveit_cartesian_status "
-                    "for planner:=moveit_cartesian."
+                    "for planner:=moveit_cartesian, mtc_status when using mtc_pick_place_server."
                 ),
             ),
             DeclareLaunchArgument(

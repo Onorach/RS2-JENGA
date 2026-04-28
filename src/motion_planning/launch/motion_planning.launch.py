@@ -25,6 +25,7 @@ from launch.substitutions import (
 )
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
+from ur_onrobot_moveit_config.launch_common import load_yaml
 
 
 def generate_launch_description():
@@ -86,10 +87,11 @@ def generate_launch_description():
     planner_arg = DeclareLaunchArgument(
         "planner",
         default_value="rmrc",
-        choices=["rmrc", "moveit", "moveit_cartesian"],
+        choices=["rmrc", "moveit", "moveit_cartesian", "mtc"],
         description=(
             "Planning backend: 'rmrc' (DIY RMRC), 'moveit' (OMPL via MoveGroup), "
-            "'moveit_cartesian' (Cartesian straight-line + OMPL fallback)."
+            "'moveit_cartesian' (Cartesian straight-line + OMPL fallback), "
+            "'mtc' (MoveIt Task Constructor pick-and-place)."
         ),
     )
     max_step_arg = DeclareLaunchArgument(
@@ -263,6 +265,14 @@ def generate_launch_description():
             "RMRC: scales Wdiag = joint_secondary_weight * epsilon (keep subordinate to JᵀJ)."
         ),
     )
+    mtc_server_mode_arg = DeclareLaunchArgument(
+        "mtc_server_mode",
+        default_value="paired_pose",
+        description=(
+            "MTC server mode: 'paired_pose' for jenga_tower_node (two consecutive /goal_pose "
+            "messages = pick then place), 'single_pose' for direct MoveGroup moves."
+        ),
+    )
     joint_secondary_pref_clip_arg = DeclareLaunchArgument(
         "joint_secondary_pref_clip",
         default_value="0.45",
@@ -356,6 +366,31 @@ def generate_launch_description():
             LaunchConfiguration("base_height"),
         ]
     )
+
+    robot_description_kinematics = {
+        "robot_description_kinematics": load_yaml(
+            "ur_onrobot_moveit_config", "config/kinematics.yaml"
+        )
+    }
+
+    # MTC PipelinePlanner looks for 'ompl.planning_plugin' (new parameter structure).
+    # Without this, it falls back to old-style lookup, finds multiple plugins, and
+    # picks chomp_interface/CHOMPPlanner alphabetically — breaking all Connect stages.
+    _ompl_yaml = load_yaml("ur_onrobot_moveit_config", "config/ompl_planning.yaml")
+    ompl_pipeline_config = {
+        "ompl": {
+            "planning_plugin": "ompl_interface/OMPLPlanner",
+            "request_adapters": (
+                "default_planner_request_adapters/AddTimeOptimalParameterization "
+                "default_planner_request_adapters/FixWorkspaceBounds "
+                "default_planner_request_adapters/FixStartStateBounds "
+                "default_planner_request_adapters/FixStartStateCollision "
+                "default_planner_request_adapters/FixStartStatePathConstraints"
+            ),
+            "start_state_max_bounds_error": 0.1,
+        }
+    }
+    ompl_pipeline_config["ompl"].update(_ompl_yaml)
 
     pose_goal_node = Node(
         package=pkg_planning,
@@ -454,6 +489,21 @@ def generate_launch_description():
         ],
     )
 
+    mtc_pick_place_server_node = Node(
+        package="mtc_pick_place",
+        executable="mtc_pick_place_server",
+        name="mtc_pick_place_server",
+        output="screen",
+        condition=IfCondition(
+            PythonExpression(["'", LaunchConfiguration("planner"), "' == 'mtc'"])
+        ),
+        parameters=[
+            robot_description_kinematics,
+            ompl_pipeline_config,
+            {"mode": LaunchConfiguration("mtc_server_mode")},
+        ],
+    )
+
     world_to_base_tf_node = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
@@ -508,6 +558,7 @@ def generate_launch_description():
         move_action_arg,
         joint_action_arg,
         planner_arg,
+        mtc_server_mode_arg,
         max_step_arg,
         jump_threshold_arg,
         cartesian_fraction_threshold_arg,
@@ -547,6 +598,7 @@ def generate_launch_description():
         pose_goal_node,
         moveit_cartesian_node,
         rmrc_planning_node,
+        mtc_pick_place_server_node,
         exclusion_zones_node,
         estop_node,
     ])

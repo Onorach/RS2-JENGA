@@ -35,10 +35,11 @@ def generate_launch_description():
     planner_arg = DeclareLaunchArgument(
         "planner",
         default_value="moveit",
-        choices=["rmrc", "moveit", "moveit_cartesian"],
+        choices=["rmrc", "moveit", "moveit_cartesian", "mtc"],
         description=(
             "Planning backend: 'rmrc' (DIY RMRC, no MoveIt), 'moveit' (OMPL), "
-            "'moveit_cartesian' (Cartesian straight-line + OMPL fallback)."
+            "'moveit_cartesian' (Cartesian straight-line + OMPL fallback), "
+            "'mtc' (MoveIt Task Constructor pick-and-place)."
         ),
     )
 
