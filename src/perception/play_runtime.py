@@ -162,11 +162,17 @@ def _build_cells_from_locked_points(
         dtype=np.float32,
     )
 
-    # Keep exactly rows*cols points, ordered top-to-bottom then left-to-right.
-    rows = len(GRID_CORNERS)
-    cols = len(GRID_CORNERS[0]) if rows else 0
+    # Build rows directly from detected points.
+    # Rule requested: num_layers = (total_points - 3) // 3
+    # Each layer uses 2 rows of 3 corner points; therefore rows = num_layers + 1.
+    cols = 3
+    total_points = int(len(detected_full))
+    num_layers = (total_points - 3) // 3
+    if num_layers < 1:
+        return []
+    rows = num_layers + 1
     expected = rows * cols
-    if rows == 0 or cols == 0 or len(detected_full) < expected:
+    if total_points < expected:
         return []
 
     y_order = np.argsort(detected_full[:, 1])
