@@ -141,19 +141,19 @@ GRID_POINTS_MAX_INPUT_LINES = 700  # Hard cap to prevent heavy point computation
 # ---------------------------------------------------------------------------
 
 # Morphological close kernel applied to the colour mask before Canny.
-# Fills fringe misclassification pixels at block boundaries (e.g. thin
+# Fills fringe misclassification pixels at block boundaries (e.g. the thin
 # purple halos between differently-coloured adjacent blocks).
 # 0 = disabled.  Increase if colour mask still has noisy borders.
 CLEAN_MASK_KERNEL_PX = 7
 
 # Whether to merge near-parallel lines before computing intersections.
-# True  → fewer lines → smaller intersection arrays, but requires correct merge.
-# False → all history lines used directly; cluster step removes duplicates.
-#         Recommended default — simpler and no merge-artefact risk.
+# When True:  fewer lines → faster O(H×V) loop, but merge must be correct.
+# When False: all history lines are used directly; the cluster step at the
+#             end removes near-duplicate corners.  Recommended default.
 LINE_MERGE_ENABLED = False
 
-# Max pixel distance between parallel lines to be merged into one
-# (only used when LINE_MERGE_ENABLED = True).
+# Max pixel distance between parallel lines of the same orientation to be
+# merged into one (only used when LINE_MERGE_ENABLED = True).
 LINE_MERGE_BAND_PX = 10
 
 # How far (pixels) an algebraic intersection may fall *outside* a line-segment
@@ -161,18 +161,9 @@ LINE_MERGE_BAND_PX = 10
 # Increase if corners at image edges are still missed.
 INTERSECTION_GAP_TOLERANCE_PX = 25
 
-# --- Clustering (two-pass deduplication) ---
-
-# Pass 1: grid cell size (pixels).  Points in the same cell are averaged.
-# Larger = coarser grouping, fewer output corners.
+# Grid cell size (pixels) for clustering near-duplicate intersection points
+# into single canonical corners.
 CLUSTER_CELL_SIZE_PX = 15
-
-# Pass 2: after grid-bucket averaging, any two centroids whose Chebyshev
-# distance (max of |dx|, |dy|) is within this radius are merged again.
-# This fixes the bucket-boundary artefact where a real duplicate straddles
-# two adjacent cells and survives Pass 1 as two separate points.
-# Set to 0 to disable Pass 2.
-CLUSTER_MERGE_RADIUS_PX = 12
 
 
 # ---------------------------------------------------------------------------

@@ -3,18 +3,18 @@ grid_generation.py
 ------------------
 Edge-based line and grid-point generation for perception displays.
 
-Intersection pipeline (v4):
+Intersection pipeline (v3):
   1. Colour mask is morphologically cleaned before Canny to reduce fringe
      misclassification noise at block boundaries.
   2. (Optional) Near-parallel lines within LINE_MERGE_BAND_PX are collapsed
-     into one representative line using MIN/MAX extent preservation.
-  3. Intersections are solved algebraically via a fully vectorised NumPy
-     broadcast — all H×V pairs are evaluated simultaneously, replacing the
-     v3 Python double-for-loop that cost ~122 K iterations per frame.
-  4. Near-duplicate points are collapsed in two passes:
-       Pass 1 — fast grid-bucket grouping (O(N)).
-       Pass 2 — greedy centroid merge for points that straddle bucket
-                 boundaries (O(M²) on the small centroid set, typically M<100).
+     into one representative line.  The representative line uses MIN/MAX of
+     endpoint coordinates to preserve full spatial extent — averaging (the
+     v2 bug) produced short lines that caused edge intersections to be
+     rejected because t/u fell outside the tolerance window.
+  3. Intersections are found algebraically (line extension) with a configurable
+     gap tolerance so corners where segments "almost meet" are recovered.
+  4. Near-duplicate intersection points are clustered into single canonical
+     corners via a fast grid-bucket approach.
 """
 from __future__ import annotations
 
@@ -34,7 +34,6 @@ from perception_config import (
     LINE_MERGE_ENABLED,
     INTERSECTION_GAP_TOLERANCE_PX,
     CLUSTER_CELL_SIZE_PX,
-    CLUSTER_MERGE_RADIUS_PX,
 )
 
 
@@ -45,7 +44,8 @@ from perception_config import (
 def clean_colour_mask(colour_img: np.ndarray) -> np.ndarray:
     """
     Morphologically close the colour-mask image to fill fringe pixels at block
-    boundaries before edge detection.  CLEAN_MASK_KERNEL_PX = 0 disables this.
+    boundaries before edge detection.  If CLEAN_MASK_KERNEL_PX is 0 the image
+    is returned unchanged.
     """
     if CLEAN_MASK_KERNEL_PX <= 0:
         return colour_img
@@ -119,12 +119,18 @@ def _merge_group(group: list[tuple], is_horiz: bool) -> tuple:
     """
     Produce one representative line for a group of near-parallel lines.
 
-    Uses MIN/MAX for the extent coordinates (parallel axis) so that short
-    sub-segments from different frames combine into a line that spans the
-    full physical edge rather than just the averaged centre portion.
-    The perpendicular coordinate is averaged to get the best position estimate.
+    KEY FIX vs v2: instead of averaging all four coordinates (which shrinks
+    the line to cover only the central x/y portion of the group), we:
+      • average the PERPENDICULAR coordinate  (y for horiz, x for vert)
+      • take MIN/MAX of the PARALLEL coordinates to preserve full extent.
+
+    Example — three horizontal sub-segments spanning the full width:
+        (50, 100, 200, 101), (190, 99, 400, 100), (380, 100, 550, 100)
+      v2 (broken):  x1=avg(50,190,380)=207, x2=avg(200,400,550)=383  ← too short
+      v3 (fixed):   x1=min(50,190,380)=50,  x2=max(200,400,550)=550  ← full span
     """
     normed = [_normalize_line(*l) for l in group]
+
     if is_horiz:
         y = int(round(np.mean([(l[1] + l[3]) / 2.0 for l in normed])))
         x1 = min(l[0] for l in normed)
@@ -143,9 +149,13 @@ def merge_colinear_lines(
     band: int = LINE_MERGE_BAND_PX,
 ) -> list[tuple]:
     """
-    Collapse near-parallel lines within `band` pixels of each other.
-    Groups compare against their first element (not the running tail) to
-    prevent chaining across multiple physical boundaries.
+    Collapse near-parallel lines within `band` pixels of each other into a
+    single representative line.
+
+    Groups are compared against their FIRST element (not the running tail) to
+    prevent chaining.  Without this, y=100, 107, 114 with band=8 would all
+    join one group even though the total spread is 14 px — each step is ≤ 8
+    but the group as a whole spans much more.
     """
     if not lines:
         return []
@@ -159,7 +169,7 @@ def merge_colinear_lines(
     lines_sorted = sorted(lines, key=key_fn)
     merged: list[tuple] = []
     group = [lines_sorted[0]]
-    group_anchor = key_fn(lines_sorted[0])
+    group_anchor = key_fn(lines_sorted[0])   # always compare against FIRST element
 
     for line in lines_sorted[1:]:
         if abs(key_fn(line) - group_anchor) <= band:
@@ -174,7 +184,7 @@ def merge_colinear_lines(
 
 
 # ---------------------------------------------------------------------------
-# Vectorised algebraic intersection  (replaces Python double-for-loop)
+# Algebraic intersection with gap tolerance
 # ---------------------------------------------------------------------------
 
 def extend_and_intersect(
@@ -184,166 +194,92 @@ def extend_and_intersect(
     gap_tolerance: int = INTERSECTION_GAP_TOLERANCE_PX,
 ) -> list[tuple[int, int]]:
     """
-    Find all H×V algebraic intersections in one vectorised NumPy pass.
+    Find corners by solving the algebraic intersection of each horizontal line
+    with each vertical line.
 
-    Why this is fast
-    ----------------
-    The v3 implementation used a Python double-for-loop over every
-    (horiz, vert) pair.  With 350 horiz × 350 vert history lines that is
-    ~122,500 Python iterations — slow because each iteration pays Python
-    interpreter overhead (~100 ns each → ~12 ms just in loop cost).
+    Parametric form:
+        P_H(t) = (hx1 + t*dx_h,  hy1 + t*dy_h)   t in [0,1] on the segment
+        P_V(u) = (vx1 + u*dx_v,  vy1 + u*dy_v)   u in [0,1] on the segment
 
-    Here every pair is evaluated simultaneously using NumPy broadcasting:
-      H  reshaped to (N_h, 1, 4)
-      V  reshaped to (1,  N_v, 4)
-    All arithmetic produces (N_h, N_v) arrays and runs in compiled C,
-    typically 50-200× faster than the equivalent Python loop.
+    A point is accepted when:
+      • It falls inside the image bounds.
+      • t ∈ [-tol_h, 1+tol_h]  where tol_h = gap_tolerance / length_h
+      • u ∈ [-tol_v, 1+tol_v]  where tol_v = gap_tolerance / length_v
 
-    Parametric form
-    ---------------
-        P_H(t) = (hx1 + t·dx_h,  hy1 + t·dy_h)
-        P_V(u) = (vx1 + u·dx_v,  vy1 + u·dy_v)
-
-    Solving P_H(t) = P_V(u) gives t and u via Cramer's rule.
-    A candidate corner is kept when:
-      • t ∈ [-tol_h, 1+tol_h]   (near the horiz segment, tol = gap/length)
-      • u ∈ [-tol_v, 1+tol_v]   (near the vert  segment)
-      • pixel (ix, iy) is inside the image bounds
+    The tolerance allows intersections that land slightly outside a segment
+    endpoint — the primary failure mode when Hough segments stop just short
+    of the physical corner.
     """
     if not horiz_lines or not vert_lines:
         return []
 
     img_h, img_w = int(image_shape[0]), int(image_shape[1])
+    points: list[tuple[int, int]] = []
 
-    # Build float32 arrays: shape (N, 4)
-    H = np.array(horiz_lines, dtype=np.float32)  # (N_h, 4)
-    V = np.array(vert_lines,  dtype=np.float32)  # (N_v, 4)
+    for hx1, hy1, hx2, hy2 in horiz_lines:
+        dx_h = hx2 - hx1
+        dy_h = hy2 - hy1
+        len_h = max(1.0, float(np.hypot(dx_h, dy_h)))
+        tol_h = gap_tolerance / len_h
 
-    # Broadcast to (N_h, N_v) by inserting size-1 dimensions
-    # H[:, None, :] → (N_h, 1,   4)
-    # V[None, :, :] → (1,   N_v, 4)
-    hx1 = H[:, None, 0];  hy1 = H[:, None, 1]
-    hx2 = H[:, None, 2];  hy2 = H[:, None, 3]
-    vx1 = V[None, :, 0];  vy1 = V[None, :, 1]
-    vx2 = V[None, :, 2];  vy2 = V[None, :, 3]
+        for vx1, vy1, vx2, vy2 in vert_lines:
+            dx_v = vx2 - vx1
+            dy_v = vy2 - vy1
+            len_v = max(1.0, float(np.hypot(dx_v, dy_v)))
+            tol_v = gap_tolerance / len_v
 
-    dx_h = hx2 - hx1;  dy_h = hy2 - hy1   # (N_h, 1)
-    dx_v = vx2 - vx1;  dy_v = vy2 - vy1   # (1, N_v)
+            denom = dx_h * dy_v - dy_h * dx_v
+            if abs(denom) < 1e-6:
+                continue  # parallel or degenerate
 
-    denom = dx_h * dy_v - dy_h * dx_v      # (N_h, N_v)
+            ox = vx1 - hx1
+            oy = vy1 - hy1
 
-    # Mask out parallel pairs to avoid divide-by-zero
-    valid = np.abs(denom) > 1e-6
-    denom_safe = np.where(valid, denom, 1.0)
+            t = (ox * dy_v - oy * dx_v) / denom
+            u = (ox * dy_h - oy * dx_h) / denom
 
-    ox = vx1 - hx1  # (N_h, N_v)
-    oy = vy1 - hy1
+            if not (-tol_h <= t <= 1.0 + tol_h):
+                continue
+            if not (-tol_v <= u <= 1.0 + tol_v):
+                continue
 
-    t = (ox * dy_v - oy * dx_v) / denom_safe
-    u = (ox * dy_h - oy * dx_h) / denom_safe
+            ix = int(round(hx1 + t * dx_h))
+            iy = int(round(hy1 + t * dy_h))
 
-    # Per-pair gap tolerances
-    len_h = np.maximum(1.0, np.sqrt(dx_h ** 2 + dy_h ** 2))  # (N_h, 1)
-    len_v = np.maximum(1.0, np.sqrt(dx_v ** 2 + dy_v ** 2))  # (1, N_v)
-    tol_h = gap_tolerance / len_h
-    tol_v = gap_tolerance / len_v
+            if 0 <= ix < img_w and 0 <= iy < img_h:
+                points.append((ix, iy))
 
-    # Intersection pixel coordinates
-    ix = np.round(hx1 + t * dx_h).astype(np.int32)
-    iy = np.round(hy1 + t * dy_h).astype(np.int32)
-
-    # Combined acceptance mask
-    mask = (
-        valid
-        & (t >= -tol_h) & (t <= 1.0 + tol_h)
-        & (u >= -tol_v) & (u <= 1.0 + tol_v)
-        & (ix >= 0) & (ix < img_w)
-        & (iy >= 0) & (iy < img_h)
-    )
-
-    xs = ix[mask]
-    ys = iy[mask]
-
-    return list(zip(xs.tolist(), ys.tolist()))
+    return points
 
 
 # ---------------------------------------------------------------------------
-# Two-pass point clustering
+# Point clustering
 # ---------------------------------------------------------------------------
 
 def cluster_points(
     points: list[tuple[int, int]],
     cell_size: int = CLUSTER_CELL_SIZE_PX,
-    merge_radius: int = CLUSTER_MERGE_RADIUS_PX,
 ) -> list[tuple[int, int]]:
     """
-    Collapse near-duplicate intersection points into canonical corners.
-
-    Pass 1 — grid bucket (O(N))
-    ---------------------------
-    Each point is assigned to a (x//cell_size, y//cell_size) bucket.
-    Points in the same bucket are averaged into one centroid.
-
-    This handles the bulk of duplicates very cheaply, but it has a boundary
-    artefact: two real duplicates that straddle a bucket edge (e.g. at x=14
-    and x=16 with cell_size=15) land in adjacent buckets and produce two
-    centroids instead of one.
-
-    Pass 2 — greedy centroid merge (O(M²) on the centroid set, M << N)
-    -------------------------------------------------------------------
-    After Pass 1 we typically have M < 100 centroids.  A greedy scan merges
-    any two centroids whose Chebyshev distance is within `merge_radius`.
-    This resolves the bucket-boundary artefact without re-examining all N
-    raw points.
-
-    Both passes together are fast because N (raw points) is large but the
-    O(N) pass reduces it to M, and M² is small.
+    Merge near-duplicate intersection points into cluster centroids.
+    O(N), produces one point per physical corner regardless of how many
+    history-buffer lines contributed to it.
     """
     if not points:
         return []
 
-    # --- Pass 1: grid buckets ---
     buckets: dict[tuple[int, int], list[tuple[int, int]]] = {}
     for x, y in points:
         key = (x // cell_size, y // cell_size)
         buckets.setdefault(key, []).append((x, y))
 
-    centroids: list[tuple[int, int]] = [
+    return [
         (
             int(round(np.mean([p[0] for p in pts]))),
             int(round(np.mean([p[1] for p in pts]))),
         )
         for pts in buckets.values()
     ]
-
-    if len(centroids) <= 1 or merge_radius <= 0:
-        return centroids
-
-    # --- Pass 2: greedy merge of nearby centroids ---
-    used = [False] * len(centroids)
-    merged: list[tuple[int, int]] = []
-
-    for i, c1 in enumerate(centroids):
-        if used[i]:
-            continue
-        group = [c1]
-        used[i] = True
-        for j in range(i + 1, len(centroids)):
-            if used[j]:
-                continue
-            c2 = centroids[j]
-            # Chebyshev distance (max of |dx|, |dy|) — cheap, no sqrt
-            if max(abs(c1[0] - c2[0]), abs(c1[1] - c2[1])) <= merge_radius:
-                group.append(c2)
-                used[j] = True
-        merged.append(
-            (
-                int(round(np.mean([p[0] for p in group]))),
-                int(round(np.mean([p[1] for p in group]))),
-            )
-        )
-
-    return merged
 
 
 # ---------------------------------------------------------------------------
@@ -361,11 +297,12 @@ def find_hv_intersections_from_classified(
 
     Pipeline
     --------
-    1. (Optional) Merge near-parallel lines per orientation (LINE_MERGE_ENABLED).
-       When False, all history-buffer lines feed directly into the intersection
-       step — deduplication is handled by the cluster step instead.
-    2. Vectorised algebraic intersection (NumPy broadcast, no Python loop).
-    3. Two-pass point clustering into canonical corners.
+    1. (Optional) Merge near-parallel lines per orientation to reduce the
+       O(H×V) intersection loop.  Controlled by LINE_MERGE_ENABLED in config.
+       When disabled, all history-buffer lines are used directly — the cluster
+       step removes the resulting near-duplicate points efficiently.
+    2. Algebraic intersection with gap tolerance.
+    3. Cluster near-duplicate points into canonical corners.
     4. Hard-cap to `max_points`.
 
     Call signature is identical to the original so play_runtime.py is unchanged.
@@ -374,6 +311,8 @@ def find_hv_intersections_from_classified(
         h_input = merge_colinear_lines(horiz_lines, is_horiz=True)
         v_input = merge_colinear_lines(vert_lines,  is_horiz=False)
     else:
+        # Skip merge — cluster at the end handles duplicates.
+        # Simpler and avoids any merge-coordinate artefacts.
         h_input = horiz_lines
         v_input = vert_lines
 
@@ -411,6 +350,9 @@ def draw_lines(base_img: np.ndarray, lines: list[tuple]) -> np.ndarray:
 def build_edge_display(colour_img: np.ndarray) -> tuple[np.ndarray, list[tuple]]:
     """
     Full pipeline: colour mask → (clean) → Canny edges → classified Hough lines.
+
+    Colour mask is morphologically closed before Canny (CLEAN_MASK_KERNEL_PX)
+    to suppress fringe-pixel noise at block boundaries.
     Returns the display image and raw line list for history accumulation.
     """
     edges_grey = compute_edges(colour_img)
