@@ -1,6 +1,7 @@
 
 #include <cstdint>
 #include <atomic>
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -9,10 +10,12 @@
 #include <thread>
 
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp/executors/single_threaded_executor.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <jenga_interfaces/action/jenga_pick_place.hpp>
+#include <moveit_task_constructor_msgs/action/execute_task_solution.hpp>
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
 #include <moveit/move_group_interface/move_group_interface.h>
 #include <moveit_msgs/msg/collision_object.hpp>
@@ -20,6 +23,8 @@
 #include <moveit/task_constructor/solvers.h>
 #include <moveit/task_constructor/stages.h>
 #include <moveit/task_constructor/task.h>
+#include <moveit/trajectory_processing/time_optimal_trajectory_generation.h>
+#include <moveit/task_constructor/storage.h>
 #include <shape_msgs/msg/solid_primitive.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
@@ -47,7 +52,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
     mode_ = declare_parameter("mode", "single_pose");
     ur_onrobot_manipulator = declare_parameter("arm_group", "ur_onrobot_manipulator");
     ur_onrobot_gripper = declare_parameter("hand_group", "ur_onrobot_gripper");
-    gripper_tcp = declare_parameter("hand_frame", "gripper_tcp");
+    gripper_tcp = declare_parameter("gripper_tcp", "gripper_tcp");
     ee_link_for_move_group_ = declare_parameter("ee_link", "gripper_tcp");
     object_id_ = declare_parameter("object_id", "object");
     box_x_ = declare_parameter("object_box_x", 0.075);
@@ -61,6 +66,8 @@ class MtcPickPlaceServer : public rclcpp::Node {
     const std::string goal_topic = declare_parameter("goal_topic", "goal_pose");
     add_demo_table_ = declare_parameter("add_demo_table", false);
     (void)declare_parameter("action_timeout_sec", 600);
+    execute_task_warmup_enable_ = declare_parameter("execute_task_warmup_enable", true);
+    execute_task_warmup_sec_ = declare_parameter("execute_task_warmup_sec", 30.0);
 
     action_server_ = rclcpp_action::create_server<JengaPickPlace>(
         this, "jenga_pick_place",
@@ -124,30 +131,6 @@ class MtcPickPlaceServer : public rclcpp::Node {
       publishStatus("idle");
     }
   }
-
-  // bool addDemoTableIfEnabled() {
-  //   if (!add_demo_table_) {
-  //     return true;
-  //   }
-  //   moveit_msgs::msg::CollisionObject table;
-  //   table.header.frame_id = "world";
-  //   table.id = "mtc_table";
-  //   shape_msgs::msg::SolidPrimitive primitive;
-  //   primitive.type = primitive.BOX;
-  //   primitive.dimensions.resize(3);
-  //   primitive.dimensions[primitive.BOX_X] = 1.0;
-  //   primitive.dimensions[primitive.BOX_Y] = 1.0;
-  //   primitive.dimensions[primitive.BOX_Z] = 0.1;
-  //   geometry_msgs::msg::Pose box_pose;
-  //   box_pose.orientation.w = 1.0;
-  //   box_pose.position.z = -0.06;
-  //   table.primitives.push_back(primitive);
-  //   table.primitive_poses.push_back(box_pose);
-  //   table.operation = table.ADD;
-  //   moveit::planning_interface::PlanningSceneInterface psi;
-  //   psi.applyCollisionObject(table);
-  //   return true;
-  // }
 
   void addObjectAt(const geometry_msgs::msg::Pose& object_pose) {
     moveit::planning_interface::PlanningSceneInterface psi;
@@ -213,7 +196,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
     {
       auto stage_mtp = std::make_unique<mtc::stages::Connect>(
           "move to pick", mtc::stages::Connect::GroupPlannerVector{{ur_onrobot_manipulator, sampling_planner}});
-      stage_mtp->setTimeout(15.0);
+      stage_mtp->setTimeout(10.0);
       stage_mtp->properties().configureInitFrom(mtc::Stage::PARENT);
       task.add(std::move(stage_mtp));
     }
@@ -296,7 +279,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
     {
       auto c = std::make_unique<mtc::stages::Connect>(
           "move to place", mtc::stages::Connect::GroupPlannerVector{{ur_onrobot_manipulator, sampling_planner}});
-      c->setTimeout(15.0);
+      c->setTimeout(10.0);
       c->properties().configureInitFrom(mtc::Stage::PARENT);
       task.add(std::move(c));
     }
@@ -369,17 +352,16 @@ class MtcPickPlaceServer : public rclcpp::Node {
       task.add(std::move(place));
     }
     {
-      auto stage = std::make_unique<mtc::stages::MoveTo>("return home", interpolation_planner);
+      auto stage = std::make_unique<mtc::stages::MoveTo>("return home", sampling_planner);
       stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
       stage->setGoal(arm_home_state_);
-      stage->setTimeout(15.0);
+      stage->setTimeout(10.0);
       task.add(std::move(stage));
     }
     return task;
   }
 
   bool runPickPlaceMtc(const geometry_msgs::msg::PoseStamped& pick, const geometry_msgs::msg::PoseStamped& place) {
-    // addDemoTableIfEnabled();
     removeObject();
     if (pick.header.frame_id != "world" && !pick.header.frame_id.empty()) {
       RCLCPP_WARN(get_logger(), "For MTC, pick frame_id should typically be 'world' (got '%s')", pick.header.frame_id.c_str());
@@ -403,6 +385,49 @@ class MtcPickPlaceServer : public rclcpp::Node {
       removeObject();
       return false;
     }
+    
+    // Re-parameterize arm sub-trajectories with TOTG to fix zero/duplicate
+    // timestamps from OMPL's pipeline (moveit_task_constructor#624 / #578).
+    // Done per-sub-trajectory so we don't disturb gripper or scene-only stages.
+    trajectory_processing::TimeOptimalTrajectoryGeneration totg;
+    const double vel_scale = 0.5;
+    const double acc_scale = 0.5;
+
+    // Safety net: if TOTG ever leaves a zero-duration segment, nudge it just
+    // enough to keep monotonicity. With proper joint limits this rarely fires.
+    auto enforce_monotonic = [](robot_trajectory::RobotTrajectory& t) {
+      for (std::size_t i = 1; i < t.getWayPointCount(); ++i) {
+        if (t.getWayPointDurationFromPrevious(i) < 1e-6) {
+          t.setWayPointDurationFromPrevious(i, 1e-3);
+        }
+      }
+    };
+
+    std::function<void(const mtc::SolutionBase&)> walk =
+        [&](const mtc::SolutionBase& s) {
+          if (const auto* seq = dynamic_cast<const mtc::SolutionSequence*>(&s)) {
+            for (const mtc::SolutionBase* sub : seq->solutions()) {
+              if (sub) walk(*sub);
+            }
+            return;
+          }
+          if (const auto* st = dynamic_cast<const mtc::SubTrajectory*>(&s)) {
+            auto traj_const = st->trajectory();
+            if (!traj_const || traj_const->getWayPointCount() < 2) return;
+            // Only re-time arm trajectories. Gripper traj is single-DOF
+            // JointInterpolation and was executing fine.
+            if (traj_const->getGroupName() != ur_onrobot_manipulator) return;
+            auto traj = std::const_pointer_cast<robot_trajectory::RobotTrajectory>(traj_const);
+            if (!totg.computeTimeStamps(*traj, vel_scale, acc_scale)) {
+              RCLCPP_WARN(get_logger(),
+                          "TOTG re-time failed on arm sub-trajectory; "
+                          "falling back to monotonicity safety net");
+            }
+            enforce_monotonic(*traj);
+          }
+        };
+    walk(*task.solutions().front());
+    
     task.introspection().publishSolution(*task.solutions().front());
     auto res = task.execute(*task.solutions().front());
     removeObject();
@@ -499,6 +524,8 @@ class MtcPickPlaceServer : public rclcpp::Node {
   bool add_demo_table_{false};
   double box_x_, box_y_, box_z_;
   uint32_t plan_max_attempts_{5};
+  bool execute_task_warmup_enable_{true};
+  double execute_task_warmup_sec_{30.0};
 
   std::mutex status_mutex_;
   std::atomic<bool> busy_{false};
@@ -513,7 +540,8 @@ class MtcPickPlaceServer : public rclcpp::Node {
 int main(int argc, char** argv) {
   rclcpp::init(argc, argv);
   auto n = std::make_shared<MtcPickPlaceServer>();
-  rclcpp::executors::MultiThreadedExecutor e(rclcpp::ExecutorOptions(), 2u);
+  // Several callbacks (action server, subscriptions) can run concurrently with goal work.
+  rclcpp::executors::MultiThreadedExecutor e(rclcpp::ExecutorOptions(), 4u);
   e.add_node(n);
   e.spin();
   rclcpp::shutdown();

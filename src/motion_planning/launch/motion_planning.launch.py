@@ -7,10 +7,27 @@ planner:=rmrc (default) runs the DIY RMRC planning node (no MoveIt needed).
 planner:=moveit runs the MoveIt OMPL pose_goal_node.
 planner:=moveit_cartesian runs the MoveIt Cartesian node (straight-line first,
 OMPL fallback on collision).
+planner:=mtc runs ``mtc_pick_place_server`` (MoveIt Task Constructor pick/place).
 
 Both MoveIt planners require move_group to be running (e.g. via ur_moveit_config).
 RMRC needs robot_description, built from the same workspace xacro as
 ur3e_sim_control (ur3e_workspace.urdf.xacro).
+
+MTC (planner:=mtc) — prerequisites when using this launch **alone** (no bundled driver
+or move_group):
+
+- **Driver** and **robot_state_publisher** / joint states must already be running.
+- **move_group** must already be running on the **same** ``ROS_DOMAIN_ID``, with
+  ``ExecuteTaskSolutionCapability`` loaded so ``/execute_task_solution`` exists.
+- **Planning groups / frames** on ``mtc_pick_place_server`` must match your SRDF
+  (defaults: ``arm_group`` = ur_onrobot_manipulator, ``hand_group`` =
+  ur_onrobot_gripper, ``hand_frame`` = gripper_tcp, gripper states ``open`` /
+  ``grip_block_length``). Override via ROS parameters on the node if your move_group
+  uses different names.
+- **joint_trajectory_action** must match the active arm trajectory action (e.g. scaled
+  vs non-scaled controller) for ``estop_node``.
+- **publish_world_to_base_tf**, **base_height**, **base_yaw**: set so ``world`` and
+  collision objects (MTC uses ``world`` for the grasp object) match your TF tree.
 """
 
 from launch import LaunchDescription
@@ -273,6 +290,21 @@ def generate_launch_description():
             "messages = pick then place), 'single_pose' for direct MoveGroup moves."
         ),
     )
+    mtc_execute_task_warmup_enable_arg = DeclareLaunchArgument(
+        "mtc_execute_task_warmup_enable",
+        default_value="true",
+        description=(
+            "MTC: pre-wait for /execute_task_solution before each execute (helps MTC's 0.5s "
+            "internal client connect). Set false only if debugging."
+        ),
+    )
+    mtc_execute_task_warmup_sec_arg = DeclareLaunchArgument(
+        "mtc_execute_task_warmup_sec",
+        default_value="30.0",
+        description=(
+            "MTC: max seconds to wait for move_group execute_task_solution during warmup."
+        ),
+    )
     joint_secondary_pref_clip_arg = DeclareLaunchArgument(
         "joint_secondary_pref_clip",
         default_value="0.45",
@@ -500,7 +532,15 @@ def generate_launch_description():
         parameters=[
             robot_description_kinematics,
             ompl_pipeline_config,
-            {"mode": LaunchConfiguration("mtc_server_mode")},
+            {
+                "mode": LaunchConfiguration("mtc_server_mode"),
+                "execute_task_warmup_enable": LaunchConfiguration(
+                    "mtc_execute_task_warmup_enable"
+                ),
+                "execute_task_warmup_sec": LaunchConfiguration(
+                    "mtc_execute_task_warmup_sec"
+                ),
+            },
         ],
     )
 
@@ -559,6 +599,8 @@ def generate_launch_description():
         joint_action_arg,
         planner_arg,
         mtc_server_mode_arg,
+        mtc_execute_task_warmup_enable_arg,
+        mtc_execute_task_warmup_sec_arg,
         max_step_arg,
         jump_threshold_arg,
         cartesian_fraction_threshold_arg,

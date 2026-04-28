@@ -14,6 +14,7 @@ find_package(jenga_interfaces REQUIRED)
 find_package(moveit_msgs REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 find_package(moveit_task_constructor_core REQUIRED)
+find_package(moveit_task_constructor_msgs REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(shape_msgs REQUIRED)
@@ -28,6 +29,7 @@ ament_target_dependencies(mtc_pick_place_server
   moveit_msgs
   moveit_ros_planning_interface
   moveit_task_constructor_core
+  moveit_task_constructor_msgs
   rclcpp
   rclcpp_action
   shape_msgs

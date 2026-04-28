@@ -79,7 +79,7 @@ def _parametric_steps(data: dict[str, Any]) -> list[tuple[Pose, Pose]]:
         slot = i % bpl
         pick = Pose(
             position=Point(
-                x=float(s0.get("x", 0.0)) + i * step,
+                x=float(s0.get("x", 0.0)) - i * step,
                 y=float(s0.get("y", 0.0)),
                 z=float(s0.get("z", 0.0)),
             ),
