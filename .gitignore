@@ -1,6 +1,5 @@
 **/.DS_Store
-**/rgbd_large
-**/rgbd_raw
+**/camera_files/*
 **/.vscode
 **/log
 **/__pycache__
