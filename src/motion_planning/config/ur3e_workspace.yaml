@@ -18,11 +18,11 @@ exclusion_zones:
   - type: box
     id: platform
     frame_id: base_link
-    position: [0.0, 0.35, 0.006]
+    position: [0.0, 0.3, 0.000]
     size: [0.500, 0.320, 0.012]
 
   - type: box
     id: jenga_tower
     frame_id: base_link
-    position: [0.0, 0.35, 0.072]
+    position: [0.0, 0.3, 0.066]
     size: [0.085, 0.085, 0.135]

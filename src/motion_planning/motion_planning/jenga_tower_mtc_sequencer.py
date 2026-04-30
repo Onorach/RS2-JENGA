@@ -66,9 +66,9 @@ def _parametric_steps(data: dict[str, Any]) -> list[tuple[Pose, Pose]]:
     bpl = int(t.get("blocks_per_layer", 3))
     layers = int(t.get("layers", 6))
     n = bpl * layers
-    s0 = g.get("first_block", {"x": 0.3, "y": 0.3, "z": 0.02})
+    s0 = g.get("first_block", {"x": 0.2375, "y": 0.4225, "z": 0.0136})
     step = float(g.get("step_along_x", 0.025))
-    t0 = t.get("base", {"x": 0.2, "y": 0.3, "z": 0.02})
+    t0 = t.get("base", {"x": 0.0, "y": 0.3, "z": 0.0136})
     layer_dz = float(t.get("layer_dz", 0.018))
     slot_dx = float(t.get("slot_dx", 0.015))
     q_pick = _qdict_to_msg(p.get("orientation_pick", {"x": 0.0, "y": 0.0, "z": 0.707, "w": 0.707}))
