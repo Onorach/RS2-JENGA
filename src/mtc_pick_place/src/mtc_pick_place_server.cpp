@@ -62,7 +62,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
     open_state_ = declare_parameter("gripper_open_state", "open");
     closed_state_ = declare_parameter("gripper_closed_state", "grip_block_length");
     arm_home_state_ = declare_parameter("arm_home_state", "test_configuration");
-    plan_max_attempts_ = static_cast<uint32_t>(declare_parameter("plan_max_attempts", 2));
+    plan_max_attempts_ = static_cast<uint32_t>(declare_parameter("plan_max_attempts", 3));
     status_topic_ = declare_parameter("status_topic", "mtc_status");
     const std::string goal_topic = declare_parameter("goal_topic", "goal_pose");
     add_demo_table_ = declare_parameter("add_demo_table", false);
@@ -98,6 +98,9 @@ class MtcPickPlaceServer : public rclcpp::Node {
 
     sub_estop_ = create_subscription<std_msgs::msg::Bool>(
         "/estop", 10, [this](const std_msgs::msg::Bool::SharedPtr msg) { estop_ = msg->data; });
+    // Prefer /estop_active when estop_node is running, but keep /estop for fallback.
+    sub_estop_active_ = create_subscription<std_msgs::msg::Bool>(
+        "/estop_active", 10, [this](const std_msgs::msg::Bool::SharedPtr msg) { estop_ = msg->data; });
 
     RCLCPP_INFO(get_logger(), "mtc_pick_place_server: mode=%s, status=%s, action=/jenga_pick_place", mode_.c_str(), status_topic_.c_str());
   }
@@ -187,9 +190,9 @@ class MtcPickPlaceServer : public rclcpp::Node {
     task.add(std::move(stage_state_current));
 
     auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(node_ptr);
-    sampling_planner->setPlannerId("RRTConnectkConfigDefault");
+    sampling_planner->setPlannerId("RRTstarkConfigDefault");
     sampling_planner->setProperty("goal_joint_tolerance", 1e-4);
-    sampling_planner->setProperty("planning_time", 1.0);  // seconds
+    sampling_planner->setProperty("planning_time", 2.0);  // seconds
     sampling_planner->setProperty("enforce_joint_model_state_space", true);
 
     auto interpolation_planner = std::make_shared<mtc::solvers::JointInterpolationPlanner>();
@@ -207,7 +210,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
     {
       auto stage_mtp = std::make_unique<mtc::stages::Connect>(
           "move to pick", mtc::stages::Connect::GroupPlannerVector{{ur_onrobot_manipulator, sampling_planner}});
-      stage_mtp->setTimeout(3.0);
+      stage_mtp->setTimeout(2.0);
       stage_mtp->properties().configureInitFrom(mtc::Stage::PARENT);
       task.add(std::move(stage_mtp));
     }
@@ -250,8 +253,8 @@ class MtcPickPlaceServer : public rclcpp::Node {
                   * Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d::UnitZ());
         // gft = gft * Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitY());
         auto w = std::make_unique<mtc::stages::ComputeIK>("grasp pose IK", std::move(stage));
-        w->setMaxIKSolutions(4);
-        w->setMinSolutionDistance(0.1);
+        w->setMaxIKSolutions(8);
+        w->setMinSolutionDistance(0.5);
         w->setIKFrame(gft, gripper_tcp);
         w->properties().configureInitFrom(mtc::Stage::PARENT, {"eef", "group"});
         w->properties().configureInitFrom(mtc::Stage::INTERFACE, {"target_pose"});
@@ -291,7 +294,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
     {
       auto c = std::make_unique<mtc::stages::Connect>(
           "move to place", mtc::stages::Connect::GroupPlannerVector{{ur_onrobot_manipulator, sampling_planner}});
-      c->setTimeout(3.0);
+      c->setTimeout(2.0);
       c->properties().configureInitFrom(mtc::Stage::PARENT);
       task.add(std::move(c));
     }
@@ -326,8 +329,8 @@ class MtcPickPlaceServer : public rclcpp::Node {
         stage->setPose(target);
         stage->setMonitoredStage(attach_object_stage);
         auto w = std::make_unique<mtc::stages::ComputeIK>("place pose IK", std::move(stage));
-        w->setMaxIKSolutions(4);
-        w->setMinSolutionDistance(0.1);
+        w->setMaxIKSolutions(8);
+        w->setMinSolutionDistance(0.5);
         w->setIKFrame(block_id);
         w->properties().configureInitFrom(mtc::Stage::PARENT, {"eef", "group"});
         w->properties().configureInitFrom(mtc::Stage::INTERFACE, {"target_pose"});
@@ -367,7 +370,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
       auto stage = std::make_unique<mtc::stages::MoveTo>("return home", sampling_planner);
       stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
       stage->setGoal(arm_home_state_);
-      stage->setTimeout(3.0);
+      stage->setTimeout(2.0);
       task.add(std::move(stage));
     }
     return task;
@@ -376,6 +379,10 @@ class MtcPickPlaceServer : public rclcpp::Node {
   bool runPickPlaceMtc(const geometry_msgs::msg::PoseStamped& pick,
                        const geometry_msgs::msg::PoseStamped& place,
                        const std::string& block_id) {
+    if (estop_.load()) {
+      RCLCPP_WARN(get_logger(), "E-stop active: refusing to plan/execute MTC task");
+      return false;
+    }
     if (pick.header.frame_id != "world" && !pick.header.frame_id.empty()) {
       RCLCPP_WARN(get_logger(), "For MTC, pick frame_id should typically be 'world' (got '%s')", pick.header.frame_id.c_str());
     }
@@ -393,6 +400,10 @@ class MtcPickPlaceServer : public rclcpp::Node {
       return false;
     }
     if (task.solutions().empty()) {
+      return false;
+    }
+    if (estop_.load()) {
+      RCLCPP_WARN(get_logger(), "E-stop became active after planning; skipping execution");
       return false;
     }
     
@@ -473,7 +484,12 @@ class MtcPickPlaceServer : public rclcpp::Node {
     const std::string block_id = blockIdFromIndex(goal->block_index);
     const bool ok = runPickPlaceMtc(goal->pick_pose, goal->place_pose, block_id);
     send_fb("pick_place_done", 100.0F);
-    if (ok) {
+    if (estop_.load()) {
+      res->success = false;
+      res->message = "estop";
+      res->error_code = 4;
+      goal_handle->canceled(res);
+    } else if (ok) {
       res->success = true;
       res->message = "ok";
       res->error_code = 0;
@@ -529,6 +545,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
   rclcpp_action::Server<JengaPickPlace>::SharedPtr action_server_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr sub_goal_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_estop_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_estop_active_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_status_;
 
   std::string mode_;

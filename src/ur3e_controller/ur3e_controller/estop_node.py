@@ -55,6 +55,7 @@ from std_msgs.msg import Bool
 from std_srvs.srv import SetBool, Trigger
 
 DEFAULT_JOINT_ACTION = "/joint_trajectory_controller/follow_joint_trajectory"
+DEFAULT_SCALED_JOINT_ACTION = "/scaled_joint_trajectory_controller/follow_joint_trajectory"
 # UR robot driver dashboard service — only present on real hardware
 DASHBOARD_STOP_SERVICE = "/dashboard_client/stop"
 
@@ -70,21 +71,54 @@ class EstopNode(Node):
     def __init__(self):
         super().__init__("estop_node")
 
-        joint_action = self.declare_parameter(
-            "joint_trajectory_action", DEFAULT_JOINT_ACTION
-        ).value
+        # Back-compat: historically we supported only one joint trajectory action.
+        # Keep the parameter, but prefer the new multi-action list below.
+        joint_action = str(
+            self.declare_parameter("joint_trajectory_action", DEFAULT_JOINT_ACTION).value
+        )
+        joint_actions = list(
+            self.declare_parameter(
+                "joint_trajectory_actions",
+                [DEFAULT_SCALED_JOINT_ACTION, DEFAULT_JOINT_ACTION],
+            ).value
+        )
+        # Allow users to explicitly disable the list param and fall back to the single one.
+        joint_actions = [str(a) for a in joint_actions if str(a).strip()]
+        if not joint_actions:
+            joint_actions = [joint_action]
+
+        # Optional: cancel MoveIt execution actions too (helps stop MTC execution loops).
+        cancel_action_endpoints = list(
+            self.declare_parameter(
+                "cancel_action_endpoints",
+                ["/execute_task_solution", "/execute_trajectory"],
+            ).value
+        )
+        cancel_action_endpoints = [str(a) for a in cancel_action_endpoints if str(a).strip()]
 
         self._cbg = ReentrantCallbackGroup()
         self._lock = threading.Lock()
         self._active = False
 
-        # Direct client to the action server's built-in cancel service.
+        # Direct clients to action servers' built-in cancel services.
         # Sending CancelGoal with all-zero goal_id + zero timestamp cancels ALL goals.
-        cancel_service = f"{joint_action}/_action/cancel_goal"
-        self._cancel_client = self.create_client(
-            CancelGoalSrv, cancel_service, callback_group=self._cbg
-        )
-        self.get_logger().info(f"Cancel service endpoint: {cancel_service}")
+        # Map action_name -> CancelGoal service client
+        self._cancel_clients: dict[str, object] = {}
+        for action_name in joint_actions:
+            cancel_service = f"{action_name}/_action/cancel_goal"
+            self._cancel_clients[action_name] = self.create_client(
+                CancelGoalSrv, cancel_service, callback_group=self._cbg
+            )
+            self.get_logger().info(f"Controller cancel endpoint: {cancel_service}")
+
+        # Extra cancel endpoints (e.g. MoveIt execution actions)
+        self._extra_cancel_clients: dict[str, object] = {}
+        for action_name in cancel_action_endpoints:
+            cancel_service = f"{action_name}/_action/cancel_goal"
+            self._extra_cancel_clients[action_name] = self.create_client(
+                CancelGoalSrv, cancel_service, callback_group=self._cbg
+            )
+            self.get_logger().info(f"Extra cancel endpoint: {cancel_service}")
 
         # Publisher: broadcast e-stop state so other nodes (PoseGoalNode, GUI) can react
         self._state_pub = self.create_publisher(Bool, "/estop_active", 1)
@@ -104,13 +138,14 @@ class EstopNode(Node):
         # ACCEPTED is immediately cancelled — this covers trajectories sent by
         # external nodes (RViz MotionPlanning plugin, scripts, etc.) after the
         # e-stop was engaged.
-        self.create_subscription(
-            GoalStatusArray,
-            f"{joint_action}/_action/status",
-            self._on_action_status,
-            10,
-            callback_group=self._cbg,
-        )
+        for action_name in joint_actions:
+            self.create_subscription(
+                GoalStatusArray,
+                f"{action_name}/_action/status",
+                lambda msg, a=action_name: self._on_action_status(msg, a),
+                10,
+                callback_group=self._cbg,
+            )
 
         # UR dashboard stop service (real hardware only, ignored gracefully in sim)
         self._dashboard_stop = self.create_client(
@@ -123,6 +158,20 @@ class EstopNode(Node):
             "  Clear:   ros2 service call /estop std_srvs/srv/SetBool 'data: false'\n"
             "  Topic:   ros2 topic pub --once /estop std_msgs/msg/Bool 'data: true'"
         )
+        self._log_cancel_readiness()
+
+    def _log_cancel_readiness(self) -> None:
+        """Log which cancel endpoints are currently reachable."""
+        for name, client in self._cancel_clients.items():
+            ready = client.service_is_ready()
+            self.get_logger().info(
+                f"Cancel readiness controller '{name}': {'READY' if ready else 'not ready'}"
+            )
+        for name, client in self._extra_cancel_clients.items():
+            ready = client.service_is_ready()
+            self.get_logger().info(
+                f"Cancel readiness extra '{name}': {'READY' if ready else 'not ready'}"
+            )
 
     # ── service callback ──────────────────────────────────────────────────
 
@@ -185,29 +234,37 @@ class EstopNode(Node):
 
     def _send_cancel_all(self) -> None:
         """
-        Send a CancelGoal request with all-zero goal_id to the trajectory
-        controller's action server, which cancels every in-flight goal.
+        Send CancelGoal (all-zero goal_id) to every configured cancel endpoint,
+        which cancels every in-flight goal on those action servers.
         """
-        if not self._cancel_client.service_is_ready():
-            self.get_logger().error(
-                "joint_trajectory_controller cancel service not reachable — "
-                "is the controller running?"
-            )
-            return
-
         # Default CancelGoal.Request() has zero goal_id and zero timestamp,
         # which the action server interprets as "cancel all goals".
         req = CancelGoalSrv.Request()
-        try:
-            self._cancel_client.call_async(req).add_done_callback(
-                self._on_cancel_done
+        any_ready = False
+        for name, client in {**self._cancel_clients, **self._extra_cancel_clients}.items():
+            if not client.service_is_ready():
+                self.get_logger().debug(
+                    f"Cancel service not ready for '{name}' (skipping)."
+                )
+                continue
+            any_ready = True
+            try:
+                client.call_async(req).add_done_callback(
+                    lambda future, a=name: self._on_cancel_done(future, a)
+                )
+            except Exception as exc:
+                self.get_logger().error(
+                    f"Failed to send cancel request to '{name}': {exc}"
+                )
+
+        if not any_ready:
+            self.get_logger().error(
+                "No cancel services are reachable (controllers/move_group may not be running)."
             )
-        except Exception as exc:
-            self.get_logger().error(f"Failed to send cancel request: {exc}")
 
     # ── internal callbacks ────────────────────────────────────────────────
 
-    def _on_action_status(self, msg: GoalStatusArray) -> None:
+    def _on_action_status(self, msg: GoalStatusArray, action_name: str) -> None:
         """
         Re-cancel any goal that appears while the e-stop is active.
 
@@ -221,22 +278,26 @@ class EstopNode(Node):
         live_statuses = {GoalStatus.STATUS_ACCEPTED, GoalStatus.STATUS_EXECUTING}
         if any(s.status in live_statuses for s in msg.status_list):
             self.get_logger().warn(
-                "E-stop active: new goal detected on trajectory controller — cancelling."
+                f"E-stop active: new goal detected on '{action_name}' — cancelling."
             )
             self._send_cancel_all()
 
-    def _on_cancel_done(self, future) -> None:
+    def _on_cancel_done(self, future, action_name: str) -> None:
         try:
             result = future.result()
             n = len(result.goals_canceling)
             if n > 0:
-                self.get_logger().info(f"Controller is cancelling {n} goal(s).")
+                self.get_logger().info(
+                    f"'{action_name}' is cancelling {n} goal(s)."
+                )
             else:
                 self.get_logger().info(
-                    "Cancel request sent — no active goals were found on the controller."
+                    f"Cancel request sent to '{action_name}' — no active goals found."
                 )
         except Exception as exc:
-            self.get_logger().error(f"Error receiving cancel response: {exc}")
+            self.get_logger().error(
+                f"Error receiving cancel response from '{action_name}': {exc}"
+            )
 
     def _on_dashboard_stop_done(self, future) -> None:
         try:

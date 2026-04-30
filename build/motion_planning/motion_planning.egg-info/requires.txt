@@ -1,3 +1,0 @@
-ikpy
-numpy
-setuptools

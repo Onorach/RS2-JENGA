@@ -11,6 +11,7 @@ layer completes; tune :file:`config/jenga_tower_mtc_layout.yaml` to match your c
 
 from __future__ import annotations
 
+import math
 import sys
 import time
 import warnings
@@ -26,6 +27,31 @@ from rclpy.qos import QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 
 from jenga_interfaces.action import JengaPickPlace
+
+
+def _q_normalize(x: float, y: float, z: float, w: float) -> tuple[float, float, float, float]:
+    n2 = x * x + y * y + z * z + w * w
+    if n2 <= 0.0:
+        return (0.0, 0.0, 0.0, 1.0)
+    inv = 1.0 / math.sqrt(n2)
+    return (x * inv, y * inv, z * inv, w * inv)
+
+
+def _q_mul(
+    ax: float, ay: float, az: float, aw: float, bx: float, by: float, bz: float, bw: float
+) -> tuple[float, float, float, float]:
+    # Hamilton product: q = a ⊗ b
+    return (
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    )
+
+
+def _q_from_yaw(yaw_rad: float) -> tuple[float, float, float, float]:
+    h = 0.5 * yaw_rad
+    return (0.0, 0.0, math.sin(h), math.cos(h))
 
 
 def _qdict_to_msg(d: dict[str, float]) -> Quaternion:
@@ -107,8 +133,11 @@ def _parametric_steps(data: dict[str, Any]) -> list[tuple[Pose, Pose]]:
     t0 = t.get("base", {"x": 0.2, "y": 0.3, "z": 0.02})
     layer_dz = float(t.get("layer_dz", 0.018))
     slot_dx = float(t.get("slot_dx", 0.015))
-    q_pick = _qdict_to_msg(p.get("orientation_pick", {"x": 0.0, "y": 0.0, "z": 0.707, "w": 0.707}))
+    tower_yaw_deg = float(t.get("tower_yaw_deg", 45.0))
+    tower_yaw_rad = math.radians(tower_yaw_deg)
+    q_pick = _qdict_to_msg(p.get("orientation_pick", {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}))
     q_place = _qdict_to_msg(p.get("orientation_place", {"x": 0.0, "y": 0.0, "z": 0.707, "w": 0.707}))
+    q_place_base = _q_normalize(q_place.x, q_place.y, q_place.z, q_place.w)
     pick_xyz = _stock_pick_xyz_list(g, n_tower=n)
     if len(pick_xyz) < n:
         raise ValueError(
@@ -116,6 +145,8 @@ def _parametric_steps(data: dict[str, Any]) -> list[tuple[Pose, Pose]]:
             "Check parametric.stock (rows/blocks_per_row or first_block/step_along_x)."
         )
     steps_out: list[tuple[Pose, Pose]] = []
+    c = math.cos(tower_yaw_rad)
+    s = math.sin(tower_yaw_rad)
     for i in range(n):
         layer = i // bpl
         slot = i % bpl
@@ -125,13 +156,26 @@ def _parametric_steps(data: dict[str, Any]) -> list[tuple[Pose, Pose]]:
             orientation=q_pick,
         )
         slot_offset = (slot - 1.0) * slot_dx
+        # Alternate classic Jenga: layers switch by 90° about +Z.
+        # Build slot offsets in a tower-local layer frame, then rotate by tower_yaw.
+        if (layer % 2) == 0:
+            off_lx, off_ly = slot_offset, 0.0
+            layer_yaw = 0.0
+        else:
+            off_lx, off_ly = 0.0, slot_offset
+            layer_yaw = 0.5 * math.pi
+        off_x = c * off_lx - s * off_ly
+        off_y = s * off_lx + c * off_ly
+        q_yaw = _q_from_yaw(tower_yaw_rad + layer_yaw)
+        qx, qy, qz, qw = _q_mul(q_yaw[0], q_yaw[1], q_yaw[2], q_yaw[3], *q_place_base)
+        qx, qy, qz, qw = _q_normalize(qx, qy, qz, qw)
         place = Pose(
             position=Point(
-                x=float(t0.get("x", 0.0)) + slot_offset,
-                y=float(t0.get("y", 0.0)),
+                x=float(t0.get("x", 0.0)) + off_x,
+                y=float(t0.get("y", 0.0)) + off_y,
                 z=float(t0.get("z", 0.0)) + layer * layer_dz,
             ),
-            orientation=q_place,
+            orientation=Quaternion(x=qx, y=qy, z=qz, w=qw),
         )
         steps_out.append((pick, place))
     return steps_out

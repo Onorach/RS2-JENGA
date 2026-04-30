@@ -49,6 +49,19 @@ def generate_launch_description():
     pkg_planning = "motion_planning"
     pkg_controller = "ur3e_controller"
 
+    # launch_rviz_arg = DeclareLaunchArgument(
+    #     "launch_rviz",
+    #     default_value="true",
+    #     description="Launch RViz?",
+    # )
+    # rviz_config_arg = DeclareLaunchArgument(
+    #     "rviz_config",
+    #     default_value=PathJoinSubstitution(
+    #         [FindPackageShare(pkg_planning), "config", "motion_planning_mtc.rviz"]
+    #     ),
+    #     description="Absolute path to the RViz config file to load.",
+    # )
+
     exclusion_zones_file_arg = DeclareLaunchArgument(
         "exclusion_zones_file",
         default_value=PathJoinSubstitution(

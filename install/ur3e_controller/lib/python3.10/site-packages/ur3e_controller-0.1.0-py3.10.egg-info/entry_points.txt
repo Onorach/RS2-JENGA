@@ -1,5 +1,0 @@
-[console_scripts]
-estop_node = ur3e_controller.estop_node:main
-initials_demo = ur3e_controller.demo_node:main
-move_ur3e_demo = ur3e_controller.demo_node:main
-

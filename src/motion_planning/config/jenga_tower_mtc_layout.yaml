@@ -22,10 +22,12 @@ parametric:
     blocks_per_row: 9
   tower:
     base: {x: 0.0, y: 0.3, z: 0.0136}
+    # Rotate the entire tower footprint about +Z of goal_frame (yaw, in degrees).
+    tower_yaw_deg: 45.0
     blocks_per_layer: 3
     layers: 6
-    layer_dz: 0.016
-    slot_dx: 0.026  
+    layer_dz: 0.0151
+    slot_dx: 0.0251
   orientation_pick: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
   orientation_place: {x: 0.0, y: 0.0, z: 0.707, w: 0.707}
 
