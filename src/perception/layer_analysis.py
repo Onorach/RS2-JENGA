@@ -8,11 +8,14 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from box_percentages import compute_percentages
-from perception_config import COLOUR_BGR
+from box_percentages import colour_mean_x_in_cell, compute_percentages
+from perception_config import COLOUR_BGR, HSV_RANGES
 
 SINGLE_DOMINANT_PCT = 55.0
 BLOCK_PRESENT_MIN_PCT = 20.0
+
+# Deterministic tie-break when two colours share the same mean x (rare).
+_COLOUR_TIE_INDEX = {c: i for i, c in enumerate(HSV_RANGES)}
 
 
 def _colour_pcts(cell_result: dict) -> dict[str, float]:
@@ -46,18 +49,31 @@ def _detect_orientation(left_pcts: dict[str, float], right_pcts: dict[str, float
     return "left" if left_max <= right_max else "right"
 
 
-def _blocks_from_endon(pcts: dict[str, float]) -> list[dict]:
+def _spatial_colour_order(
+    colours: list[str], mean_x: dict[str, float], pcts: dict[str, float]
+) -> list[str]:
+    """Left-to-right in image space; missing centroids fall back to coverage then tie order."""
+
+    def sort_key(c: str) -> tuple[float, float, int]:
+        mx = mean_x.get(c)
+        if mx is None:
+            return (float("inf"), -pcts.get(c, 0.0), _COLOUR_TIE_INDEX.get(c, 999))
+        return (mx, 0.0, _COLOUR_TIE_INDEX.get(c, 999))
+
+    return sorted(colours, key=sort_key)
+
+
+def _blocks_from_endon(pcts: dict[str, float], mean_x: dict[str, float]) -> list[dict]:
     present = {c: p for c, p in pcts.items() if p >= BLOCK_PRESENT_MIN_PCT}
     if len(present) == 3:
-        ordered = sorted(present.items(), key=lambda x: -x[1])
-        return [{"colour": c, "present": True} for c, _ in ordered]
+        ordered = _spatial_colour_order(list(present.keys()), mean_x, present)
+        return [{"colour": c, "present": True} for c in ordered]
     if len(present) == 2:
-        ordered = sorted(present.items(), key=lambda x: -x[1])
-        top_colour = ordered[0][0]
+        c0, c1 = _spatial_colour_order(list(present.keys()), mean_x, present)
         return [
             {"colour": "unknown", "present": False},
-            {"colour": top_colour, "present": True},
-            {"colour": ordered[1][0], "present": True},
+            {"colour": c0, "present": True},
+            {"colour": c1, "present": True},
         ]
     if len(present) == 1:
         c = list(present.keys())[0]
@@ -80,7 +96,13 @@ def _blocks_from_sideon(pcts: dict[str, float]) -> list[dict]:
     return blocks[:3]
 
 
-def analyse_layer(left_result: dict, right_result: dict) -> dict:
+def analyse_layer(
+    bgr_frame: np.ndarray,
+    left_result: dict,
+    right_result: dict,
+    left_cell: dict,
+    right_cell: dict,
+) -> dict:
     left_pcts = _colour_pcts(left_result)
     right_pcts = _colour_pcts(right_result)
     orientation = _detect_orientation(left_pcts, right_pcts)
@@ -88,11 +110,14 @@ def analyse_layer(left_result: dict, right_result: dict) -> dict:
     if orientation == "left":
         endon_pcts = left_pcts
         sideon_pcts = right_pcts
+        endon_cell = left_cell
     else:
         endon_pcts = right_pcts
         sideon_pcts = left_pcts
+        endon_cell = right_cell
 
-    endon_blocks = _blocks_from_endon(endon_pcts)
+    mean_x = colour_mean_x_in_cell(bgr_frame, endon_cell)
+    endon_blocks = _blocks_from_endon(endon_pcts, mean_x)
     sideon_blocks = _blocks_from_sideon(sideon_pcts)
     sideon_colours = {b["colour"] for b in sideon_blocks if b["present"]}
     for b in endon_blocks:
@@ -106,7 +131,9 @@ def analyse_tower(bgr_frame: np.ndarray, row_cells: list[tuple[dict, dict]]) -> 
     tower = []
     for layer_idx, (left_def, right_def) in enumerate(row_cells):
         pct_results = compute_percentages(bgr_frame, cells=[left_def, right_def])
-        layer = analyse_layer(pct_results[0], pct_results[1])
+        layer = analyse_layer(
+            bgr_frame, pct_results[0], pct_results[1], left_def, right_def
+        )
         layer["layer"] = layer_idx
         tower.append(layer)
     return tower
@@ -124,7 +151,7 @@ def build_tower_image(tower: list[dict]) -> np.ndarray:
         layer_idx = layer_data["layer"]
         orientation = layer_data["orientation"]
         blocks = layer_data["blocks"]
-        row = n_layers - 1 - layer_idx
+        row = layer_idx
         y0, y1 = margin + row * layer_h, margin + row * layer_h + block_h
         cv2.putText(canvas, f"L{layer_idx}", (margin, y0 + block_h - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1, cv2.LINE_AA)

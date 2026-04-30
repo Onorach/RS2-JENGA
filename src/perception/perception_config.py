@@ -10,7 +10,7 @@ Centralize values used by active runtime modules.
 # ---------------------------------------------------------------------------
 
 # Search Area: (cx_frac, cy_frac, w_frac, h_frac).
-SEARCH_AREA = (0.6, 0.45, 0.35, 0.44) # Bigger w/h = wider search; cx/cy shifts ROI.
+SEARCH_AREA = (0.51, 0.55, 0.35, 0.51) # Bigger w/h = wider search; cx/cy shifts ROI.
 
 # HSV ranges per colour (changes classification sensitivity).
 HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
@@ -19,16 +19,16 @@ HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] =
         ((170, 60, 140), (179, 255, 255)),
     ],
     "yellow": [
-        ((18, 140, 140), (40, 255, 255)),
+        ((18, 120, 140), (40, 255, 255)),
     ],
     "green": [
-        ((40, 120, 100), (85, 255, 255)),
+        ((40, 80, 100), (85, 255, 255)),
     ],
     "blue": [
         ((90, 160, 130), (104, 255, 255)),
     ],
     "purple": [
-        ((105, 160, 50), (175, 255, 255)),
+        ((105, 80,50), (175, 255, 255)),
     ],
 }
 
@@ -118,7 +118,7 @@ POINTS_OVERLAY_PAUSE_FRAMES = 30
 # With defaults below:
 #   valid:   0-15%, 42.5-57.5%, 85-100%
 #   invalid: 15-42.5%, 57.5-85%
-POINT_VALID_SIDE_BAND_PCT = 15.0
+POINT_VALID_SIDE_BAND_PCT = 10.0
 POINT_VALID_CENTER_BAND_PCT = 15.0
 
 # Max pixel distance when assigning detected points to template grid corners.

@@ -136,6 +136,36 @@ def _colour_centroids(bgr_frame: np.ndarray, cell: dict) -> dict[str, float]:
         centroids[colour] = float(np.mean(xs)) - float(divide_x[int(np.mean(ys))])
     return centroids
 
+
+def colour_mean_x_in_cell(bgr_frame: np.ndarray, cell: dict) -> dict[str, float]:
+    """
+    Mean image-space x per colour in ``cell`` (pixels above MIN_COLOUR_PCT).
+
+    Used to order blocks left-to-right on the end-on face regardless of
+    percentage noise (unstable when sorting by coverage alone).
+    """
+    ih, iw = bgr_frame.shape[:2]
+    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
+    quad = _quad_mask((ih, iw), cell["corners"])
+    total = int(quad.sum())
+    if total == 0:
+        return {}
+    out: dict[str, float] = {}
+    for colour, ranges in HSV_RANGES.items():
+        combined = np.zeros((ih, iw), dtype=np.uint8)
+        for lo, hi in ranges:
+            combined |= cv2.inRange(hsv, np.array(lo, dtype=np.uint8),
+                                         np.array(hi, dtype=np.uint8))
+        mask = quad & combined.astype(bool)
+        ys, xs = np.where(mask)
+        if len(xs) == 0:
+            continue
+        if len(xs) / total * 100 < MIN_COLOUR_PCT:
+            continue
+        out[colour] = float(np.mean(xs))
+    return out
+
+
 def analyse_layer(bgr_frame: np.ndarray,
                   left_result: dict, right_result: dict,
                   left_cell: dict,  right_cell: dict) -> dict:
