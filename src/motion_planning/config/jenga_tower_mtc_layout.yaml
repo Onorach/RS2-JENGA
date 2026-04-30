@@ -12,16 +12,22 @@ remove_zones_before_start: ["jenga_tower"]
 
 parametric:
   stock:
-    first_block: {x: 0.2375, y: 0.4225, z: 0.0136}
-    step_along_x: 0.0278
+    # Two rows along y (base_link / goal frame); +x row first, then -x row (9 picks each).
+    rows:
+      - {x: 0.2125}
+      - {x: -0.2125}
+    y_centre: 0.3
+    z: 0.0136
+    step_along_y: 0.0356
+    blocks_per_row: 9
   tower:
     base: {x: 0.0, y: 0.3, z: 0.0136}
     blocks_per_layer: 3
     layers: 6
-    layer_dz: 0.015
-    slot_dx: 0.025
-  orientation_pick: {x: 0.0, y: 0.0, z: 1.0, w: 1.0}
-  orientation_place: {x: 0.0, y: 0.0, z: 1.0, w: 1.0}
+    layer_dz: 0.016
+    slot_dx: 0.026  
+  orientation_pick: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
+  orientation_place: {x: 0.0, y: 0.0, z: 0.707, w: 0.707}
 
 # Example explicit mode (uncomment, set `layout: explicit` and add steps):
 # layout: explicit

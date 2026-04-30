@@ -21,8 +21,8 @@ exclusion_zones:
     position: [0.0, 0.3, 0.000]
     size: [0.500, 0.320, 0.012]
 
-  - type: box
-    id: jenga_tower
-    frame_id: base_link
-    position: [0.0, 0.3, 0.066]
-    size: [0.085, 0.085, 0.135]
+  # - type: box
+  #   id: jenga_tower
+  #   frame_id: base_link
+  #   position: [0.0, 0.3, 0.066]
+  #   size: [0.085, 0.085, 0.135]

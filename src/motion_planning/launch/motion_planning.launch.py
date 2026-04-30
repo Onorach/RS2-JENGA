@@ -305,6 +305,21 @@ def generate_launch_description():
             "MTC: max seconds to wait for move_group execute_task_solution during warmup."
         ),
     )
+    jenga_blocks_layout_path_arg = DeclareLaunchArgument(
+        "jenga_blocks_layout_path",
+        default_value=PathJoinSubstitution(
+            [FindPackageShare(pkg_planning), "config", "jenga_tower_mtc_layout.yaml"]
+        ),
+        description=(
+            "YAML used by jenga_blocks_scene to spawn all Jenga blocks into the MoveIt2 "
+            "planning scene (stock first_block + step_along_x)."
+        ),
+    )
+    jenga_blocks_frame_id_arg = DeclareLaunchArgument(
+        "jenga_blocks_frame_id",
+        default_value="world",
+        description="TF frame_id used for Jenga block collision objects (default: world).",
+    )
     joint_secondary_pref_clip_arg = DeclareLaunchArgument(
         "joint_secondary_pref_clip",
         default_value="0.45",
@@ -544,6 +559,22 @@ def generate_launch_description():
         ],
     )
 
+    jenga_blocks_scene_node = Node(
+        package=pkg_planning,
+        executable="jenga_blocks_scene",
+        name="jenga_blocks_scene",
+        output="screen",
+        condition=IfCondition(
+            PythonExpression(["'", LaunchConfiguration("planner"), "' == 'mtc'"])
+        ),
+        parameters=[
+            {
+                "layout_path": LaunchConfiguration("jenga_blocks_layout_path"),
+                "frame_id": LaunchConfiguration("jenga_blocks_frame_id"),
+            }
+        ],
+    )
+
     world_to_base_tf_node = Node(
         package="tf2_ros",
         executable="static_transform_publisher",
@@ -601,6 +632,8 @@ def generate_launch_description():
         mtc_server_mode_arg,
         mtc_execute_task_warmup_enable_arg,
         mtc_execute_task_warmup_sec_arg,
+        jenga_blocks_layout_path_arg,
+        jenga_blocks_frame_id_arg,
         max_step_arg,
         jump_threshold_arg,
         cartesian_fraction_threshold_arg,
@@ -640,6 +673,7 @@ def generate_launch_description():
         pose_goal_node,
         moveit_cartesian_node,
         rmrc_planning_node,
+        jenga_blocks_scene_node,
         mtc_pick_place_server_node,
         exclusion_zones_node,
         estop_node,

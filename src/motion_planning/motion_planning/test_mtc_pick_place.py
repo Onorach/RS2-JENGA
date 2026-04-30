@@ -108,6 +108,7 @@ def main(args=None) -> int:
     )
 
     goal = JengaPickPlace.Goal()
+    goal.block_index = 0
     goal.pick_pose = pick
     goal.place_pose = place
 

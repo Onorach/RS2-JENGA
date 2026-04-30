@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 import time
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -59,6 +60,43 @@ def _blocks_per_layer(data: dict[str, Any]) -> int:
     return int(data.get("blocks_per_layer", 3))
 
 
+def _stock_pick_xyz_list(stock: dict[str, Any], *, n_tower: int) -> list[tuple[float, float, float]]:
+    """Ordered (x, y, z) for each stock pick: rows in YAML order, y low -> high per row."""
+    if "rows" in stock:
+        rows = stock["rows"]
+        y_centre = float(stock["y_centre"])
+        z = float(stock["z"])
+        step_y = float(stock["step_along_y"])
+        bpr = int(stock["blocks_per_row"])
+        half = (bpr - 1) / 2.0
+        out: list[tuple[float, float, float]] = []
+        for row in rows:
+            x = float(row["x"])
+            for j in range(bpr):
+                y = y_centre + (j - half) * step_y
+                out.append((x, y, z))
+        n_stock = len(out)
+        if n_stock != n_tower:
+            warnings.warn(
+                f"parametric.stock yields {n_stock} pick positions but tower needs "
+                f"{n_tower} (blocks_per_layer * layers).",
+                stacklevel=2,
+            )
+        return out[:n_tower] if n_stock > n_tower else out
+
+    # Legacy: single row along -x from first_block
+    s0 = stock.get("first_block", {"x": 0.3, "y": 0.3, "z": 0.02})
+    step = float(stock.get("step_along_x", 0.025))
+    return [
+        (
+            float(s0.get("x", 0.0)) - i * step,
+            float(s0.get("y", 0.0)),
+            float(s0.get("z", 0.0)),
+        )
+        for i in range(n_tower)
+    ]
+
+
 def _parametric_steps(data: dict[str, Any]) -> list[tuple[Pose, Pose]]:
     p = data.get("parametric", {})
     g = p.get("stock", {})
@@ -66,23 +104,24 @@ def _parametric_steps(data: dict[str, Any]) -> list[tuple[Pose, Pose]]:
     bpl = int(t.get("blocks_per_layer", 3))
     layers = int(t.get("layers", 6))
     n = bpl * layers
-    s0 = g.get("first_block", {"x": 0.2375, "y": 0.4225, "z": 0.0136})
-    step = float(g.get("step_along_x", 0.025))
-    t0 = t.get("base", {"x": 0.0, "y": 0.3, "z": 0.0136})
+    t0 = t.get("base", {"x": 0.2, "y": 0.3, "z": 0.02})
     layer_dz = float(t.get("layer_dz", 0.018))
     slot_dx = float(t.get("slot_dx", 0.015))
     q_pick = _qdict_to_msg(p.get("orientation_pick", {"x": 0.0, "y": 0.0, "z": 0.707, "w": 0.707}))
     q_place = _qdict_to_msg(p.get("orientation_place", {"x": 0.0, "y": 0.0, "z": 0.707, "w": 0.707}))
+    pick_xyz = _stock_pick_xyz_list(g, n_tower=n)
+    if len(pick_xyz) < n:
+        raise ValueError(
+            f"Not enough stock pick positions ({len(pick_xyz)}) for tower ({n} blocks). "
+            "Check parametric.stock (rows/blocks_per_row or first_block/step_along_x)."
+        )
     steps_out: list[tuple[Pose, Pose]] = []
     for i in range(n):
         layer = i // bpl
         slot = i % bpl
+        px, py, pz = pick_xyz[i]
         pick = Pose(
-            position=Point(
-                x=float(s0.get("x", 0.0)) - i * step,
-                y=float(s0.get("y", 0.0)),
-                z=float(s0.get("z", 0.0)),
-            ),
+            position=Point(x=px, y=py, z=pz),
             orientation=q_pick,
         )
         slot_offset = (slot - 1.0) * slot_dx
@@ -203,6 +242,7 @@ def main(args: list[str] | None = None) -> int:
     for idx, (pick_pose, place_pose) in enumerate(pairs):
         stamp = node.get_clock().now().to_msg()
         goal = JengaPickPlace.Goal()
+        goal.block_index = int(idx)
         pick_st = PoseStamped()
         pick_st.header.frame_id = goal_frame
         pick_st.header.stamp = stamp

@@ -26,6 +26,7 @@ setup(
             "jenga_tower_node = motion_planning.jenga_tower_node:main",
             "pose_goal_node = motion_planning.pose_goal_node:main",
             "exclusion_zones_node = motion_planning.exclusion_zones_loader:main",
+            "jenga_blocks_scene = motion_planning.jenga_blocks_scene:main",
             "rmrc_planning_node = motion_planning.rmrc_planning_node:main",
             "moveit_cartesian_node = motion_planning.moveit_cartesian_node:main",
             "test_rmrc_pose = motion_planning.test_rmrc_pose:main",

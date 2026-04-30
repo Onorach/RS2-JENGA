@@ -27,6 +27,7 @@ def main(args=None) -> int:
         return 1
 
     goal = JengaPickPlace.Goal()
+    goal.block_index = 0
     goal.pick_pose, goal.place_pose = _default_goal_poses(node)
     node.get_logger().info(f"Sending JengaPickPlace goal to '{action_name}'...")
     send_fut = client.send_goal_async(goal)
