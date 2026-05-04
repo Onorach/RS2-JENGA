@@ -171,7 +171,9 @@ Tweak `use_fake_hardware`, `robot_ip`, `base_height` / `base_yaw` for the real b
 
 `ros2 run motion_planning jenga_tower_mtc_sequencer --ros-args -p pre_wait_sec:=8.0`
 
-Edit [`motion_planning/config/jenga_tower_mtc_layout.yaml`](src/motion_planning/config/jenga_tower_mtc_layout.yaml) for stock and tower frame positions; add `jenga_tower` to `remove_zones_before_start` if the default planning-scene box blocks the stack (see the motion_planning README).
+Edit [`motion_planning/config/jenga_tower_mtc_layout.yaml`](src/motion_planning/config/jenga_tower_mtc_layout.yaml) for stock and tower frame positions.
+
+To **instantly** place Jenga block collision objects in the assembled tower layout in MoveIt (no robot motion), call `set_jenga_blocks_tower` on `jenga_blocks_scene` (`std_srvs/Trigger`). Use `reset_jenga_blocks` to return them to the stock layout. This only updates the planning scene, not Gazebo or hardware.
 
 ---
 

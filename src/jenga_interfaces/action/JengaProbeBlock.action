@@ -1,0 +1,13 @@
+# Goal: probe a block with a push/pull test (block_pose is the estimated pose in the tower)
+uint32 block_index
+geometry_msgs/PoseStamped block_pose
+---
+# Result: outcome (score is a simple numeric metric; interpretation is task-specific)
+bool success
+string message
+uint8 error_code
+float32 score
+---
+# Feedback: progress
+string current_stage
+float32 progress_pct

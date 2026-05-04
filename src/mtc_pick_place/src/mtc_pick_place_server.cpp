@@ -61,14 +61,14 @@ class MtcPickPlaceServer : public rclcpp::Node {
     box_z_ = declare_parameter("object_box_z", 0.015);
     open_state_ = declare_parameter("gripper_open_state", "open");
     closed_state_ = declare_parameter("gripper_closed_state", "grip_block_length");
-    arm_home_state_ = declare_parameter("arm_home_state", "test_configuration");
+    arm_home_state_ = declare_parameter("arm_home_state", "ready_position");
     plan_max_attempts_ = static_cast<uint32_t>(declare_parameter("plan_max_attempts", 3));
     status_topic_ = declare_parameter("status_topic", "mtc_status");
     const std::string goal_topic = declare_parameter("goal_topic", "goal_pose");
     add_demo_table_ = declare_parameter("add_demo_table", false);
     (void)declare_parameter("action_timeout_sec", 600);
-    execute_task_warmup_enable_ = declare_parameter("execute_task_warmup_enable", true);
-    execute_task_warmup_sec_ = declare_parameter("execute_task_warmup_sec", 30.0);
+    vel_scale_ = declare_parameter("max_velocity_scaling_factor", 0.1);
+    acc_scale_ = declare_parameter("max_acceleration_scaling_factor", 0.1);
 
     action_server_ = rclcpp_action::create_server<JengaPickPlace>(
         this, "jenga_pick_place",
@@ -102,7 +102,10 @@ class MtcPickPlaceServer : public rclcpp::Node {
     sub_estop_active_ = create_subscription<std_msgs::msg::Bool>(
         "/estop_active", 10, [this](const std_msgs::msg::Bool::SharedPtr msg) { estop_ = msg->data; });
 
-    RCLCPP_INFO(get_logger(), "mtc_pick_place_server: mode=%s, status=%s, action=/jenga_pick_place", mode_.c_str(), status_topic_.c_str());
+    RCLCPP_INFO(get_logger(),
+                "mtc_pick_place_server: mode=%s, status=%s, action=/jenga_pick_place, "
+                "max_vel_scale=%.3f max_acc_scale=%.3f",
+                mode_.c_str(), status_topic_.c_str(), vel_scale_, acc_scale_);
   }
 
   void onActionAccepted(std::shared_ptr<rclcpp_action::ServerGoalHandle<JengaPickPlace>> handle) {
@@ -164,8 +167,8 @@ class MtcPickPlaceServer : public rclcpp::Node {
       mgi.setEndEffectorLink(ee_link_for_move_group_);
       mgi.setPoseReferenceFrame(target.header.frame_id);
       mgi.setPoseTarget(target.pose, ee_link_for_move_group_);
-      mgi.setMaxVelocityScalingFactor(0.5);
-      mgi.setMaxAccelerationScalingFactor(0.5);
+      mgi.setMaxVelocityScalingFactor(vel_scale_);
+      mgi.setMaxAccelerationScalingFactor(acc_scale_);
       moveit::core::MoveItErrorCode const code = mgi.move();
       return (code == moveit::core::MoveItErrorCode::SUCCESS);
     } catch (const std::exception& ex) {
@@ -194,11 +197,15 @@ class MtcPickPlaceServer : public rclcpp::Node {
     sampling_planner->setProperty("goal_joint_tolerance", 1e-4);
     sampling_planner->setProperty("planning_time", 2.0);  // seconds
     sampling_planner->setProperty("enforce_joint_model_state_space", true);
+    sampling_planner->setMaxVelocityScalingFactor(vel_scale_);
+    sampling_planner->setMaxAccelerationScalingFactor(acc_scale_);
 
     auto interpolation_planner = std::make_shared<mtc::solvers::JointInterpolationPlanner>();
+    interpolation_planner->setMaxVelocityScalingFactor(vel_scale_);
+    interpolation_planner->setMaxAccelerationScalingFactor(acc_scale_);
     auto cartesian_planner = std::make_shared<mtc::solvers::CartesianPath>();
-    cartesian_planner->setMaxVelocityScalingFactor(0.5);
-    cartesian_planner->setMaxAccelerationScalingFactor(0.5);
+    cartesian_planner->setMaxVelocityScalingFactor(vel_scale_);
+    cartesian_planner->setMaxAccelerationScalingFactor(acc_scale_);
     cartesian_planner->setStepSize(0.005);
 
     {
@@ -411,8 +418,8 @@ class MtcPickPlaceServer : public rclcpp::Node {
     // timestamps from OMPL's pipeline (moveit_task_constructor#624 / #578).
     // Done per-sub-trajectory so we don't disturb gripper or scene-only stages.
     trajectory_processing::TimeOptimalTrajectoryGeneration totg;
-    const double vel_scale = 0.5;
-    const double acc_scale = 0.5;
+    const double vel_scale = vel_scale_;
+    const double acc_scale = acc_scale_;
 
     // Safety net: if TOTG ever leaves a zero-duration segment, nudge it just
     // enough to keep monotonicity. With proper joint limits this rarely fires.
@@ -554,9 +561,9 @@ class MtcPickPlaceServer : public rclcpp::Node {
   std::string status_topic_;
   bool add_demo_table_{false};
   double box_x_, box_y_, box_z_;
+  double vel_scale_{0.1};
+  double acc_scale_{0.1};
   uint32_t plan_max_attempts_{5};
-  bool execute_task_warmup_enable_{true};
-  double execute_task_warmup_sec_{30.0};
 
   std::mutex status_mutex_;
   std::atomic<bool> busy_{false};

@@ -4,9 +4,6 @@ Sequencer: send repeated :action:`jenga_pick_place` goals for a six-layer Jenga 
 
 - **parametric** layout: compute pick/place from stock and tower parameters (default).
 - **from_file** layout: read explicit list of pick/place poses from YAML.
-
-Publishes optional ``/remove_exclusion_zone`` (``std_msgs/String``) at start or when a
-layer completes; tune :file:`config/jenga_tower_mtc_layout.yaml` to match your cell.
 """
 
 from __future__ import annotations
@@ -23,8 +20,6 @@ import yaml
 from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion
 from rclpy.action import ActionClient
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy
-from std_msgs.msg import String
 
 from jenga_interfaces.action import JengaPickPlace
 
@@ -79,13 +74,6 @@ def _load_yaml(path: str) -> dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
-def _blocks_per_layer(data: dict[str, Any]) -> int:
-    t = data.get("parametric", {}).get("tower", {})
-    if t and "blocks_per_layer" in t:
-        return int(t["blocks_per_layer"])
-    return int(data.get("blocks_per_layer", 3))
-
-
 def _stock_pick_xyz_list(stock: dict[str, Any], *, n_tower: int) -> list[tuple[float, float, float]]:
     """Ordered (x, y, z) for each stock pick: rows in YAML order, y low -> high per row."""
     if "rows" in stock:
@@ -111,8 +99,8 @@ def _stock_pick_xyz_list(stock: dict[str, Any], *, n_tower: int) -> list[tuple[f
         return out[:n_tower] if n_stock > n_tower else out
 
     # Legacy: single row along -x from first_block
-    s0 = stock.get("first_block", {"x": 0.3, "y": 0.3, "z": 0.02})
-    step = float(stock.get("step_along_x", 0.025))
+    s0 = stock.get("first_block", {"x": 0.3, "y": 0.297, "z": 0.0138})
+    step = float(stock.get("step_along_x", 0.0251))
     return [
         (
             float(s0.get("x", 0.0)) - i * step,
@@ -123,41 +111,27 @@ def _stock_pick_xyz_list(stock: dict[str, Any], *, n_tower: int) -> list[tuple[f
     ]
 
 
-def _parametric_steps(data: dict[str, Any]) -> list[tuple[Pose, Pose]]:
+def _parametric_tower_poses(data: dict[str, Any]) -> list[Pose]:
+    """Place poses for a parametric tower only (no stock / pick layout required)."""
     p = data.get("parametric", {})
-    g = p.get("stock", {})
     t = p.get("tower", {})
     bpl = int(t.get("blocks_per_layer", 3))
     layers = int(t.get("layers", 6))
     n = bpl * layers
-    t0 = t.get("base", {"x": 0.2, "y": 0.3, "z": 0.02})
-    layer_dz = float(t.get("layer_dz", 0.018))
-    slot_dx = float(t.get("slot_dx", 0.015))
+    t0 = t.get("base", {"x": 0.2, "y": 0.297, "z": 0.0138})
+    layer_dz = float(t.get("layer_dz", 0.0151))
+    slot_dx = float(t.get("slot_dx", 0.0251))
     tower_yaw_deg = float(t.get("tower_yaw_deg", 45.0))
     tower_yaw_rad = math.radians(tower_yaw_deg)
-    q_pick = _qdict_to_msg(p.get("orientation_pick", {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}))
     q_place = _qdict_to_msg(p.get("orientation_place", {"x": 0.0, "y": 0.0, "z": 0.707, "w": 0.707}))
     q_place_base = _q_normalize(q_place.x, q_place.y, q_place.z, q_place.w)
-    pick_xyz = _stock_pick_xyz_list(g, n_tower=n)
-    if len(pick_xyz) < n:
-        raise ValueError(
-            f"Not enough stock pick positions ({len(pick_xyz)}) for tower ({n} blocks). "
-            "Check parametric.stock (rows/blocks_per_row or first_block/step_along_x)."
-        )
-    steps_out: list[tuple[Pose, Pose]] = []
+    out: list[Pose] = []
     c = math.cos(tower_yaw_rad)
     s = math.sin(tower_yaw_rad)
     for i in range(n):
         layer = i // bpl
         slot = i % bpl
-        px, py, pz = pick_xyz[i]
-        pick = Pose(
-            position=Point(x=px, y=py, z=pz),
-            orientation=q_pick,
-        )
         slot_offset = (slot - 1.0) * slot_dx
-        # Alternate classic Jenga: layers switch by 90° about +Z.
-        # Build slot offsets in a tower-local layer frame, then rotate by tower_yaw.
         if (layer % 2) == 0:
             off_lx, off_ly = slot_offset, 0.0
             layer_yaw = 0.0
@@ -169,15 +143,52 @@ def _parametric_steps(data: dict[str, Any]) -> list[tuple[Pose, Pose]]:
         q_yaw = _q_from_yaw(tower_yaw_rad + layer_yaw)
         qx, qy, qz, qw = _q_mul(q_yaw[0], q_yaw[1], q_yaw[2], q_yaw[3], *q_place_base)
         qx, qy, qz, qw = _q_normalize(qx, qy, qz, qw)
-        place = Pose(
-            position=Point(
-                x=float(t0.get("x", 0.0)) + off_x,
-                y=float(t0.get("y", 0.0)) + off_y,
-                z=float(t0.get("z", 0.0)) + layer * layer_dz,
-            ),
-            orientation=Quaternion(x=qx, y=qy, z=qz, w=qw),
+        out.append(
+            Pose(
+                position=Point(
+                    x=float(t0.get("x", 0.0)) + off_x,
+                    y=float(t0.get("y", 0.0)) + off_y,
+                    z=float(t0.get("z", 0.0)) + layer * layer_dz,
+                ),
+                orientation=Quaternion(x=qx, y=qy, z=qz, w=qw),
+            )
         )
-        steps_out.append((pick, place))
+    return out
+
+
+def tower_poses_from_layout_dict(data: dict[str, Any]) -> list[Pose]:
+    """Tower (assembled) poses per block index; same geometry as MTC place poses."""
+    mode = str(data.get("layout", "parametric"))
+    if mode == "parametric":
+        return _parametric_tower_poses(data)
+    if mode in ("from_file", "explicit", "steps"):
+        return [place for _, place in _explicit_steps(data)]
+    raise ValueError(f"Unknown layout mode: {mode}")
+
+
+def _parametric_steps(data: dict[str, Any]) -> list[tuple[Pose, Pose]]:
+    p = data.get("parametric", {})
+    g = p.get("stock", {})
+    t = p.get("tower", {})
+    bpl = int(t.get("blocks_per_layer", 3))
+    layers = int(t.get("layers", 6))
+    n = bpl * layers
+    q_pick = _qdict_to_msg(p.get("orientation_pick", {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}))
+    pick_xyz = _stock_pick_xyz_list(g, n_tower=n)
+    if len(pick_xyz) < n:
+        raise ValueError(
+            f"Not enough stock pick positions ({len(pick_xyz)}) for tower ({n} blocks). "
+            "Check parametric.stock (rows/blocks_per_row or first_block/step_along_x)."
+        )
+    tower_poses = _parametric_tower_poses(data)
+    steps_out: list[tuple[Pose, Pose]] = []
+    for i in range(n):
+        px, py, pz = pick_xyz[i]
+        pick = Pose(
+            position=Point(x=px, y=py, z=pz),
+            orientation=q_pick,
+        )
+        steps_out.append((pick, tower_poses[i]))
     return steps_out
 
 
@@ -215,7 +226,7 @@ def main(args: list[str] | None = None) -> int:
     layout_path_param = str(node.declare_parameter("layout_path", "").value)
     action_name = str(node.declare_parameter("action_name", "jenga_pick_place").value)
     goal_frame = str(node.declare_parameter("goal_frame", "world").value)
-    pre_wait_sec = float(node.declare_parameter("pre_wait_sec", 5.0).value)
+    pre_wait_sec = float(node.declare_parameter("pre_wait_sec", 1.0).value)
     step_pause_sec = float(node.declare_parameter("step_pause_sec", 0.5).value)
     per_goal_timeout_sec = float(
         node.declare_parameter("per_goal_timeout_sec", 600.0).value
@@ -250,29 +261,8 @@ def main(args: list[str] | None = None) -> int:
         rclpy.shutdown()
         return 1
 
-    bpl = _blocks_per_layer(data)
-    remove_start = [str(x) for x in data.get("remove_zones_before_start", [])]
-    after_layer_map: dict[int, list[str]] = {}
-    for e in data.get("remove_zones_after_layer", []):
-        li = int(e.get("after_layer", -1))
-        if li < 1:
-            continue
-        after_layer_map[li] = [str(x) for x in e.get("zone_ids", [])]
-
-    rm_pub = node.create_publisher(
-        String,
-        "/remove_exclusion_zone",
-        QoSProfile(depth=10, reliability=ReliabilityPolicy.RELIABLE),
-    )
-    for zid in remove_start:
-        node.get_logger().info(f"Remove exclusion zone: {zid}")
-        m = String()
-        m.data = zid
-        rm_pub.publish(m)
-        time.sleep(0.2)
-
     node.get_logger().info(
-        f"Loaded {len(pairs)} MTC pick/place step(s) from {path} (mode={mode}, bpl={bpl})"
+        f"Loaded {len(pairs)} MTC pick/place step(s) from {path} (mode={mode})"
     )
     if pre_wait_sec > 0.0:
         time.sleep(pre_wait_sec)
@@ -326,16 +316,6 @@ def main(args: list[str] | None = None) -> int:
             return 5
         if step_pause_sec > 0.0:
             time.sleep(step_pause_sec)
-        if (idx + 1) % bpl == 0:
-            layer_done = (idx + 1) // bpl
-            for zid in after_layer_map.get(layer_done, []):
-                node.get_logger().info(
-                    f"After layer {layer_done}: remove exclusion zone {zid}"
-                )
-                msg = String()
-                msg.data = zid
-                rm_pub.publish(msg)
-                time.sleep(0.2)
 
     node.get_logger().info("All MTC pick/place steps completed.")
     rclpy.shutdown()

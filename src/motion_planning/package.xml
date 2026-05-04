@@ -33,6 +33,7 @@
 
   <!-- ur_description for robot_description when using RMRC -->
   <exec_depend>ur_description</exec_depend>
+  <exec_depend>mtc_pick_place</exec_depend>
 
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>python3-yaml</exec_depend>

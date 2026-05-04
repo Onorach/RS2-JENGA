@@ -1,0 +1,23 @@
+# Baseline velocity / acceleration scaling for MoveIt Task Constructor servers.
+# Launch files may append LaunchConfiguration overrides so CLI wins, e.g.:
+#   ros2 launch ... max_velocity_scaling_factor:=0.25
+# Keep numeric defaults aligned with motion_planning.mtc_velocity_args (DEFAULT_*).
+mtc_pick_place_server:
+  ros__parameters:
+    max_velocity_scaling_factor: 0.4
+    max_acceleration_scaling_factor: 0.4
+
+mtc_probe_block_server:
+  ros__parameters:
+    max_velocity_scaling_factor: 0.2
+    max_acceleration_scaling_factor: 0.2
+
+mtc_extract_side_block_server:
+  ros__parameters:
+    max_velocity_scaling_factor: 0.3
+    max_acceleration_scaling_factor: 0.3
+
+mtc_extract_middle_block_server:
+  ros__parameters:
+    max_velocity_scaling_factor: 0.3
+    max_acceleration_scaling_factor: 0.3

@@ -44,23 +44,15 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 from ur_onrobot_moveit_config.launch_common import load_yaml
 
+from motion_planning.mtc_velocity_args import (
+    declare_mtc_velocity_scaling_arguments,
+    mtc_velocity_scaling_ros_parameters,
+)
+
 
 def generate_launch_description():
     pkg_planning = "motion_planning"
     pkg_controller = "ur3e_controller"
-
-    # launch_rviz_arg = DeclareLaunchArgument(
-    #     "launch_rviz",
-    #     default_value="true",
-    #     description="Launch RViz?",
-    # )
-    # rviz_config_arg = DeclareLaunchArgument(
-    #     "rviz_config",
-    #     default_value=PathJoinSubstitution(
-    #         [FindPackageShare(pkg_planning), "config", "motion_planning_mtc.rviz"]
-    #     ),
-    #     description="Absolute path to the RViz config file to load.",
-    # )
 
     exclusion_zones_file_arg = DeclareLaunchArgument(
         "exclusion_zones_file",
@@ -148,15 +140,8 @@ def generate_launch_description():
             "be collision-free to accept it.  1.0 = require full path, else OMPL fallback."
         ),
     )
-    max_velocity_scaling_factor_arg = DeclareLaunchArgument(
-        "max_velocity_scaling_factor",
-        default_value="0.1",
-        description="moveit_cartesian: scale factor (0,1] for maximum joint velocities.",
-    )
-    max_acceleration_scaling_factor_arg = DeclareLaunchArgument(
-        "max_acceleration_scaling_factor",
-        default_value="0.1",
-        description="moveit_cartesian: scale factor (0,1] for maximum joint accelerations.",
+    mtc_velocity_scaling_yaml = PathJoinSubstitution(
+        [FindPackageShare("mtc_pick_place"), "config", "mtc_velocity_scaling.yaml"]
     )
     exec_start_delay_arg = DeclareLaunchArgument(
         "execution_start_delay",
@@ -301,21 +286,6 @@ def generate_launch_description():
         description=(
             "MTC server mode: 'paired_pose' for jenga_tower_node (two consecutive /goal_pose "
             "messages = pick then place), 'single_pose' for direct MoveGroup moves."
-        ),
-    )
-    mtc_execute_task_warmup_enable_arg = DeclareLaunchArgument(
-        "mtc_execute_task_warmup_enable",
-        default_value="true",
-        description=(
-            "MTC: pre-wait for /execute_task_solution before each execute (helps MTC's 0.5s "
-            "internal client connect). Set false only if debugging."
-        ),
-    )
-    mtc_execute_task_warmup_sec_arg = DeclareLaunchArgument(
-        "mtc_execute_task_warmup_sec",
-        default_value="30.0",
-        description=(
-            "MTC: max seconds to wait for move_group execute_task_solution during warmup."
         ),
     )
     jenga_blocks_layout_path_arg = DeclareLaunchArgument(
@@ -558,16 +528,12 @@ def generate_launch_description():
             PythonExpression(["'", LaunchConfiguration("planner"), "' == 'mtc'"])
         ),
         parameters=[
+            mtc_velocity_scaling_yaml,
+            mtc_velocity_scaling_ros_parameters(),
             robot_description_kinematics,
             ompl_pipeline_config,
             {
                 "mode": LaunchConfiguration("mtc_server_mode"),
-                "execute_task_warmup_enable": LaunchConfiguration(
-                    "mtc_execute_task_warmup_enable"
-                ),
-                "execute_task_warmup_sec": LaunchConfiguration(
-                    "mtc_execute_task_warmup_sec"
-                ),
             },
         ],
     )
@@ -643,15 +609,12 @@ def generate_launch_description():
         joint_action_arg,
         planner_arg,
         mtc_server_mode_arg,
-        mtc_execute_task_warmup_enable_arg,
-        mtc_execute_task_warmup_sec_arg,
         jenga_blocks_layout_path_arg,
         jenga_blocks_frame_id_arg,
         max_step_arg,
         jump_threshold_arg,
         cartesian_fraction_threshold_arg,
-        max_velocity_scaling_factor_arg,
-        max_acceleration_scaling_factor_arg,
+        *declare_mtc_velocity_scaling_arguments(),
         exec_start_delay_arg,
         goal_time_tolerance_arg,
         max_joint_velocity_arg,

@@ -1,0 +1,13 @@
+# Goal: extract a block from the tower from the middle, then place it elsewhere
+uint32 block_index
+geometry_msgs/PoseStamped block_pose
+geometry_msgs/PoseStamped place_pose
+---
+# Result: outcome
+bool success
+string message
+uint8 error_code
+---
+# Feedback: progress
+string current_stage
+float32 progress_pct

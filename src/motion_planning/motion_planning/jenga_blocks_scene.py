@@ -2,8 +2,11 @@
 Publish persistent Jenga block collision objects to the MoveIt2 planning scene.
 
 This node spawns all blocks once (as BOX primitives) and keeps them present so
-planning always considers the full stock + tower state. A reset service can
-republish the initial poses for repeat runs.
+planning always considers the full stock + tower state.
+
+- ``reset_jenga_blocks`` (Trigger): republish blocks at **stock** poses from YAML.
+- ``set_jenga_blocks_tower`` (Trigger): republish blocks at **assembled tower**
+  poses (planning scene only; does not move Gazebo or hardware).
 """
 
 from __future__ import annotations
@@ -16,7 +19,10 @@ import rclpy
 import yaml
 from geometry_msgs.msg import Point, Pose, Quaternion
 
-from motion_planning.jenga_tower_mtc_sequencer import _stock_pick_xyz_list
+from motion_planning.jenga_tower_mtc_sequencer import (
+    _stock_pick_xyz_list,
+    tower_poses_from_layout_dict,
+)
 from moveit_msgs.msg import CollisionObject, PlanningScene, PlanningSceneWorld
 from rclpy.node import Node
 from shape_msgs.msg import SolidPrimitive
@@ -94,6 +100,9 @@ class JengaBlocksSceneNode(Node):
 
         self._pub = self.create_publisher(PlanningScene, "/planning_scene", 10)
         self._srv = self.create_service(Trigger, "reset_jenga_blocks", self._on_reset)
+        self._srv_tower = self.create_service(
+            Trigger, "set_jenga_blocks_tower", self._on_set_tower
+        )
 
         self._cached_objects: list[CollisionObject] = []
         self._done = False
@@ -137,16 +146,12 @@ class JengaBlocksSceneNode(Node):
             poses.append(pose)
         return poses
 
-    def _build_initial_objects(self) -> list[CollisionObject]:
-        path = self._resolve_layout_path()
-        data = _load_yaml(path)
-        poses = self._compute_stock_poses(data)
+    def _build_objects_at_poses(self, poses: list[Pose]) -> list[CollisionObject]:
         if len(poses) != 18:
             self.get_logger().warn(
                 f"Layout implies {len(poses)} blocks (expected 18). "
                 "Will publish that many collision objects."
             )
-
         objects: list[CollisionObject] = []
         for i, pose in enumerate(poses):
             block_id = f"block_{i:02d}"
@@ -160,6 +165,12 @@ class JengaBlocksSceneNode(Node):
                 )
             )
         return objects
+
+    def _build_initial_objects(self) -> list[CollisionObject]:
+        path = self._resolve_layout_path()
+        data = _load_yaml(path)
+        poses = self._compute_stock_poses(data)
+        return self._build_objects_at_poses(poses)
 
     def _publish_objects(self, objects: list[CollisionObject]) -> None:
         scene = PlanningScene(is_diff=True, world=PlanningSceneWorld())
@@ -198,10 +209,34 @@ class JengaBlocksSceneNode(Node):
             self._cached_objects = objects
             self._publish_objects(objects)
             response.success = True
-            response.message = f"Republished {len(objects)} Jenga block collision object(s)."
+            response.message = f"Republished {len(objects)} Jenga block collision object(s) at stock layout."
         except Exception as exc:
             response.success = False
             response.message = f"reset failed: {exc}"
+        return response
+
+    def _on_set_tower(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
+        try:
+            path = self._resolve_layout_path()
+            data = _load_yaml(path)
+            poses = tower_poses_from_layout_dict(data)
+            if not poses:
+                response.success = False
+                response.message = "tower layout: no block poses (check YAML)."
+                return response
+            objects = self._build_objects_at_poses(poses)
+            self._cached_objects = objects
+            self._publish_objects(objects)
+            response.success = True
+            response.message = (
+                f"Republished {len(objects)} Jenga block collision object(s) at tower layout."
+            )
+        except ValueError as exc:
+            response.success = False
+            response.message = f"set tower failed: {exc}"
+        except Exception as exc:
+            response.success = False
+            response.message = f"set tower failed: {exc}"
         return response
 
 

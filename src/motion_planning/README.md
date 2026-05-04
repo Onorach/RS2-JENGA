@@ -34,6 +34,23 @@ source install/setup.bash
 | `exclusion_zones_node` | Loads exclusion zones from YAML into the MoveIt planning scene         |
 | `test_rmrc_pose`       | Test script that publishes sample goal poses                            |
 | `robot_gui`            | GUI for robot interaction                                               |
+| `jenga_blocks_scene`   | Publishes Jenga block boxes to the MoveIt planning scene (MTC workflows) |
+
+### `jenga_blocks_scene` services
+
+Started when `motion_planning.launch.py` runs with `planner:=mtc`. Both services only update the **MoveIt planning scene**; they do not move Gazebo models or real blocks.
+
+| Service | Type | Effect |
+|---------|------|--------|
+| `reset_jenga_blocks` | `std_srvs/Trigger` | Republish all `block_XX` collision objects at **stock** poses from `jenga_tower_mtc_layout.yaml`. |
+| `set_jenga_blocks_tower` | `std_srvs/Trigger` | Republish the same objects at **assembled tower** poses (same geometry as MTC place poses). Useful to test planning against a full tower instantly. |
+
+Example:
+
+```bash
+ros2 service call /set_jenga_blocks_tower std_srvs/srv/Trigger
+ros2 service call /reset_jenga_blocks std_srvs/srv/Trigger
+```
 
 ## Launch
 
