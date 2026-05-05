@@ -6,7 +6,8 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Image
-from std_msgs.msg import String, Int8MultiArray, Bool # Added Bool for ESTOP
+from std_msgs.msg import String, Int8MultiArray
+from std_srvs.srv import SetBool  # Required for service calls
 from cv_bridge import CvBridge
 import tkinter as tk
 from PIL import Image as PILImage, ImageTk
@@ -37,7 +38,6 @@ class RealSenseCameraNode(Node):
         self.override_topic = '/ee_override_array'
         self.top_layer_topic = '/top_layer_state'
         self.goal_topic = '/selected_goal'
-        self.estop_topic = '/estop' # New ESTOP topic
 
         qos_profile = QoSProfile(
             reliability=ReliabilityPolicy.BEST_EFFORT,
@@ -45,13 +45,17 @@ class RealSenseCameraNode(Node):
             depth=1
         )
         
+        # Subscriptions
         self.subscription = self.create_subscription(Image, self.topic_name, self.listener_callback, qos_profile)
         self.state_subscription = self.create_subscription(String, self.state_topic, self.state_callback, 10)
         self.top_layer_sub = self.create_subscription(String, self.top_layer_topic, self.top_layer_callback, 10)
         
+        # Publishers
         self.override_pub = self.create_publisher(Int8MultiArray, self.override_topic, 10)
         self.goal_pub = self.create_publisher(String, self.goal_topic, 10)
-        self.estop_pub = self.create_publisher(Bool, self.estop_topic, 10) # ESTOP Publisher
+
+        # Service Client for E-STOP
+        self.estop_client = self.create_client(SetBool, '/estop')
 
         self.bridge = CvBridge()
         self.cv_image = None
@@ -82,19 +86,23 @@ class RealSenseCameraNode(Node):
         msg = Int8MultiArray()
         msg.data = [int(val) for val in boolean_array]
         self.override_pub.publish(msg)
-        print(f"Published EE Override Array: {msg.data}")
 
     def publish_goal(self, goal_array):
         msg = String()
         msg.data = json.dumps(goal_array)
         self.goal_pub.publish(msg)
-        print(f"Published Selected Goal: {msg.data}")
 
-    def publish_estop(self, state: bool):
-        msg = Bool()
-        msg.data = state
-        self.estop_pub.publish(msg)
-        print(f"ESTOP Toggled: {state}") # Print to terminal
+    def call_estop_service(self, state: bool):
+        """Asynchronously calls the /estop service"""
+        if not self.estop_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().error('Service /estop not available!')
+            return
+        
+        request = SetBool.Request()
+        request.data = state
+        # call_async prevents the GUI from hanging while waiting for robot response
+        self.estop_client.call_async(request)
+        self.get_logger().info(f"Service Call Sent: /estop data={state}")
 
 class JengaInterfaceApp:
     def __init__(self, root, ros_node):
@@ -105,11 +113,11 @@ class JengaInterfaceApp:
 
         self.ee_override_array = [False, False, True] 
         self.selected_goal_data = [] 
-        self.estop_active = False # ESTOP boolean variable
+        self.estop_active = False 
         
         self.buttons = {}
         self.goal_buttons = []
-        self.estop_button = None # ESTOP button reference
+        self.estop_button = None 
         self.cam_label = None
         self.state_label = None
         self.goal_status_label = None
@@ -166,7 +174,7 @@ class JengaInterfaceApp:
         self.goal_status_label = tk.Label(ctrl_container, text="Waiting for target selection...", bg=COLOUR_LIGHT_GRAY, fg=COLOUR_BLACK, font=("Arial", 11, "italic"), wraplength=250, justify="center")
         self.goal_status_label.pack(pady=10)
 
-        # --- NEW: ESTOP Section ---
+        # --- ESTOP Section ---
         tk.Label(ctrl_container, text="ESTOP", bg=COLOUR_LIGHT_GRAY, font=("Arial", 14, "bold")).pack(pady=(20, 5))
         self.estop_button = tk.Button(ctrl_container, text="OFF", bg=COLOUR_BLACK, fg=COLOUR_WHITE, 
                                       font=("Arial", 12, "bold"), width=18, height=3, 
@@ -174,14 +182,15 @@ class JengaInterfaceApp:
         self.estop_button.pack(pady=5)
 
     def toggle_estop(self):
-        """Toggles the ESTOP state, updates visuals, and publishes to ROS"""
+        """Toggles the ESTOP state and calls the ROS service"""
         self.estop_active = not self.estop_active
         if self.estop_active:
             self.estop_button.config(text="ON", bg=COLOUR_RED)
         else:
             self.estop_button.config(text="OFF", bg=COLOUR_BLACK)
         
-        self.ros_node.publish_estop(self.estop_active)
+        # Calling Service instead of publishing a message
+        self.ros_node.call_estop_service(self.estop_active)
 
     def handle_press(self, index):
         self.ee_override_array[index] = not self.ee_override_array[index]
