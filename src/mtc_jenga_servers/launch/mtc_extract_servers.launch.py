@@ -14,7 +14,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description() -> LaunchDescription:
     mtc_velocity_yaml = PathJoinSubstitution(
-        [FindPackageShare("mtc_pick_place"), "config", "mtc_velocity_scaling.yaml"]
+        [FindPackageShare("mtc_jenga_servers"), "config", "mtc_velocity_scaling.yaml"]
     )
     which_arg = DeclareLaunchArgument(
         "which",
@@ -27,12 +27,12 @@ def generate_launch_description() -> LaunchDescription:
     max_vel_arg = DeclareLaunchArgument(
         "max_velocity_scaling_factor",
         default_value="0.1",
-        description="Sync with mtc_pick_place/config/mtc_velocity_scaling.yaml",
+        description="Sync with mtc_jenga_servers/config/mtc_velocity_scaling.yaml",
     )
     max_acc_arg = DeclareLaunchArgument(
         "max_acceleration_scaling_factor",
         default_value="0.1",
-        description="Sync with mtc_pick_place/config/mtc_velocity_scaling.yaml",
+        description="Sync with mtc_jenga_servers/config/mtc_velocity_scaling.yaml",
     )
 
     common_params = [
@@ -49,7 +49,7 @@ def generate_launch_description() -> LaunchDescription:
     ]
 
     side = Node(
-        package="mtc_pick_place",
+        package="mtc_jenga_servers",
         executable="mtc_extract_side_block_server",
         name="mtc_extract_side_block_server",
         output="screen",
@@ -68,7 +68,7 @@ def generate_launch_description() -> LaunchDescription:
     )
 
     middle = Node(
-        package="mtc_pick_place",
+        package="mtc_jenga_servers",
         executable="mtc_extract_middle_block_server",
         name="mtc_extract_middle_block_server",
         output="screen",

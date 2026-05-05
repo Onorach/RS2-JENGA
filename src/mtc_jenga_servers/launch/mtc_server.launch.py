@@ -16,7 +16,7 @@ from launch_ros.substitutions import FindPackageShare
 
 def generate_launch_description() -> LaunchDescription:
     mtc_velocity_yaml = PathJoinSubstitution(
-        [FindPackageShare("mtc_pick_place"), "config", "mtc_velocity_scaling.yaml"]
+        [FindPackageShare("mtc_jenga_servers"), "config", "mtc_velocity_scaling.yaml"]
     )
     return LaunchDescription(
         [
@@ -33,15 +33,15 @@ def generate_launch_description() -> LaunchDescription:
             DeclareLaunchArgument(
                 "max_velocity_scaling_factor",
                 default_value="0.1",
-                description="Keep default in sync with mtc_pick_place/config/mtc_velocity_scaling.yaml",
+                description="Keep default in sync with mtc_jenga_servers/config/mtc_velocity_scaling.yaml",
             ),
             DeclareLaunchArgument(
                 "max_acceleration_scaling_factor",
                 default_value="0.1",
-                description="Keep default in sync with mtc_pick_place/config/mtc_velocity_scaling.yaml",
+                description="Keep default in sync with mtc_jenga_servers/config/mtc_velocity_scaling.yaml",
             ),
             Node(
-                package="mtc_pick_place",
+                package="mtc_jenga_servers",
                 executable="mtc_pick_place_server",
                 name="mtc_pick_place_server",
                 output="screen",

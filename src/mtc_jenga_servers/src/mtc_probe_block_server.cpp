@@ -17,7 +17,7 @@
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
 
-#include "mtc_pick_place/mtc_server_common.hpp"
+#include "mtc_jenga_servers/mtc_server_common.hpp"
 
 namespace mtc = moveit::task_constructor;
 using JengaProbeBlock = jenga_interfaces::action::JengaProbeBlock;

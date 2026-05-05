@@ -42,7 +42,7 @@
 
 #include <Eigen/Geometry>
 
-#include "mtc_pick_place/mtc_server_common.hpp"
+#include "mtc_jenga_servers/mtc_server_common.hpp"
 
 namespace mtc = moveit::task_constructor;
 using JengaPickPlace = jenga_interfaces::action::JengaPickPlace;
@@ -53,9 +53,9 @@ class MtcPickPlaceServer : public rclcpp::Node {
   explicit MtcPickPlaceServer(const rclcpp::NodeOptions& options = rclcpp::NodeOptions())
   : rclcpp::Node("mtc_pick_place_server", options) {
     mode_ = declare_parameter("mode", "single_pose");
-    ur_onrobot_manipulator = declare_parameter("arm_group", "ur_onrobot_manipulator");
-    ur_onrobot_gripper = declare_parameter("hand_group", "ur_onrobot_gripper");
-    gripper_tcp = declare_parameter("gripper_tcp", "gripper_tcp");
+    arm_group_name = declare_parameter("arm_group", "ur_onrobot_manipulator");
+    hand_group_name = declare_parameter("hand_group", "ur_onrobot_gripper");
+    hand_frame = declare_parameter("gripper_tcp", "gripper_tcp");
     ee_link_for_move_group_ = declare_parameter("ee_link", "gripper_tcp");
     object_id_ = declare_parameter("object_id", "object");
     box_x_ = declare_parameter("object_box_x", 0.075);
@@ -63,12 +63,10 @@ class MtcPickPlaceServer : public rclcpp::Node {
     box_z_ = declare_parameter("object_box_z", 0.015);
     open_state_ = declare_parameter("gripper_open_state", "open");
     closed_state_ = declare_parameter("gripper_closed_state", "grip_block_length");
-    arm_home_state_ = declare_parameter("arm_home_state", "ready_position");
     plan_max_attempts_ = static_cast<uint32_t>(declare_parameter("plan_max_attempts", 3));
     status_topic_ = declare_parameter("status_topic", "mtc_status");
     const std::string goal_topic = declare_parameter("goal_topic", "goal_pose");
-    add_demo_table_ = declare_parameter("add_demo_table", false);
-    (void)declare_parameter("action_timeout_sec", 600);
+    (void)declare_parameter("action_timeout_sec", 60);
     vel_scale_ = declare_parameter("max_velocity_scaling_factor", 0.1);
     acc_scale_ = declare_parameter("max_acceleration_scaling_factor", 0.1);
 
@@ -165,7 +163,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
 
   bool runMoveGroupToPose(const geometry_msgs::msg::PoseStamped& target) {
     try {
-      moveit::planning_interface::MoveGroupInterface mgi(rclcpp::Node::shared_from_this(), ur_onrobot_manipulator);
+      moveit::planning_interface::MoveGroupInterface mgi(rclcpp::Node::shared_from_this(), arm_group_name);
       mgi.setEndEffectorLink(ee_link_for_move_group_);
       mgi.setPoseReferenceFrame(target.header.frame_id);
       mgi.setPoseTarget(target.pose, ee_link_for_move_group_);
@@ -185,9 +183,9 @@ class MtcPickPlaceServer : public rclcpp::Node {
     task.stages()->setName("jenga_pick_place");
     rclcpp::Node::SharedPtr const node_ptr = rclcpp::Node::shared_from_this();
     task.loadRobotModel(node_ptr);
-    task.setProperty("group", ur_onrobot_manipulator);
-    task.setProperty("eef", ur_onrobot_gripper);
-    task.setProperty("ik_frame", gripper_tcp);
+    task.setProperty("group", arm_group_name);
+    task.setProperty("eef", hand_group_name);
+    task.setProperty("ik_frame", hand_frame);
 
     mtc::Stage* current_state_ptr = nullptr;
     auto stage_state_current = std::make_unique<mtc::stages::CurrentState>("current");
@@ -197,7 +195,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
     auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(node_ptr);
     sampling_planner->setPlannerId("RRTstarkConfigDefault");
     sampling_planner->setProperty("goal_joint_tolerance", 1e-4);
-    sampling_planner->setProperty("planning_time", 2.0);  // seconds
+    sampling_planner->setProperty("planning_time", 1.0);  // seconds
     sampling_planner->setProperty("enforce_joint_model_state_space", true);
     sampling_planner->setMaxVelocityScalingFactor(vel_scale_);
     sampling_planner->setMaxAccelerationScalingFactor(acc_scale_);
@@ -208,17 +206,17 @@ class MtcPickPlaceServer : public rclcpp::Node {
     auto cartesian_planner = std::make_shared<mtc::solvers::CartesianPath>();
     cartesian_planner->setMaxVelocityScalingFactor(vel_scale_);
     cartesian_planner->setMaxAccelerationScalingFactor(acc_scale_);
-    cartesian_planner->setStepSize(0.005);
+    cartesian_planner->setStepSize(0.01);
 
     {
       auto stage_open = std::make_unique<mtc::stages::MoveTo>("open hand", interpolation_planner);
-      stage_open->setGroup(ur_onrobot_gripper);
+      stage_open->setGroup(hand_group_name);
       stage_open->setGoal(open_state_);
       task.add(std::move(stage_open));
     }
     {
       auto stage_mtp = std::make_unique<mtc::stages::Connect>(
-          "move to pick", mtc::stages::Connect::GroupPlannerVector{{ur_onrobot_manipulator, sampling_planner}});
+          "move to pick", mtc::stages::Connect::GroupPlannerVector{{arm_group_name, sampling_planner}});
       stage_mtp->setTimeout(2.0);
       stage_mtp->properties().configureInitFrom(mtc::Stage::PARENT);
       task.add(std::move(stage_mtp));
@@ -233,11 +231,11 @@ class MtcPickPlaceServer : public rclcpp::Node {
       {
         auto stage = std::make_unique<mtc::stages::MoveRelative>("approach object", cartesian_planner);
         stage->properties().set("marker_ns", "approach_object");
-        stage->properties().set("link", gripper_tcp);
+        stage->properties().set("link", hand_frame);
         stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
         stage->setMinMaxDistance(0.025, 0.1);
         geometry_msgs::msg::Vector3Stamped vec;
-        vec.header.frame_id = gripper_tcp;
+        vec.header.frame_id = hand_frame;
         vec.vector.z = 1.0;
         stage->setDirection(vec);
         grasp->insert(std::move(stage));
@@ -251,7 +249,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
         stage->setAngleDelta(M_PI / 1.0);
         stage->setMonitoredStage(current_state_ptr);
         // Ry(180°) flips the IK frame z-axis: GenerateGraspPose's upward target-z becomes
-        // gripper_tcp z pointing downward — top-down approach within ~0° of vertical.
+        // hand_frame z pointing downward — top-down approach within ~0° of vertical.
         // Y axis is preserved under Ry(180°), so the finger opening direction sweeps with
         // angle_delta and IK selects the wrist angle that keeps tips parallel to the
         // 2.5×1.5 cm block end faces.
@@ -262,27 +260,27 @@ class MtcPickPlaceServer : public rclcpp::Node {
                   * Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d::UnitZ());
         // gft = gft * Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitY());
         auto w = std::make_unique<mtc::stages::ComputeIK>("grasp pose IK", std::move(stage));
-        w->setMaxIKSolutions(8);
+        w->setMaxIKSolutions(4);
         w->setMinSolutionDistance(0.5);
-        w->setIKFrame(gft, gripper_tcp);
+        w->setIKFrame(gft, hand_frame);
         w->properties().configureInitFrom(mtc::Stage::PARENT, {"eef", "group"});
         w->properties().configureInitFrom(mtc::Stage::INTERFACE, {"target_pose"});
         grasp->insert(std::move(w));
       }
       {
         auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("allow collision (hand,object)");
-        stage->allowCollisions(block_id, task.getRobotModel()->getJointModelGroup(ur_onrobot_gripper)->getLinkModelNamesWithCollisionGeometry(), true);
+        stage->allowCollisions(block_id, task.getRobotModel()->getJointModelGroup(hand_group_name)->getLinkModelNamesWithCollisionGeometry(), true);
         grasp->insert(std::move(stage));
       }
       {
         auto stage = std::make_unique<mtc::stages::MoveTo>("close hand", interpolation_planner);
-        stage->setGroup(ur_onrobot_gripper);
+        stage->setGroup(hand_group_name);
         stage->setGoal(closed_state_);
         grasp->insert(std::move(stage));
       }
       {
         auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("attach object");
-        stage->attachObject(block_id, gripper_tcp);
+        stage->attachObject(block_id, hand_frame);
         attach_object_stage = stage.get();
         grasp->insert(std::move(stage));
       }
@@ -290,7 +288,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
         auto stage = std::make_unique<mtc::stages::MoveRelative>("lift object", cartesian_planner);
         stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
         stage->setMinMaxDistance(0.02, 0.1);
-        stage->setIKFrame(gripper_tcp);
+        stage->setIKFrame(hand_frame);
         stage->properties().set("marker_ns", "lift_object");
         geometry_msgs::msg::Vector3Stamped vec;
         vec.header.frame_id = "world";
@@ -302,7 +300,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
     }
     {
       auto c = std::make_unique<mtc::stages::Connect>(
-          "move to place", mtc::stages::Connect::GroupPlannerVector{{ur_onrobot_manipulator, sampling_planner}});
+          "move to place", mtc::stages::Connect::GroupPlannerVector{{arm_group_name, sampling_planner}});
       c->setTimeout(2.0);
       c->properties().configureInitFrom(mtc::Stage::PARENT);
       task.add(std::move(c));
@@ -317,7 +315,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
       {
         auto stage = std::make_unique<mtc::stages::MoveRelative>("lower object", cartesian_planner);
         stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
-        stage->setIKFrame(gripper_tcp);
+        stage->setIKFrame(hand_frame);
         stage->setMinMaxDistance(0.03, 0.10);
         stage->properties().set("marker_ns", "lower_object");
         geometry_msgs::msg::Vector3Stamped vec;
@@ -338,7 +336,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
         stage->setPose(target);
         stage->setMonitoredStage(attach_object_stage);
         auto w = std::make_unique<mtc::stages::ComputeIK>("place pose IK", std::move(stage));
-        w->setMaxIKSolutions(8);
+        w->setMaxIKSolutions(4);
         w->setMinSolutionDistance(0.5);
         w->setIKFrame(block_id);
         w->properties().configureInitFrom(mtc::Stage::PARENT, {"eef", "group"});
@@ -347,25 +345,25 @@ class MtcPickPlaceServer : public rclcpp::Node {
       }
       {
         auto stage = std::make_unique<mtc::stages::MoveTo>("open hand (place)", interpolation_planner);
-        stage->setGroup(ur_onrobot_gripper);
+        stage->setGroup(hand_group_name);
         stage->setGoal(open_state_);
         place->insert(std::move(stage));
       }
       {
         auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("forbid collision (hand,object)");
-        stage->allowCollisions(block_id, task.getRobotModel()->getJointModelGroup(ur_onrobot_gripper)->getLinkModelNamesWithCollisionGeometry(), false);
+        stage->allowCollisions(block_id, task.getRobotModel()->getJointModelGroup(hand_group_name)->getLinkModelNamesWithCollisionGeometry(), false);
         place->insert(std::move(stage));
       }
       {
         auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("detach object");
-        stage->detachObject(block_id, gripper_tcp);
+        stage->detachObject(block_id, hand_frame);
         place->insert(std::move(stage));
       }
       {
         auto stage = std::make_unique<mtc::stages::MoveRelative>("retreat", cartesian_planner);
         stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
         stage->setMinMaxDistance(0.02, 0.1);
-        stage->setIKFrame(gripper_tcp);
+        stage->setIKFrame(hand_frame);
         stage->properties().set("marker_ns", "retreat");
         geometry_msgs::msg::Vector3Stamped vec;
         vec.header.frame_id = "world";
@@ -374,13 +372,6 @@ class MtcPickPlaceServer : public rclcpp::Node {
         place->insert(std::move(stage));
       }
       task.add(std::move(place));
-    }
-    {
-      auto stage = std::make_unique<mtc::stages::MoveTo>("return home", sampling_planner);
-      stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
-      stage->setGoal(arm_home_state_);
-      stage->setTimeout(2.0);
-      task.add(std::move(stage));
     }
     return task;
   }
@@ -446,7 +437,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
             if (!traj_const || traj_const->getWayPointCount() < 2) return;
             // Only re-time arm trajectories. Gripper traj is single-DOF
             // JointInterpolation and was executing fine.
-            if (traj_const->getGroupName() != ur_onrobot_manipulator) return;
+            if (traj_const->getGroupName() != arm_group_name) return;
             auto traj = std::const_pointer_cast<robot_trajectory::RobotTrajectory>(traj_const);
             if (!totg.computeTimeStamps(*traj, vel_scale, acc_scale)) {
               RCLCPP_WARN(get_logger(),
@@ -484,7 +475,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
       fb->current_stage = s;
       fb->progress_pct = p;
       goal_handle->publish_feedback(fb);
-      rate.sleep();
+      // rate.sleep();
     };
     send_fb("pick_place_start", 0.0F);
     const std::string block_id = blockIdFromIndex(goal->block_index);
@@ -552,10 +543,9 @@ class MtcPickPlaceServer : public rclcpp::Node {
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_status_;
 
   std::string mode_;
-  std::string ur_onrobot_manipulator, ur_onrobot_gripper, gripper_tcp, ee_link_for_move_group_;
-  std::string object_id_, open_state_, closed_state_, arm_home_state_;
+  std::string arm_group_name, hand_group_name, hand_frame, ee_link_for_move_group_;
+  std::string object_id_, open_state_, closed_state_;
   std::string status_topic_;
-  bool add_demo_table_{false};
   double box_x_, box_y_, box_z_;
   double vel_scale_{0.1};
   double acc_scale_{0.1};

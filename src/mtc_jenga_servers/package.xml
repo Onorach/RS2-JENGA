@@ -1,9 +1,9 @@
 <?xml version="1.0"?>
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
-  <name>mtc_pick_place</name>
+  <name>mtc_jenga_servers</name>
   <version>0.1.0</version>
-  <description>MoveIt Task Constructor pick-and-place server (C++) with JengaPickPlace action and /goal_pose compatibility.</description>
+  <description>MoveIt Task Constructor action servers (C++) for Jenga: pick/place, extract side block, extract middle block, and probe block. Hosts the JengaPickPlace, JengaExtractSideBlock, JengaExtractMiddleBlock, and JengaProbeBlock action servers and a shared MTC helper header.</description>
   <maintainer email="user@example.com">RS2-JENGA</maintainer>
   <license>BSD-3-Clause</license>
 

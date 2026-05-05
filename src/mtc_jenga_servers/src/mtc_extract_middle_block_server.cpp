@@ -21,7 +21,7 @@
 
 #include <Eigen/Geometry>
 
-#include "mtc_pick_place/mtc_server_common.hpp"
+#include "mtc_jenga_servers/mtc_server_common.hpp"
 
 namespace mtc = moveit::task_constructor;
 using JengaExtractMiddleBlock = jenga_interfaces::action::JengaExtractMiddleBlock;
@@ -60,12 +60,12 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
   explicit MtcExtractMiddleBlockServer(const rclcpp::NodeOptions& options = rclcpp::NodeOptions())
   : rclcpp::Node("mtc_extract_middle_block_server", options) {
     action_name_ = declare_parameter("action_name", "jenga_extract_middle_block");
-    ur_onrobot_manipulator_ = declare_parameter("arm_group", "ur_onrobot_manipulator");
-    ur_onrobot_gripper_ = declare_parameter("hand_group", "ur_onrobot_gripper");
-    gripper_tcp_ = declare_parameter("gripper_tcp", "gripper_tcp");
+    arm_group_name = declare_parameter("arm_group", "ur_onrobot_manipulator");
+    hand_group_name = declare_parameter("hand_group", "ur_onrobot_gripper");
+    hand_frame = declare_parameter("gripper_tcp", "gripper_tcp");
     open_state_ = declare_parameter("gripper_open_state", "open");
-    closed_state_ = declare_parameter("gripper_closed_state", "grip_block_length");
-    arm_home_state_ = declare_parameter("arm_home_state", "test_configuration");
+    closed_state_ = declare_parameter("gripper_closed_state", "grip_block_width");
+    arm_home_state_ = declare_parameter("arm_home_state", "ready_position");
 
     box_x_ = declare_parameter("block_box_x", 0.075);
     box_y_ = declare_parameter("block_box_y", 0.025);
@@ -136,9 +136,9 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
     auto node_ptr = rclcpp::Node::shared_from_this();
     task.loadRobotModel(node_ptr);
 
-    task.setProperty("group", ur_onrobot_manipulator_);
-    task.setProperty("eef", ur_onrobot_gripper_);
-    task.setProperty("ik_frame", gripper_tcp_);
+    task.setProperty("group", arm_group_name);
+    task.setProperty("eef", hand_group_name);
+    task.setProperty("ik_frame", hand_frame);
 
     mtc::Stage* current_state_ptr = nullptr;
     auto stage_state_current = std::make_unique<mtc::stages::CurrentState>("current");
@@ -163,13 +163,13 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
 
     {
       auto stage_open = std::make_unique<mtc::stages::MoveTo>("open hand", interpolation_planner);
-      stage_open->setGroup(ur_onrobot_gripper_);
+      stage_open->setGroup(hand_group_name);
       stage_open->setGoal(open_state_);
       task.add(std::move(stage_open));
     }
     {
       auto c = std::make_unique<mtc::stages::Connect>(
-          "move to pre-grasp", mtc::stages::Connect::GroupPlannerVector{{ur_onrobot_manipulator_, sampling_planner}});
+          "move to pre-grasp", mtc::stages::Connect::GroupPlannerVector{{arm_group_name, sampling_planner}});
       c->setTimeout(2.0);
       c->properties().configureInitFrom(mtc::Stage::PARENT);
       task.add(std::move(c));
@@ -193,7 +193,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
         auto w = std::make_unique<mtc::stages::ComputeIK>("grasp IK", std::move(stage));
         w->setMaxIKSolutions(8);
         w->setMinSolutionDistance(0.5);
-        w->setIKFrame(rpyToIso(grasp_r_, grasp_p_, grasp_y_), gripper_tcp_);
+        w->setIKFrame(rpyToIso(grasp_r_, grasp_p_, grasp_y_), hand_frame);
         w->properties().configureInitFrom(mtc::Stage::PARENT, {"eef", "group"});
         w->properties().configureInitFrom(mtc::Stage::INTERFACE, {"target_pose"});
         grasp->insert(std::move(w));
@@ -202,7 +202,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
         auto stage = std::make_unique<mtc::stages::MoveRelative>("approach (horizontal)", cartesian_planner);
         stage->properties().set("marker_ns", "approach");
         stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
-        stage->setIKFrame(gripper_tcp_);
+        stage->setIKFrame(hand_frame);
         stage->setMinMaxDistance(approach_min_, approach_max_);
         stage->setDirection(axisToDir(approach_axis_, block_id));
         grasp->insert(std::move(stage));
@@ -210,20 +210,20 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
       {
         auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("allow collision (hand,block)");
         stage->allowCollisions(block_id,
-                               task.getRobotModel()->getJointModelGroup(ur_onrobot_gripper_)
+                               task.getRobotModel()->getJointModelGroup(hand_group_name)
                                    ->getLinkModelNamesWithCollisionGeometry(),
                                true);
         grasp->insert(std::move(stage));
       }
       {
         auto stage = std::make_unique<mtc::stages::MoveTo>("close hand", interpolation_planner);
-        stage->setGroup(ur_onrobot_gripper_);
+        stage->setGroup(hand_group_name);
         stage->setGoal(closed_state_);
         grasp->insert(std::move(stage));
       }
       {
         auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("attach block");
-        stage->attachObject(block_id, gripper_tcp_);
+        stage->attachObject(block_id, hand_frame);
         attach_object_stage = stage.get();
         grasp->insert(std::move(stage));
       }
@@ -231,7 +231,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
         auto stage = std::make_unique<mtc::stages::MoveRelative>("extract (pull out)", cartesian_planner);
         stage->properties().set("marker_ns", "extract");
         stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
-        stage->setIKFrame(gripper_tcp_);
+        stage->setIKFrame(hand_frame);
         stage->setMinMaxDistance(extract_min_, extract_max_);
         stage->setDirection(axisToDir(extract_axis_, block_id));
         grasp->insert(std::move(stage));
@@ -240,7 +240,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
         auto stage1 = std::make_unique<mtc::stages::MoveRelative>("wiggle +", cartesian_planner);
         stage1->properties().set("marker_ns", "wiggle_p");
         stage1->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
-        stage1->setIKFrame(gripper_tcp_);
+        stage1->setIKFrame(hand_frame);
         stage1->setMinMaxDistance(wiggle_distance_, wiggle_distance_);
         stage1->setDirection(axisToDir(extract_axis_, block_id));
         grasp->insert(std::move(stage1));
@@ -252,7 +252,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
         auto stage2 = std::make_unique<mtc::stages::MoveRelative>("wiggle -", cartesian_planner);
         stage2->properties().set("marker_ns", "wiggle_n");
         stage2->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
-        stage2->setIKFrame(gripper_tcp_);
+        stage2->setIKFrame(hand_frame);
         stage2->setMinMaxDistance(wiggle_distance_, wiggle_distance_);
         stage2->setDirection(axisToDir(inv, block_id));
         grasp->insert(std::move(stage2));
@@ -261,7 +261,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
         auto stage = std::make_unique<mtc::stages::MoveRelative>("lift after extract", cartesian_planner);
         stage->properties().set("marker_ns", "lift_after_extract");
         stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
-        stage->setIKFrame(gripper_tcp_);
+        stage->setIKFrame(hand_frame);
         stage->setMinMaxDistance(lift_after_extract_, lift_after_extract_);
         geometry_msgs::msg::Vector3Stamped vec;
         vec.header.frame_id = "world";
@@ -274,7 +274,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
 
     {
       auto c = std::make_unique<mtc::stages::Connect>(
-          "move to place", mtc::stages::Connect::GroupPlannerVector{{ur_onrobot_manipulator_, sampling_planner}});
+          "move to place", mtc::stages::Connect::GroupPlannerVector{{arm_group_name, sampling_planner}});
       c->setTimeout(3.0);
       c->properties().configureInitFrom(mtc::Stage::PARENT);
       task.add(std::move(c));
@@ -301,21 +301,21 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
       }
       {
         auto stage = std::make_unique<mtc::stages::MoveTo>("open hand (place)", interpolation_planner);
-        stage->setGroup(ur_onrobot_gripper_);
+        stage->setGroup(hand_group_name);
         stage->setGoal(open_state_);
         place->insert(std::move(stage));
       }
       {
         auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("forbid collision (hand,block)");
         stage->allowCollisions(block_id,
-                               task.getRobotModel()->getJointModelGroup(ur_onrobot_gripper_)
+                               task.getRobotModel()->getJointModelGroup(hand_group_name)
                                    ->getLinkModelNamesWithCollisionGeometry(),
                                false);
         place->insert(std::move(stage));
       }
       {
         auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("detach block");
-        stage->detachObject(block_id, gripper_tcp_);
+        stage->detachObject(block_id, hand_frame);
         place->insert(std::move(stage));
       }
       task.add(std::move(place));
@@ -358,7 +358,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
     }
 
     mtc_jenga::retimeArmSubTrajectoriesWithTotg(*task.solutions().front(),
-                                                ur_onrobot_manipulator_, vel_scale_, acc_scale_, get_logger());
+                                                arm_group_name, vel_scale_, acc_scale_, get_logger());
 
     task.introspection().publishSolution(*task.solutions().front());
     auto res = task.execute(*task.solutions().front());
@@ -421,9 +421,9 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_status_;
 
   std::string action_name_;
-  std::string ur_onrobot_manipulator_;
-  std::string ur_onrobot_gripper_;
-  std::string gripper_tcp_;
+  std::string arm_group_name;
+  std::string hand_group_name;
+  std::string hand_frame;
   std::string open_state_;
   std::string closed_state_;
   std::string arm_home_state_;

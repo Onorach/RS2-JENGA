@@ -21,7 +21,7 @@ from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion
 from rclpy.action import ActionClient
 from rclpy.node import Node
 
-from jenga_interfaces.action import JengaPickPlace
+from jenga_interfaces.action import JengaArmReady, JengaPickPlace
 
 
 def _q_normalize(x: float, y: float, z: float, w: float) -> tuple[float, float, float, float]:
@@ -219,17 +219,51 @@ def _fb_log(node: Node):
 
     return _inner
 
+def _run_arm_ready_action(
+    node: Node,
+    client: ActionClient,
+    *,
+    timeout_sec: float,
+    label: str,
+) -> int:
+    """Send JengaArmReady with empty target_state (server default). Returns 0 on success."""
+    goal = JengaArmReady.Goal()
+    goal.target_state = ""
+    node.get_logger().info(f"{label}: move to ready/standby (jenga_arm_ready)")
+    send_f = client.send_goal_async(goal, feedback_callback=_fb_log(node))
+    rclpy.spin_until_future_complete(node, send_f, timeout_sec=30.0)
+    gh = send_f.result()
+    if not gh or not gh.accepted:
+        node.get_logger().error(f"{label}: arm ready goal rejected")
+        return 6
+    r_f = gh.get_result_async()
+    rclpy.spin_until_future_complete(node, r_f, timeout_sec=timeout_sec)
+    wr = r_f.result()
+    if wr is None:
+        node.get_logger().error(f"{label}: arm ready no result")
+        return 7
+    res = wr.result
+    if not res.success:
+        node.get_logger().error(
+            f"{label}: arm ready failed: {res.message} (code {res.error_code})"
+        )
+        return 8
+    return 0
 
 def main(args: list[str] | None = None) -> int:
     rclpy.init(args=args)
     node = Node("jenga_tower_mtc_sequencer")
     layout_path_param = str(node.declare_parameter("layout_path", "").value)
     action_name = str(node.declare_parameter("action_name", "jenga_pick_place").value)
+    ready_action_name = str(node.declare_parameter("ready_action_name", "jenga_arm_ready").value)
     goal_frame = str(node.declare_parameter("goal_frame", "world").value)
     pre_wait_sec = float(node.declare_parameter("pre_wait_sec", 1.0).value)
     step_pause_sec = float(node.declare_parameter("step_pause_sec", 0.5).value)
     per_goal_timeout_sec = float(
         node.declare_parameter("per_goal_timeout_sec", 600.0).value
+    )
+    per_ready_timeout_sec = float(
+        node.declare_parameter("per_ready_timeout_sec", per_goal_timeout_sec).value
     )
     if layout_path_param:
         path = layout_path_param
@@ -272,6 +306,21 @@ def main(args: list[str] | None = None) -> int:
         node.get_logger().error(f"Action server not available: {action_name}")
         rclpy.shutdown()
         return 2
+
+    ready_client = ActionClient(node, JengaArmReady, ready_action_name)
+    if not ready_client.wait_for_server(timeout_sec=120.0):
+        node.get_logger().error(f"Action server not available: {ready_action_name}")
+        rclpy.shutdown()
+        return 2
+    rc = _run_arm_ready_action(
+        node,
+        ready_client,
+        timeout_sec=per_ready_timeout_sec,
+        label="Tower start",
+    )
+    if rc != 0:
+        rclpy.shutdown()
+        return rc
 
     for idx, (pick_pose, place_pose) in enumerate(pairs):
         stamp = node.get_clock().now().to_msg()
@@ -318,6 +367,15 @@ def main(args: list[str] | None = None) -> int:
             time.sleep(step_pause_sec)
 
     node.get_logger().info("All MTC pick/place steps completed.")
+    rc = _run_arm_ready_action(
+        node,
+        ready_client,
+        timeout_sec=per_ready_timeout_sec,
+        label="Tower end",
+    )
+    if rc != 0:
+        rclpy.shutdown()
+        return rc
     rclpy.shutdown()
     return 0
 

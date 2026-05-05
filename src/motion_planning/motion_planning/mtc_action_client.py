@@ -1,7 +1,7 @@
 """
-Thin JengaPickPlace action client. Waits for the mtc_pick_place action server, sends one
-pick/place goal (default poses), and prints the result. Use for smoke tests; prefer
-:mod:`test_mtc_pick_place` for scripted tests.
+Thin JengaPickPlace action client. Waits for the mtc_pick_place_server (in
+mtc_jenga_servers), sends one pick/place goal (default poses), and prints the result.
+Use for smoke tests; prefer :mod:`motion_planning.tests.test_mtc_pick_place` for scripted tests.
 """
 
 from __future__ import annotations

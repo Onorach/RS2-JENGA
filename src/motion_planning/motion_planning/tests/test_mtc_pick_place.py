@@ -2,7 +2,7 @@
 """
 Send a JengaPickPlace action to mtc_pick_place_server (one pick + one place, full MTC pipeline).
 
-Prerequisites: MoveIt and ``ros2 run mtc_pick_place mtc_pick_place_server`` (or the launch file).
+Prerequisites: MoveIt and ``ros2 run mtc_jenga_servers mtc_pick_place_server`` (or the launch file).
 Optionally: joint home before/after like :mod:`test_planner_pose`.
 """
 

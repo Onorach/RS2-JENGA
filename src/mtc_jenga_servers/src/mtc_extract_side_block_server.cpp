@@ -22,7 +22,7 @@
 
 #include <Eigen/Geometry>
 
-#include "mtc_pick_place/mtc_server_common.hpp"
+#include "mtc_jenga_servers/mtc_server_common.hpp"
 
 namespace mtc = moveit::task_constructor;
 using JengaExtractSideBlock = jenga_interfaces::action::JengaExtractSideBlock;

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(mtc_pick_place)
+project(mtc_jenga_servers)
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
@@ -21,6 +21,19 @@ find_package(shape_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2_eigen REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
+
+add_executable(mtc_arm_ready_server src/mtc_arm_ready_server.cpp)
+target_include_directories(mtc_arm_ready_server PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
+ament_target_dependencies(mtc_arm_ready_server
+  jenga_interfaces
+  moveit_msgs
+  moveit_ros_planning_interface
+  moveit_task_constructor_core
+  moveit_task_constructor_msgs
+  rclcpp
+  rclcpp_action
+  std_msgs
+)
 
 add_executable(mtc_pick_place_server src/mtc_pick_place_server.cpp)
 target_include_directories(mtc_pick_place_server PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>)
@@ -90,11 +103,12 @@ ament_target_dependencies(mtc_probe_block_server
   tf2_geometry_msgs
 )
 
-install(TARGETS mtc_pick_place_server DESTINATION lib/${PROJECT_NAME})
 install(TARGETS
+  mtc_arm_ready_server
+  mtc_pick_place_server
   mtc_extract_side_block_server
   mtc_extract_middle_block_server
-  mtc_probe_block_server
+  mtc_probe_block_server  
   DESTINATION lib/${PROJECT_NAME}
 )
 install(DIRECTORY launch DESTINATION share/${PROJECT_NAME})

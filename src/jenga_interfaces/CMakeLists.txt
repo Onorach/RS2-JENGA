@@ -11,6 +11,7 @@ find_package(rosidl_default_generators REQUIRED)
 
 rosidl_generate_interfaces(${PROJECT_NAME}
   "action/JengaPickPlace.action"
+  "action/JengaArmReady.action"
   "action/JengaExtractSideBlock.action"
   "action/JengaExtractMiddleBlock.action"
   "action/JengaProbeBlock.action"

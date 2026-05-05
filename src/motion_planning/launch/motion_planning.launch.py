@@ -7,7 +7,19 @@ planner:=rmrc (default) runs the DIY RMRC planning node (no MoveIt needed).
 planner:=moveit runs the MoveIt OMPL pose_goal_node.
 planner:=moveit_cartesian runs the MoveIt Cartesian node (straight-line first,
 OMPL fallback on collision).
-planner:=mtc runs ``mtc_pick_place_server`` (MoveIt Task Constructor pick/place).
+planner:=mtc launches the full MTC server stack from ``mtc_jenga_servers``:
+
+- ``mtc_pick_place_server`` (action ``/jenga_pick_place``; honours ``mtc_server_mode``
+  for ``paired_pose`` vs ``single_pose`` /goal_pose handling).
+- ``mtc_extract_side_block_server`` (action ``/jenga_extract_side_block``).
+- ``mtc_extract_middle_block_server`` (action ``/jenga_extract_middle_block``).
+- ``mtc_probe_block_server`` (action ``/jenga_probe_block``).
+
+All four MTC servers share the OMPL pipeline, kinematics, and
+``mtc_velocity_scaling.yaml`` parameter files. Each server has its own action
+namespace and ``busy_`` flag, so ``jenga_tower_mtc_sequencer`` (which only talks to
+``/jenga_pick_place``) is unaffected by the additional servers being live. The other
+three servers stay idle until a client sends them a goal.
 
 Both MoveIt planners require move_group to be running (e.g. via ur_moveit_config).
 RMRC needs robot_description, built from the same workspace xacro as
@@ -19,15 +31,17 @@ or move_group):
 - **Driver** and **robot_state_publisher** / joint states must already be running.
 - **move_group** must already be running on the **same** ``ROS_DOMAIN_ID``, with
   ``ExecuteTaskSolutionCapability`` loaded so ``/execute_task_solution`` exists.
-- **Planning groups / frames** on ``mtc_pick_place_server`` must match your SRDF
-  (defaults: ``arm_group`` = ur_onrobot_manipulator, ``hand_group`` =
-  ur_onrobot_gripper, ``hand_frame`` = gripper_tcp, gripper states ``open`` /
-  ``grip_block_length``). Override via ROS parameters on the node if your move_group
-  uses different names.
+- **Planning groups / frames** on the MTC servers must match your SRDF (defaults:
+  ``arm_group`` = ur_onrobot_manipulator, ``hand_group`` = ur_onrobot_gripper,
+  ``hand_frame`` = gripper_tcp, gripper states ``open`` / ``grip_block_length``).
+  Override via ROS parameters on the node if your move_group uses different names.
 - **joint_trajectory_action** must match the active arm trajectory action (e.g. scaled
   vs non-scaled controller) for ``estop_node``.
 - **publish_world_to_base_tf**, **base_height**, **base_yaw**: set so ``world`` and
   collision objects (MTC uses ``world`` for the grasp object) match your TF tree.
+- Avoid sending goals to two MTC servers concurrently: each server has its own
+  per-node ``busy_`` flag, so cross-server concurrency would race for
+  ``/execute_task_solution`` (the second goal is rejected by move_group).
 """
 
 from launch import LaunchDescription
@@ -108,7 +122,7 @@ def generate_launch_description():
     )
     planner_arg = DeclareLaunchArgument(
         "planner",
-        default_value="rmrc",
+        default_value="mtc",
         choices=["rmrc", "moveit", "moveit_cartesian", "mtc"],
         description=(
             "Planning backend: 'rmrc' (DIY RMRC), 'moveit' (OMPL via MoveGroup), "
@@ -141,7 +155,7 @@ def generate_launch_description():
         ),
     )
     mtc_velocity_scaling_yaml = PathJoinSubstitution(
-        [FindPackageShare("mtc_pick_place"), "config", "mtc_velocity_scaling.yaml"]
+        [FindPackageShare("mtc_jenga_servers"), "config", "mtc_velocity_scaling.yaml"]
     )
     exec_start_delay_arg = DeclareLaunchArgument(
         "execution_start_delay",
@@ -519,24 +533,74 @@ def generate_launch_description():
         ],
     )
 
+    mtc_planner_condition = IfCondition(
+        PythonExpression(["'", LaunchConfiguration("planner"), "' == 'mtc'"])
+    )
+
+    # Common parameters shared by every MTC server (mtc_jenga_servers): velocity-scaling
+    # YAML + CLI overrides, IK kinematics, and the OMPL pipeline definition (required —
+    # without it MTC's PipelinePlanner alphabetically falls back to CHOMP and breaks all
+    # Connect stages).
+    mtc_common_parameters = [
+        mtc_velocity_scaling_yaml,
+        mtc_velocity_scaling_ros_parameters(),
+        robot_description_kinematics,
+        ompl_pipeline_config,
+    ]
+
     mtc_pick_place_server_node = Node(
-        package="mtc_pick_place",
+        package="mtc_jenga_servers",
         executable="mtc_pick_place_server",
         name="mtc_pick_place_server",
         output="screen",
         respawn=True,
-        condition=IfCondition(
-            PythonExpression(["'", LaunchConfiguration("planner"), "' == 'mtc'"])
-        ),
+        condition=mtc_planner_condition,
         parameters=[
-            mtc_velocity_scaling_yaml,
-            mtc_velocity_scaling_ros_parameters(),
-            robot_description_kinematics,
-            ompl_pipeline_config,
+            *mtc_common_parameters,
             {
                 "mode": LaunchConfiguration("mtc_server_mode"),
             },
         ],
+    )
+
+    mtc_extract_side_block_server_node = Node(
+        package="mtc_jenga_servers",
+        executable="mtc_extract_side_block_server",
+        name="mtc_extract_side_block_server",
+        output="screen",
+        respawn=True,
+        condition=mtc_planner_condition,
+        parameters=mtc_common_parameters,
+    )
+
+    mtc_extract_middle_block_server_node = Node(
+        package="mtc_jenga_servers",
+        executable="mtc_extract_middle_block_server",
+        name="mtc_extract_middle_block_server",
+        output="screen",
+        respawn=True,
+        condition=mtc_planner_condition,
+        parameters=mtc_common_parameters,
+    )
+
+    mtc_probe_block_server_node = Node(
+        package="mtc_jenga_servers",
+        executable="mtc_probe_block_server",
+        name="mtc_probe_block_server",
+        output="screen",
+        respawn=True,
+        condition=mtc_planner_condition,
+        parameters=mtc_common_parameters,
+    )
+
+    mtc_arm_ready_server_node = Node(
+        package="mtc_jenga_servers",
+        executable="mtc_arm_ready_server",
+        name="mtc_arm_ready_server",
+        output="screen",
+        respawn=True,
+        condition=mtc_planner_condition,
+        parameters=mtc_common_parameters,
     )
 
     jenga_blocks_scene_node = Node(
@@ -544,9 +608,7 @@ def generate_launch_description():
         executable="jenga_blocks_scene",
         name="jenga_blocks_scene",
         output="screen",
-        condition=IfCondition(
-            PythonExpression(["'", LaunchConfiguration("planner"), "' == 'mtc'"])
-        ),
+        condition=mtc_planner_condition,
         parameters=[
             {
                 "layout_path": LaunchConfiguration("jenga_blocks_layout_path"),
@@ -652,6 +714,10 @@ def generate_launch_description():
         rmrc_planning_node,
         jenga_blocks_scene_node,
         mtc_pick_place_server_node,
+        mtc_extract_side_block_server_node,
+        mtc_extract_middle_block_server_node,
+        mtc_probe_block_server_node,
+        mtc_arm_ready_server_node,
         exclusion_zones_node,
         estop_node,
     ])

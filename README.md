@@ -150,7 +150,7 @@ ros2 run motion_planning test_rmrc_pose
 
 ## UR3e + OnRobot RG2 (ur_onrobot) and MoveIt Task Constructor (MTC)
 
-Build `jenga_interfaces`, `mtc_pick_place`, `motion_planning`, and the `ur_onrobot_*` packages, source the workspace, and install `moveit_task_constructor` for your distro if not already available.
+Build `jenga_interfaces`, `mtc_jenga_servers`, `motion_planning`, and the `ur_onrobot_*` packages, source the workspace, and install `moveit_task_constructor` for your distro if not already available.
 
 **Option A — three terminals (manual order)**
 

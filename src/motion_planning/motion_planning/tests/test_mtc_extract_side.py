@@ -1,7 +1,7 @@
 """
 Send a JengaExtractSideBlock action to mtc_extract_side_block_server.
 
-Prerequisites: MoveIt and `ros2 run mtc_pick_place mtc_extract_side_block_server`
+Prerequisites: MoveIt and `ros2 run mtc_jenga_servers mtc_extract_side_block_server`
 (or the provided launch file).
 """
 

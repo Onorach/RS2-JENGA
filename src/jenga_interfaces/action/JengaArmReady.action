@@ -1,0 +1,11 @@
+# Goal: optional SRDF named state; empty uses server's arm_home_state parameter string target_state
+string target_state
+---
+# Result: outcome
+bool success
+string message
+uint8 error_code
+---
+# Feedback: progress
+string current_stage
+float32 progress_pct
