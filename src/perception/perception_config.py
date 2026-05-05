@@ -10,7 +10,7 @@ Centralize values used by active runtime modules.
 # ---------------------------------------------------------------------------
 
 # Search Area: (cx_frac, cy_frac, w_frac, h_frac).
-SEARCH_AREA = (0.51, 0.55, 0.35, 0.51) # Bigger w/h = wider search; cx/cy shifts ROI.
+SEARCH_AREA = (0.51, 0.51, 0.38, 0.53) # Bigger w/h = wider search; cx/cy shifts ROI.
 
 # HSV ranges per colour (changes classification sensitivity).
 HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
@@ -64,18 +64,18 @@ DEFAULT_WINDOW_SIZE = (960, 540)  # UI sizing only; no processing effect.
 # ---------------------------------------------------------------------------
 
 # Tower finder, depth feed, depth/offset metrics and related prints.
-TOWER_ANALYSIS_ENABLED = False
+TOWER_ANALYSIS_ENABLED = True
 
 # ---------------- Saturation Mask ----------------
 
 # Min saturation for tower-mask foreground.
-TOWER_MASK_SAT_MIN = 100  # Lower = includes duller colours.
+TOWER_MASK_SAT_MIN = 120  # Lower = includes duller colours.
 
 # Min brightness/value for tower-mask foreground.
 TOWER_MASK_VAL_MIN = 60  # Lower = includes darker/shadow pixels.
 
 # Morphological close kernel size (pixels) on tower mask.
-TOWER_MASK_MORPH_CLOSE_PX = 15  # Higher = fills larger mask gaps.
+TOWER_MASK_MORPH_CLOSE_PX = 10  # Higher = fills larger mask gaps.
 
 # Morphological open kernel size (pixels) on tower mask.
 TOWER_MASK_MORPH_OPEN_PX = 10  # Higher = removes larger noise blobs.
@@ -118,7 +118,7 @@ POINTS_OVERLAY_PAUSE_FRAMES = 30
 # With defaults below:
 #   valid:   0-15%, 42.5-57.5%, 85-100%
 #   invalid: 15-42.5%, 57.5-85%
-POINT_VALID_SIDE_BAND_PCT = 10.0
+POINT_VALID_SIDE_BAND_PCT = 15.0
 POINT_VALID_CENTER_BAND_PCT = 15.0
 
 # Max pixel distance when assigning detected points to template grid corners.

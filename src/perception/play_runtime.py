@@ -9,6 +9,9 @@ from collections import deque
 import cv2
 import numpy as np
 
+import json
+from std_msgs.msg import String
+
 from colour_identification import classify_frame, compute_roi, ColourIdentificationNode
 from box_percentages import BoxPercentagesNode, compute_percentages, build_debug_image, LAYER_CELLS
 from layer_analysis import analyse_tower, build_tower_image
@@ -210,7 +213,7 @@ def _build_cells_from_locked_points(
     return dynamic_layers
 
 
-def _run_loop(get_frame_pair, on_points_locked=None) -> None:
+def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> None:
     cv2.namedWindow("Live + grid", cv2.WINDOW_NORMAL)
     cv2.namedWindow("Colour mask", cv2.WINDOW_NORMAL)
     cv2.namedWindow("Box percentages", cv2.WINDOW_NORMAL)
@@ -384,6 +387,13 @@ def _run_loop(get_frame_pair, on_points_locked=None) -> None:
                 _last_pct_results = compute_percentages(bgr, cells=active_cells)
                 row_cells = [(layer[0], layer[1]) for layer in locked_layer_cells]
                 tower = analyse_tower(bgr, row_cells)
+                
+                
+                if tower and publish_top_layer:
+                    # We send the top-most layer (0) to the GUI
+                    publish_top_layer(tower[0])
+                
+                
                 _last_tower_img = build_tower_image(tower)
                 for i, layer_data in enumerate(tower):
                     print(
@@ -440,6 +450,7 @@ class _ImageBridge(Node):
         self._active_depth_topic: str | None = None
         self._depth_subscriptions = []
         self.create_subscription(Image, color_topic, self._cb, 10)
+        self.top_layer_pub = self.create_publisher(String, '/top_layer_state', 10)
         depth_topics = [depth_topic] if isinstance(depth_topic, str) else list(depth_topic)
         for topic in depth_topics:
             sub = self.create_subscription(
@@ -452,6 +463,11 @@ class _ImageBridge(Node):
         self.get_logger().info(
             "Depth topic candidates: " + ", ".join(depth_topics)
         )
+    
+    def publish_top_layer(self, layer_data):
+        msg = String()
+        msg.data = json.dumps(layer_data)
+        self.top_layer_pub.publish(msg)
 
     def _cb(self, msg: Image):
         enc = (msg.encoding or "").lower()
@@ -569,6 +585,10 @@ def run_subscribe(
         executor.add_node(box_node)
 
     try:
-        _run_loop(bridge.get_frame_pair, on_points_locked=_start_box_percentages_node)
+        _run_loop(
+                    bridge.get_frame_pair, 
+                    on_points_locked=_start_box_percentages_node,
+                    publish_top_layer=bridge.publish_top_layer
+                )
     finally:
         _shutdown_executor(executor, nodes)
