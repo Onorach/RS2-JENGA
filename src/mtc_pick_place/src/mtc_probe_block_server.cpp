@@ -250,11 +250,8 @@ class MtcProbeBlockServer : public rclcpp::Node {
     setBusy(true);
     auto res = std::make_shared<JengaProbeBlock::Result>();
     if (estop_.load()) {
-      res->success = false;
-      res->message = "estop";
-      res->error_code = 4;
       res->score = 0.0F;
-      goal_handle->canceled(res);
+      mtc_jenga::finish_action_goal_estop(goal_handle, res);
       setBusy(false);
       return;
     }
@@ -275,10 +272,7 @@ class MtcProbeBlockServer : public rclcpp::Node {
 
     res->score = score;
     if (estop_.load()) {
-      res->success = false;
-      res->message = "estop";
-      res->error_code = 4;
-      goal_handle->canceled(res);
+      mtc_jenga::finish_action_goal_estop(goal_handle, res);
     } else if (ok) {
       res->success = true;
       res->message = "ok";

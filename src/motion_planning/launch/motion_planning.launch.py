@@ -524,6 +524,7 @@ def generate_launch_description():
         executable="mtc_pick_place_server",
         name="mtc_pick_place_server",
         output="screen",
+        respawn=True,
         condition=IfCondition(
             PythonExpression(["'", LaunchConfiguration("planner"), "' == 'mtc'"])
         ),

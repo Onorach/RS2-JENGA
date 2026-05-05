@@ -18,7 +18,7 @@ exclusion_zones:
   - type: box
     id: platform
     frame_id: base_link
-    position: [0.0, 0.297, 0.000]
+    position: [0.008, 0.297, 0.000]
     size: [0.500, 0.320, 0.0125]
 
   # - type: box

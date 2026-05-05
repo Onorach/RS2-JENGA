@@ -42,6 +42,8 @@
 
 #include <Eigen/Geometry>
 
+#include "mtc_pick_place/mtc_server_common.hpp"
+
 namespace mtc = moveit::task_constructor;
 using JengaPickPlace = jenga_interfaces::action::JengaPickPlace;
 using ServerGoalHandle = rclcpp_action::ServerGoalHandle<JengaPickPlace>;
@@ -471,10 +473,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
     setBusy(true);
     auto res = std::make_shared<JengaPickPlace::Result>();
     if (estop_.load()) {
-      res->success = false;
-      res->message = "estop";
-      res->error_code = 4;
-      goal_handle->canceled(res);
+      mtc_jenga::finish_action_goal_estop(goal_handle, res);
       setBusy(false);
       return;
     }
@@ -492,10 +491,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
     const bool ok = runPickPlaceMtc(goal->pick_pose, goal->place_pose, block_id);
     send_fb("pick_place_done", 100.0F);
     if (estop_.load()) {
-      res->success = false;
-      res->message = "estop";
-      res->error_code = 4;
-      goal_handle->canceled(res);
+      mtc_jenga::finish_action_goal_estop(goal_handle, res);
     } else if (ok) {
       res->success = true;
       res->message = "ok";

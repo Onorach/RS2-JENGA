@@ -379,10 +379,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
     setBusy(true);
     auto res = std::make_shared<JengaExtractMiddleBlock::Result>();
     if (estop_.load()) {
-      res->success = false;
-      res->message = "estop";
-      res->error_code = 4;
-      goal_handle->canceled(res);
+      mtc_jenga::finish_action_goal_estop(goal_handle, res);
       setBusy(false);
       return;
     }
@@ -401,10 +398,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
     send_fb("extract_middle_done", 100.0F);
 
     if (estop_.load()) {
-      res->success = false;
-      res->message = "estop";
-      res->error_code = 4;
-      goal_handle->canceled(res);
+      mtc_jenga::finish_action_goal_estop(goal_handle, res);
     } else if (ok) {
       res->success = true;
       res->message = "ok";

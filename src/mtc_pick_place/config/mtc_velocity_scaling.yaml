@@ -5,7 +5,7 @@
 mtc_pick_place_server:
   ros__parameters:
     max_velocity_scaling_factor: 0.4
-    max_acceleration_scaling_factor: 0.4
+    max_acceleration_scaling_factor: 0.3
 
 mtc_probe_block_server:
   ros__parameters:

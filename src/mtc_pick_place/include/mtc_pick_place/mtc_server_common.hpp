@@ -13,9 +13,27 @@
 #include <moveit/trajectory_processing/time_optimal_trajectory_generation.h>
 #include <moveit_msgs/msg/collision_object.hpp>
 #include <rclcpp/logger.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
 #include <shape_msgs/msg/solid_primitive.hpp>
 
 namespace mtc_jenga {
+
+/// Terminal outcome for e-stop (and similar server-side stops). Uses `canceled()` only when the
+/// client requested cancel (`is_canceling()`); otherwise `abort()`, which matches ROS 2 action FSM
+/// rules and avoids RCLError from calling `canceled()` while still in plain EXECUTING.
+template <typename ActionT>
+inline void finish_action_goal_estop(
+    const std::shared_ptr<rclcpp_action::ServerGoalHandle<ActionT>>& goal_handle,
+    const std::shared_ptr<typename ActionT::Result>& res) {
+  res->success = false;
+  res->message = "estop";
+  res->error_code = 4;
+  if (goal_handle->is_canceling()) {
+    goal_handle->canceled(res);
+  } else {
+    goal_handle->abort(res);
+  }
+}
 
 inline std::string blockIdFromIndex(const uint32_t idx) {
   std::ostringstream o;

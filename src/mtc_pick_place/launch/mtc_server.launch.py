@@ -45,6 +45,7 @@ def generate_launch_description() -> LaunchDescription:
                 executable="mtc_pick_place_server",
                 name="mtc_pick_place_server",
                 output="screen",
+                respawn=True,
                 parameters=[
                     mtc_velocity_yaml,
                     {
