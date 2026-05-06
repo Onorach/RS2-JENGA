@@ -18,6 +18,8 @@
 #include <moveit/task_constructor/task.h>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
+#include <tf2/LinearMath/Transform.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 #include <Eigen/Geometry>
 
@@ -31,25 +33,43 @@ namespace {
 
 Eigen::Isometry3d rpyToIso(const double r, const double p, const double y) {
   Eigen::Isometry3d t = Eigen::Isometry3d::Identity();
-  t.linear() = (Eigen::AngleAxisd(y, Eigen::Vector3d::UnitZ()) *
-                Eigen::AngleAxisd(p, Eigen::Vector3d::UnitY()) *
-                Eigen::AngleAxisd(r, Eigen::Vector3d::UnitX()))
-                   .toRotationMatrix();
+  t = t * (Eigen::AngleAxisd(y, Eigen::Vector3d::UnitZ()) *
+            Eigen::AngleAxisd(p, Eigen::Vector3d::UnitY()) *
+            Eigen::AngleAxisd(r, Eigen::Vector3d::UnitX()));
+                // .toRotationMatrix();
   return t;
 }
 
-geometry_msgs::msg::Vector3Stamped axisToDir(const std::string& axis, const std::string& frame_id) {
+std::optional<Eigen::Vector3d> axisToLocalVec(const std::string& axis) {
+  if (axis.empty()) return std::nullopt;
+  const bool neg = axis[0] == '-';
+  const char a = (neg ? (axis.size() > 1 ? axis[1] : '\0') : axis[0]);
+  const double s = neg ? -1.0 : 1.0;
+  if (a == 'x') return Eigen::Vector3d{s, 0.0, 0.0};
+  if (a == 'y') return Eigen::Vector3d{0.0, s, 0.0};
+  if (a == 'z') return Eigen::Vector3d{0.0, 0.0, s};
+  return std::nullopt;
+}
+
+geometry_msgs::msg::Vector3Stamped axisToDirInFrame(const std::string& axis_local,
+                                                    const geometry_msgs::msg::PoseStamped& pose_in_frame,
+                                                    const std::string& fallback_frame_id) {
   geometry_msgs::msg::Vector3Stamped v;
-  v.header.frame_id = frame_id;
+  v.header.frame_id = pose_in_frame.header.frame_id.empty() ? fallback_frame_id : pose_in_frame.header.frame_id;
+
   v.vector.x = 0.0;
   v.vector.y = 0.0;
   v.vector.z = 0.0;
-  const bool neg = !axis.empty() && axis[0] == '-';
-  const char a = (neg ? axis[1] : axis[0]);
-  const double s = neg ? -1.0 : 1.0;
-  if (a == 'x') v.vector.x = s;
-  if (a == 'y') v.vector.y = s;
-  if (a == 'z') v.vector.z = s;
+
+  const auto local = axisToLocalVec(axis_local);
+  if (!local) return v;
+
+  const auto& q = pose_in_frame.pose.orientation;
+  const Eigen::Quaterniond qe(q.w, q.x, q.y, q.z);
+  const Eigen::Vector3d world = qe.normalized() * (*local);
+  v.vector.x = world.x();
+  v.vector.y = world.y();
+  v.vector.z = world.z();
   return v;
 }
 
@@ -78,16 +98,18 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
 
     approach_min_ = declare_parameter("approach_distance_min", 0.005);
     approach_max_ = declare_parameter("approach_distance_max", 0.03);
-    extract_min_ = declare_parameter("extract_distance_min", 0.02);
-    extract_max_ = declare_parameter("extract_distance_max", 0.08);
+    extract_min_ = declare_parameter("extract_distance_min", 0.06);
+    extract_max_ = declare_parameter("extract_distance_max", 0.10);
     lift_after_extract_ = declare_parameter("lift_after_extract_z", 0.0);
 
     extract_axis_ = declare_parameter("extract_axis", "x");
     approach_axis_ = declare_parameter("approach_axis", "-x");
     grasp_r_ = declare_parameter("grasp_frame_roll", 0.0);
-    grasp_p_ = declare_parameter("grasp_frame_pitch", M_PI / 2.0);
+    grasp_p_ = declare_parameter("grasp_frame_pitch", M_PI / 1.0);
     grasp_y_ = declare_parameter("grasp_frame_yaw", 0.0);
     grasp_angle_delta_ = declare_parameter("grasp_angle_delta", M_PI / 1.0);
+    grasp_offset_m_ = declare_parameter("grasp_offset_m", 0.03);
+    grasp_offset_z_ = declare_parameter("grasp_offset_z", 0.01);
 
     wiggle_enable_ = declare_parameter("wiggle_enable", false);
     wiggle_distance_ = declare_parameter("wiggle_distance", 0.003);
@@ -130,7 +152,9 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
     publishStatus(b ? "running" : "idle");
   }
 
-  mtc::Task buildExtractTask(const std::string& block_id, const geometry_msgs::msg::PoseStamped& place_in_world) {
+  mtc::Task buildExtractTask(const std::string& block_id,
+                             const geometry_msgs::msg::PoseStamped& place_in_world,
+                             const geometry_msgs::msg::PoseStamped& block_pose) {
     mtc::Task task;
     task.stages()->setName("jenga_extract_middle_block");
     auto node_ptr = rclcpp::Node::shared_from_this();
@@ -148,7 +172,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
     auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(node_ptr);
     sampling_planner->setPlannerId("RRTstarkConfigDefault");
     sampling_planner->setProperty("goal_joint_tolerance", 1e-4);
-    sampling_planner->setProperty("planning_time", 2.0);
+    sampling_planner->setProperty("planning_time", 1.0);
     sampling_planner->setProperty("enforce_joint_model_state_space", true);
     sampling_planner->setMaxVelocityScalingFactor(vel_scale_);
     sampling_planner->setMaxAccelerationScalingFactor(acc_scale_);
@@ -182,30 +206,56 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
       grasp->properties().configureInitFrom(mtc::Stage::PARENT, {"eef", "group", "ik_frame"});
 
       {
+        auto stage = std::make_unique<mtc::stages::MoveRelative>("approach", cartesian_planner);
+        stage->properties().set("marker_ns", "approach");
+        stage->properties().set("link", hand_frame);
+        stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
+        // stage->setIKFrame(hand_frame);
+        stage->setMinMaxDistance(approach_min_, approach_max_);
+        // stage->setDirection(axisToDirInFrame(approach_axis_, block_pose, "world"));
+        geometry_msgs::msg::Vector3Stamped vec;
+        vec.header.frame_id = hand_frame;
+        vec.vector.z = 1.0;
+        stage->setDirection(vec);
+        grasp->insert(std::move(stage));
+      }
+      {
         auto stage = std::make_unique<mtc::stages::GenerateGraspPose>("generate grasp pose");
         stage->properties().configureInitFrom(mtc::Stage::PARENT);
         stage->properties().set("marker_ns", "grasp_pose");
         stage->setPreGraspPose(open_state_);
-        stage->setObject(block_id);
+        const bool extract_positive = extract_axis_.empty() ? true : (extract_axis_[0] != '-');
+        const std::string subframe = extract_positive ? "end_plus" : "end_minus";
+        stage->setObject(block_id + "/" + subframe);
+
+        // Log the numeric world-frame pose of the selected subframe target.
+        // Convention: grasp_± are at x=±grasp_offset_m_, z=+0.0075 in object-local coordinates, identity rotation.
+        {
+          tf2::Transform T_world_obj;
+          tf2::fromMsg(block_pose.pose, T_world_obj);
+          tf2::Transform T_obj_sub;
+          T_obj_sub.setIdentity();
+          T_obj_sub.setOrigin(tf2::Vector3(extract_positive ? +grasp_offset_m_ : -grasp_offset_m_, 0.0, 0.0));
+          const tf2::Transform T_world_sub = T_world_obj * T_obj_sub;
+          const tf2::Vector3 p = T_world_sub.getOrigin();
+          const std::string frame_id = block_pose.header.frame_id.empty() ? "world" : block_pose.header.frame_id;
+          RCLCPP_INFO(get_logger(),
+                      "target_pose: %s/%s in frame '%s' position (x=%.4f, y=%.4f, z=%.4f)",
+                      block_id.c_str(), subframe.c_str(), frame_id.c_str(),
+                      p.x(), p.y(), p.z());
+        }
         stage->setAngleDelta(grasp_angle_delta_);
         stage->setMonitoredStage(current_state_ptr);
 
         auto w = std::make_unique<mtc::stages::ComputeIK>("grasp IK", std::move(stage));
-        w->setMaxIKSolutions(8);
+        w->setMaxIKSolutions(4);
         w->setMinSolutionDistance(0.5);
-        w->setIKFrame(rpyToIso(grasp_r_, grasp_p_, grasp_y_), hand_frame);
+        Eigen::Isometry3d grasp_ik_frame = rpyToIso(grasp_r_, grasp_p_, grasp_y_);
+        grasp_ik_frame.translation() = Eigen::Vector3d(0.0, 0.0, grasp_offset_z_);
+        w->setIKFrame(grasp_ik_frame, hand_frame);
         w->properties().configureInitFrom(mtc::Stage::PARENT, {"eef", "group"});
         w->properties().configureInitFrom(mtc::Stage::INTERFACE, {"target_pose"});
         grasp->insert(std::move(w));
-      }
-      {
-        auto stage = std::make_unique<mtc::stages::MoveRelative>("approach (horizontal)", cartesian_planner);
-        stage->properties().set("marker_ns", "approach");
-        stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
-        stage->setIKFrame(hand_frame);
-        stage->setMinMaxDistance(approach_min_, approach_max_);
-        stage->setDirection(axisToDir(approach_axis_, block_id));
-        grasp->insert(std::move(stage));
       }
       {
         auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("allow collision (hand,block)");
@@ -233,7 +283,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
         stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
         stage->setIKFrame(hand_frame);
         stage->setMinMaxDistance(extract_min_, extract_max_);
-        stage->setDirection(axisToDir(extract_axis_, block_id));
+        stage->setDirection(axisToDirInFrame(extract_axis_, block_pose, "world"));
         grasp->insert(std::move(stage));
       }
       if (wiggle_enable_) {
@@ -242,7 +292,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
         stage1->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
         stage1->setIKFrame(hand_frame);
         stage1->setMinMaxDistance(wiggle_distance_, wiggle_distance_);
-        stage1->setDirection(axisToDir(extract_axis_, block_id));
+        stage1->setDirection(axisToDirInFrame(extract_axis_, block_pose, "world"));
         grasp->insert(std::move(stage1));
 
         // opposite direction
@@ -254,7 +304,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
         stage2->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
         stage2->setIKFrame(hand_frame);
         stage2->setMinMaxDistance(wiggle_distance_, wiggle_distance_);
-        stage2->setDirection(axisToDir(inv, block_id));
+        stage2->setDirection(axisToDirInFrame(inv, block_pose, "world"));
         grasp->insert(std::move(stage2));
       }
       if (lift_after_extract_ > 1e-6) {
@@ -275,7 +325,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
     {
       auto c = std::make_unique<mtc::stages::Connect>(
           "move to place", mtc::stages::Connect::GroupPlannerVector{{arm_group_name, sampling_planner}});
-      c->setTimeout(3.0);
+      c->setTimeout(2.0);
       c->properties().configureInitFrom(mtc::Stage::PARENT);
       task.add(std::move(c));
     }
@@ -292,7 +342,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
         stage->setPose(place_in_world);
         stage->setMonitoredStage(attach_object_stage);
         auto w = std::make_unique<mtc::stages::ComputeIK>("place IK", std::move(stage));
-        w->setMaxIKSolutions(8);
+        w->setMaxIKSolutions(4);
         w->setMinSolutionDistance(0.5);
         w->setIKFrame(block_id);
         w->properties().configureInitFrom(mtc::Stage::PARENT, {"eef", "group"});
@@ -318,15 +368,21 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
         stage->detachObject(block_id, hand_frame);
         place->insert(std::move(stage));
       }
+      {
+        auto stage = std::make_unique<mtc::stages::MoveRelative>("retreat", cartesian_planner);
+        stage->properties().set("marker_ns", "retreat");
+        stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
+        stage->setIKFrame(hand_frame);
+        stage->setMinMaxDistance(0.05, 0.10); // Retreat 5 to 10 cm
+        
+        // Move straight up in the world frame
+        geometry_msgs::msg::Vector3Stamped vec;
+        vec.header.frame_id = "world";
+        vec.vector.z = 1.0;
+        stage->setDirection(vec);
+        place->insert(std::move(stage));
+      }
       task.add(std::move(place));
-    }
-
-    {
-      auto stage = std::make_unique<mtc::stages::MoveTo>("return home", sampling_planner);
-      stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
-      stage->setGoal(arm_home_state_);
-      stage->setTimeout(3.0);
-      task.add(std::move(stage));
     }
 
     return task;
@@ -339,9 +395,18 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
       RCLCPP_WARN(get_logger(), "E-stop active: refusing to plan/execute MTC task");
       return false;
     }
-    mtc_jenga::applyBlockBoxAt(block_id, block_pose.header.frame_id, block_pose.pose, box_x_, box_y_, box_z_);
+    if (!axisToLocalVec(approach_axis_)) {
+      RCLCPP_ERROR(get_logger(), "Invalid approach_axis: '%s' (expected x|y|z|-x|-y|-z)", approach_axis_.c_str());
+      return false;
+    }
+    if (!axisToLocalVec(extract_axis_)) {
+      RCLCPP_ERROR(get_logger(), "Invalid extract_axis: '%s' (expected x|y|z|-x|-y|-z)", extract_axis_.c_str());
+      return false;
+    }
+    mtc_jenga::applyBlockBoxAt(block_id, block_pose.header.frame_id, block_pose.pose, box_x_, box_y_, box_z_,
+                               grasp_offset_m_);
 
-    mtc::Task task = buildExtractTask(block_id, place_pose);
+    mtc::Task task = buildExtractTask(block_id, place_pose, block_pose);
     try {
       task.init();
     } catch (const mtc::InitStageException& e) {
@@ -366,7 +431,8 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
       RCLCPP_ERROR(get_logger(), "MTC execute failed: %d", res.val);
       return false;
     }
-    mtc_jenga::applyBlockBoxAt(block_id, place_pose.header.frame_id, place_pose.pose, box_x_, box_y_, box_z_);
+    mtc_jenga::applyBlockBoxAt(block_id, place_pose.header.frame_id, place_pose.pose, box_x_, box_y_, box_z_,
+                               grasp_offset_m_);
     return true;
   }
 
@@ -436,12 +502,14 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
   double cart_step_{0.004};
 
   double approach_min_{0.005}, approach_max_{0.03};
-  double extract_min_{0.02}, extract_max_{0.08};
+  double extract_min_{0.06}, extract_max_{0.10};
   double lift_after_extract_{0.0};
   std::string extract_axis_{"x"};
   std::string approach_axis_{"-x"};
   double grasp_r_{0.0}, grasp_p_{M_PI / 2.0}, grasp_y_{0.0};
   double grasp_angle_delta_{M_PI / 1.0};
+  double grasp_offset_m_{0.05};
+  double grasp_offset_z_{0.01};
 
   bool wiggle_enable_{false};
   double wiggle_distance_{0.003};

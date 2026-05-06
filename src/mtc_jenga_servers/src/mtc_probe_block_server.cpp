@@ -25,18 +25,36 @@ using ServerGoalHandle = rclcpp_action::ServerGoalHandle<JengaProbeBlock>;
 
 namespace {
 
-geometry_msgs::msg::Vector3Stamped axisToDir(const std::string& axis, const std::string& frame_id) {
+std::optional<Eigen::Vector3d> axisToLocalVec(const std::string& axis) {
+  if (axis.empty()) return std::nullopt;
+  const bool neg = axis[0] == '-';
+  const char a = (neg ? (axis.size() > 1 ? axis[1] : '\0') : axis[0]);
+  const double s = neg ? -1.0 : 1.0;
+  if (a == 'x') return Eigen::Vector3d{s, 0.0, 0.0};
+  if (a == 'y') return Eigen::Vector3d{0.0, s, 0.0};
+  if (a == 'z') return Eigen::Vector3d{0.0, 0.0, s};
+  return std::nullopt;
+}
+
+geometry_msgs::msg::Vector3Stamped axisToDirInFrame(const std::string& axis_local,
+                                                    const geometry_msgs::msg::PoseStamped& pose_in_frame,
+                                                    const std::string& fallback_frame_id) {
   geometry_msgs::msg::Vector3Stamped v;
-  v.header.frame_id = frame_id;
+  v.header.frame_id = pose_in_frame.header.frame_id.empty() ? fallback_frame_id : pose_in_frame.header.frame_id;
+
   v.vector.x = 0.0;
   v.vector.y = 0.0;
   v.vector.z = 0.0;
-  const bool neg = !axis.empty() && axis[0] == '-';
-  const char a = (neg ? axis[1] : axis[0]);
-  const double s = neg ? -1.0 : 1.0;
-  if (a == 'x') v.vector.x = s;
-  if (a == 'y') v.vector.y = s;
-  if (a == 'z') v.vector.z = s;
+
+  const auto local = axisToLocalVec(axis_local);
+  if (!local) return v;
+
+  const auto& q = pose_in_frame.pose.orientation;
+  const Eigen::Quaterniond qe(q.w, q.x, q.y, q.z);
+  const Eigen::Vector3d world = qe.normalized() * (*local);
+  v.vector.x = world.x();
+  v.vector.y = world.y();
+  v.vector.z = world.z();
   return v;
 }
 
@@ -105,7 +123,7 @@ class MtcProbeBlockServer : public rclcpp::Node {
     publishStatus(b ? "running" : "idle");
   }
 
-  mtc::Task buildProbeTask(const std::string& block_id) {
+  mtc::Task buildProbeTask(const geometry_msgs::msg::PoseStamped& block_pose) {
     mtc::Task task;
     task.stages()->setName("jenga_probe_block");
     auto node_ptr = rclcpp::Node::shared_from_this();
@@ -147,7 +165,7 @@ class MtcProbeBlockServer : public rclcpp::Node {
         stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
         stage->setIKFrame(gripper_tcp_);
         stage->setMinMaxDistance(approach_min_, approach_max_);
-        stage->setDirection(axisToDir(approach_axis_, block_id));
+        stage->setDirection(axisToDirInFrame(approach_axis_, block_pose, "world"));
         probe->insert(std::move(stage));
       }
       {
@@ -156,7 +174,7 @@ class MtcProbeBlockServer : public rclcpp::Node {
         stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
         stage->setIKFrame(gripper_tcp_);
         stage->setMinMaxDistance(push_distance_, push_distance_);
-        stage->setDirection(axisToDir(probe_axis_, block_id));
+        stage->setDirection(axisToDirInFrame(probe_axis_, block_pose, "world"));
         probe->insert(std::move(stage));
       }
       {
@@ -170,7 +188,7 @@ class MtcProbeBlockServer : public rclcpp::Node {
         stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
         stage->setIKFrame(gripper_tcp_);
         stage->setMinMaxDistance(pull_distance_, pull_distance_);
-        stage->setDirection(axisToDir(inv, block_id));
+        stage->setDirection(axisToDirInFrame(inv, block_pose, "world"));
         probe->insert(std::move(stage));
       }
       {
@@ -184,7 +202,7 @@ class MtcProbeBlockServer : public rclcpp::Node {
         stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
         stage->setIKFrame(gripper_tcp_);
         stage->setMinMaxDistance(retreat_distance_, retreat_distance_);
-        stage->setDirection(axisToDir(inv, block_id));
+        stage->setDirection(axisToDirInFrame(inv, block_pose, "world"));
         probe->insert(std::move(stage));
       }
 
@@ -208,9 +226,17 @@ class MtcProbeBlockServer : public rclcpp::Node {
       RCLCPP_WARN(get_logger(), "E-stop active: refusing to plan/execute MTC task");
       return false;
     }
+    if (!axisToLocalVec(approach_axis_)) {
+      RCLCPP_ERROR(get_logger(), "Invalid approach_axis: '%s' (expected x|y|z|-x|-y|-z)", approach_axis_.c_str());
+      return false;
+    }
+    if (!axisToLocalVec(probe_axis_)) {
+      RCLCPP_ERROR(get_logger(), "Invalid probe_axis: '%s' (expected x|y|z|-x|-y|-z)", probe_axis_.c_str());
+      return false;
+    }
     mtc_jenga::applyBlockBoxAt(block_id, block_pose.header.frame_id, block_pose.pose, box_x_, box_y_, box_z_);
 
-    mtc::Task task = buildProbeTask(block_id);
+    mtc::Task task = buildProbeTask(block_pose);
     try {
       task.init();
     } catch (const mtc::InitStageException& e) {

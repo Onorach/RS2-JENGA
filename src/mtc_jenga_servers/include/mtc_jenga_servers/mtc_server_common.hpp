@@ -46,7 +46,8 @@ inline void applyBlockBoxAt(const std::string& block_id,
                             const geometry_msgs::msg::Pose& pose,
                             const double box_x,
                             const double box_y,
-                            const double box_z) {
+                            const double box_z,
+                            const double grasp_offset_m = 0.03) {
   moveit::planning_interface::PlanningSceneInterface psi;
   moveit_msgs::msg::CollisionObject co;
   co.id = block_id;
@@ -55,6 +56,26 @@ inline void applyBlockBoxAt(const std::string& block_id,
   co.primitives[0].type = shape_msgs::msg::SolidPrimitive::BOX;
   co.primitives[0].dimensions = {box_x, box_y, box_z};
   co.primitive_poses = {pose};
+
+  // Define standard subframes in object-local coordinates.
+  // Subframe naming convention follows MoveIt: usable frames become "<id>/<subframe>".
+  const double half_len = 0.5 * box_x;
+
+  auto make_subframe_pose = [](const double dx, const double dy = 0.0, const double dz = 0.0) {
+    geometry_msgs::msg::Pose p;
+    p.orientation.w = 1.0;
+    p.position.x = dx;
+    p.position.y = dy;
+    p.position.z = dz;
+    return p;
+  };
+
+  co.subframe_names = {"end_plus", "end_minus", "grasp_plus", "grasp_minus"};
+  co.subframe_poses = {make_subframe_pose(+half_len),
+                       make_subframe_pose(-half_len),
+                       make_subframe_pose(+grasp_offset_m),
+                       make_subframe_pose(-grasp_offset_m)};
+
   // ADD acts as "add or replace", which is robust for updating poses.
   co.operation = moveit_msgs::msg::CollisionObject::ADD;
   psi.applyCollisionObject(co);

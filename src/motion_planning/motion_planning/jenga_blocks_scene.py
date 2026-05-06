@@ -31,6 +31,9 @@ from std_srvs.srv import Trigger
 
 from moveit_msgs.msg import CollisionObject, PlanningScene, PlanningSceneWorld, ObjectColor
 from std_msgs.msg import Header, ColorRGBA
+from jenga_interfaces.srv import ProtrudeJengaBlock
+
+import math
 
 
 @dataclass(frozen=True)
@@ -68,6 +71,7 @@ def _build_block_object(
     frame_id: str,
     pose: Pose,
     dims: _BlockDims,
+    grasp_offset_m: float,
     operation: int,
 ) -> CollisionObject:
     co = CollisionObject()
@@ -80,7 +84,61 @@ def _build_block_object(
     box.dimensions = [float(dims.x), float(dims.y), float(dims.z)]
     co.primitives = [box]
     co.primitive_poses = [pose]
+
+    # Define standard subframes in object-local coordinates.
+    # Subframe naming convention follows MoveIt: usable frames become "<id>/<subframe>".
+    half_len = 0.5 * float(dims.x)
+    co.subframe_names = ["end_plus", "end_minus", "grasp_plus", "grasp_minus"]
+    co.subframe_poses = [
+        Pose(position=Point(x=+half_len, y=0.0, z=0.0), orientation=Quaternion(w=1.0)),
+        Pose(position=Point(x=-half_len, y=0.0, z=0.0), orientation=Quaternion(w=1.0)),
+        Pose(
+            position=Point(x=+float(grasp_offset_m), y=0.0, z=0.0),
+            orientation=Quaternion(w=1.0),
+        ),
+        Pose(
+            position=Point(x=-float(grasp_offset_m), y=0.0, z=0.0),
+            orientation=Quaternion(w=1.0),
+        ),
+    ]
     return co
+
+
+def _axis_to_local_vec(axis: str) -> tuple[float, float, float] | None:
+    a = (axis or "").strip()
+    if not a:
+        return None
+    neg = a.startswith("-")
+    core = a[1:] if neg else a
+    if core not in ("x", "y", "z"):
+        return None
+    s = -1.0 if neg else 1.0
+    if core == "x":
+        return (s, 0.0, 0.0)
+    if core == "y":
+        return (0.0, s, 0.0)
+    return (0.0, 0.0, s)
+
+
+def _quat_rotate_vec(q: Quaternion, v: tuple[float, float, float]) -> tuple[float, float, float]:
+    # Rotate vector v by unit quaternion q (x,y,z,w).
+    # Using quaternion-vector multiplication: v' = q * (v,0) * q_conj
+    x, y, z, w = float(q.x), float(q.y), float(q.z), float(q.w)
+    vx, vy, vz = v
+    # normalize defensively
+    n = math.sqrt(x * x + y * y + z * z + w * w)
+    if n < 1e-12:
+        return v
+    x, y, z, w = x / n, y / n, z / n, w / n
+    # t = 2 * cross(q_vec, v)
+    tx = 2.0 * (y * vz - z * vy)
+    ty = 2.0 * (z * vx - x * vz)
+    tz = 2.0 * (x * vy - y * vx)
+    # v' = v + w*t + cross(q_vec, t)
+    vpx = vx + w * tx + (y * tz - z * ty)
+    vpy = vy + w * ty + (z * tx - x * tz)
+    vpz = vz + w * tz + (x * ty - y * tx)
+    return (vpx, vpy, vpz)
 
 
 class JengaBlocksSceneNode(Node):
@@ -97,11 +155,17 @@ class JengaBlocksSceneNode(Node):
             y=float(self.declare_parameter("block_box_y", 0.025).value),
             z=float(self.declare_parameter("block_box_z", 0.015).value),
         )
+        self._grasp_offset_m = float(
+            self.declare_parameter("grasp_offset_m", 0.03).value
+        )
 
         self._pub = self.create_publisher(PlanningScene, "/planning_scene", 10)
         self._srv = self.create_service(Trigger, "reset_jenga_blocks", self._on_reset)
         self._srv_tower = self.create_service(
             Trigger, "set_jenga_blocks_tower", self._on_set_tower
+        )
+        self._srv_protrude = self.create_service(
+            ProtrudeJengaBlock, "protrude_jenga_block", self._on_protrude
         )
 
         self._cached_objects: list[CollisionObject] = []
@@ -161,6 +225,7 @@ class JengaBlocksSceneNode(Node):
                     frame_id=self._frame_id,
                     pose=pose,
                     dims=self._dims,
+                    grasp_offset_m=self._grasp_offset_m,
                     operation=CollisionObject.ADD,
                 )
             )
@@ -182,6 +247,11 @@ class JengaBlocksSceneNode(Node):
             for obj in objects
         ]
         
+        self._pub.publish(scene)
+
+    def _publish_object(self, obj: CollisionObject) -> None:
+        scene = PlanningScene(is_diff=True, world=PlanningSceneWorld())
+        scene.world.collision_objects = [obj]
         self._pub.publish(scene)
 
     def _publish_once(self) -> None:
@@ -237,6 +307,45 @@ class JengaBlocksSceneNode(Node):
         except Exception as exc:
             response.success = False
             response.message = f"set tower failed: {exc}"
+        return response
+
+    def _on_protrude(
+        self, request: ProtrudeJengaBlock.Request, response: ProtrudeJengaBlock.Response
+    ) -> ProtrudeJengaBlock.Response:
+        block_id = f"block_{int(request.block_index):02d}"
+        axis = str(request.axis) if request.axis else "x"
+        dist = float(request.distance_m)
+
+        local = _axis_to_local_vec(axis)
+        if local is None:
+            response.success = False
+            response.message = f"invalid axis '{axis}' (expected x|y|z|-x|-y|-z)"
+            return response
+
+        if not self._cached_objects:
+            response.success = False
+            response.message = "no cached objects yet (wait for startup publish)"
+            return response
+
+        # Find the cached collision object and adjust its pose in-place.
+        obj = next((o for o in self._cached_objects if o.id == block_id), None)
+        if obj is None or not obj.primitive_poses:
+            response.success = False
+            response.message = f"block not found in cached planning scene: {block_id}"
+            return response
+
+        pose = obj.primitive_poses[0]
+        dx, dy, dz = _quat_rotate_vec(pose.orientation, local)
+        pose.position.x += dist * dx
+        pose.position.y += dist * dy
+        pose.position.z += dist * dz
+        obj.primitive_poses[0] = pose
+        obj.header.frame_id = self._frame_id
+        obj.operation = CollisionObject.ADD
+
+        self._publish_object(obj)
+        response.success = True
+        response.message = f"protruded {block_id} by {dist:.4f} m along {axis} (planning scene)"
         return response
 
 

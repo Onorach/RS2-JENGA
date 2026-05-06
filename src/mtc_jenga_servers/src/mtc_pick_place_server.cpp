@@ -253,12 +253,9 @@ class MtcPickPlaceServer : public rclcpp::Node {
         // Y axis is preserved under Ry(180°), so the finger opening direction sweeps with
         // angle_delta and IK selects the wrist angle that keeps tips parallel to the
         // 2.5×1.5 cm block end faces.
-        // Eigen::Isometry3d gft = Eigen::Isometry3d::Identity() * Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d::UnitZ());
-        // gft.linear() = Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitY()).matrix();
         Eigen::Isometry3d gft = Eigen::Isometry3d::Identity();
         gft = gft * Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitY()) 
                   * Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d::UnitZ());
-        // gft = gft * Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitY());
         auto w = std::make_unique<mtc::stages::ComputeIK>("grasp pose IK", std::move(stage));
         w->setMaxIKSolutions(4);
         w->setMinSolutionDistance(0.5);

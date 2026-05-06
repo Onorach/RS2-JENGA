@@ -34,6 +34,7 @@ setup(
             "test_mtc_pick_place = motion_planning.tests.test_mtc_pick_place:main",
             "test_mtc_extract_side = motion_planning.tests.test_mtc_extract_side:main",
             "test_mtc_extract_middle = motion_planning.tests.test_mtc_extract_middle:main",
+            "test_mtc_extract_middle_protruded = motion_planning.tests.test_mtc_extract_middle_protruded:main",
             "test_mtc_probe_block = motion_planning.tests.test_mtc_probe_block:main",
             "mtc_action_client = motion_planning.mtc_action_client:main",
             "jenga_tower_mtc_sequencer = motion_planning.jenga_tower_mtc_sequencer:main",
