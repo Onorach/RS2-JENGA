@@ -11,7 +11,7 @@ ROS2 package for motion planning with a UR3e: pose goals, RMRC (Resolved Motion 
 
 ## Requirements
 
-- ROS2 Humble or Iron
+- ROS2 Humble
 - `ur3e_controller` (for trajectory execution)
 - `ur_moveit_config` (when using MoveIt pose goal node)
 - `ur_description` (for RMRC)

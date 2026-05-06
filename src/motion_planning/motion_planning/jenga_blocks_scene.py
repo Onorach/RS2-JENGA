@@ -25,6 +25,7 @@ from motion_planning.jenga_tower_mtc_sequencer import (
 )
 from moveit_msgs.msg import CollisionObject, PlanningScene, PlanningSceneWorld
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import Header
 from std_srvs.srv import Trigger
@@ -150,6 +151,9 @@ class JengaBlocksSceneNode(Node):
         self._startup_delay_sec = float(
             self.declare_parameter("startup_delay_sec", 1.0).value
         )
+        self._publish_period_sec = float(
+            self.declare_parameter("publish_period_sec", 0.0).value
+        )
         self._dims = _BlockDims(
             x=float(self.declare_parameter("block_box_x", 0.075).value),
             y=float(self.declare_parameter("block_box_y", 0.025).value),
@@ -159,7 +163,15 @@ class JengaBlocksSceneNode(Node):
             self.declare_parameter("grasp_offset_m", 0.03).value
         )
 
-        self._pub = self.create_publisher(PlanningScene, "/planning_scene", 10)
+        # Use transient-local durability so late subscribers still receive the latest
+        # published scene (important since we often publish only once at startup).
+        qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._pub = self.create_publisher(PlanningScene, "/planning_scene", qos)
         self._srv = self.create_service(Trigger, "reset_jenga_blocks", self._on_reset)
         self._srv_tower = self.create_service(
             Trigger, "set_jenga_blocks_tower", self._on_set_tower
@@ -171,6 +183,11 @@ class JengaBlocksSceneNode(Node):
         self._cached_objects: list[CollisionObject] = []
         self._done = False
         self._timer = self.create_timer(self._startup_delay_sec, self._publish_once)
+        self._republish_timer = None
+        if self._publish_period_sec and self._publish_period_sec > 0.0:
+            self._republish_timer = self.create_timer(
+                self._publish_period_sec, self._republish_cached
+            )
 
     def _resolve_layout_path(self) -> str:
         if self._layout_path:
@@ -272,6 +289,11 @@ class JengaBlocksSceneNode(Node):
             self.get_logger().info(
                 f"Published {len(self._cached_objects)} Jenga block collision object(s)."
             )
+
+    def _republish_cached(self) -> None:
+        if not self._cached_objects:
+            return
+        self._publish_objects(self._cached_objects)
 
     def _on_reset(self, request: Trigger.Request, response: Trigger.Response) -> Trigger.Response:
         try:

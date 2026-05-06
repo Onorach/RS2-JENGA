@@ -19,7 +19,10 @@ from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion
 from moveit_msgs.msg import PlanningScene
 from rclpy.action import ActionClient
 from rclpy.node import Node
+from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from std_srvs.srv import Trigger
+from tf2_geometry_msgs import do_transform_pose_stamped
+from tf2_ros import Buffer, TransformException, TransformListener
 
 from jenga_interfaces.action import JengaExtractMiddleBlock
 from jenga_interfaces.srv import ProtrudeJengaBlock
@@ -68,7 +71,22 @@ class _PlanningSceneCache:
         self._node = node
         self._objects: dict[str, PoseStamped] = {}
         self._collision_objects: dict[str, Any] = {}
-        self._sub = node.create_subscription(PlanningScene, topic, self._on_scene, 10)
+        qos_volatile = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
+        qos_transient = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        subs = [node.create_subscription(PlanningScene, topic, self._on_scene, qos_volatile)]
+        if topic != "/monitored_planning_scene":
+            subs.append(node.create_subscription(PlanningScene, topic, self._on_scene, qos_transient))
+        self._subs = subs
 
     def _on_scene(self, msg: PlanningScene) -> None:
         # We're interested in world collision objects (the Jenga blocks are primitives).
@@ -193,7 +211,8 @@ def main(args=None) -> int:
     node = Node("test_mtc_extract_middle_protruded")
 
     action_name = str(node.declare_parameter("action_name", "jenga_extract_middle_block").value)
-    goal_frame = str(node.declare_parameter("goal_frame", "world").value)
+    goal_frame = str(node.declare_parameter("goal_frame", "base_link").value)
+    tf_timeout_sec = float(node.declare_parameter("tf_timeout_sec", 0.5).value)
     block_index = int(node.declare_parameter("block_index", 10).value)
     protrude_distance_m = float(node.declare_parameter("protrude_distance_m", 0.02).value)
     protrude_axis = str(node.declare_parameter("protrude_axis", "x").value)
@@ -210,6 +229,8 @@ def main(args=None) -> int:
     place_dz = float(node.declare_parameter("place_dz", 0.0).value)
 
     scene_cache = _PlanningSceneCache(node, topic=planning_scene_topic)
+    tf_buffer = Buffer()
+    tf_listener = TransformListener(tf_buffer, node, spin_thread=False)
 
     # 1) Put blocks in tower layout in planning scene
     if not _call_trigger(node, "set_jenga_blocks_tower", timeout_sec=10.0):
@@ -256,6 +277,22 @@ def main(args=None) -> int:
         rclpy.shutdown()
         return 16
 
+    # Transform planning-scene pose into the goal_frame expected by MTC.
+    src = (block.header.frame_id or "").strip() or "world"
+    dst = (goal_frame or "").strip() or "world"
+    if src != dst:
+        try:
+            tf = tf_buffer.lookup_transform(
+                dst,
+                src,
+                rclpy.time.Time(),
+                timeout=rclpy.duration.Duration(seconds=float(tf_timeout_sec)),
+            )
+            block = do_transform_pose_stamped(block, tf)
+            block.header.frame_id = dst
+        except TransformException as exc:
+            node.get_logger().warn(f"TF lookup failed: {src} -> {dst}: {exc}")
+
     if validate_subframes:
         obj = scene_cache.wait_for_collision_object(block_id, timeout_sec=scene_timeout_sec)
         if obj is None:
@@ -296,7 +333,7 @@ def main(args=None) -> int:
         return 17
 
     place = PoseStamped()
-    place.header.frame_id = block.header.frame_id or goal_frame
+    place.header.frame_id = dst
     place.pose = Pose(
         position=Point(
             x=base_x + place_dx,

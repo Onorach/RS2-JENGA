@@ -11,7 +11,7 @@ ROS2 workspace for controlling a UR3e robot in Jenga manipulation tasks. Support
 
 ## Requirements
 
-- ROS2 Iron or Humble (Ubuntu 22.04)
+- ROS2 Humble (Ubuntu 22.04)
 - For simulation: Gazebo Classic, `ur_description`, `ur_moveit_config`
 - For hardware: `ur_robot_driver`, UR3e in external control mode
 
@@ -57,8 +57,11 @@ ros2 launch ur_simulation_gazebo ur_sim_moveit.launch.py
 - Press the red button (power off) on the bottom left; if first time, click "confirm configuration".
 - Press "On", then "Start" when available.
 - Press "Exit".
+- Navigate to **Installation -> Urcaps -> External Control**
+- Input laptop IP.
 - Navigate to **Program → Urcaps**.
 - Press **External Control** once.
+- Play "robot by ace".
 
 #### 2. Launch driver and RViz
 
@@ -83,7 +86,7 @@ ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=192.168
 After completing steps 1-3 above (driver running, external control active), open a **second terminal** to launch MoveIt and the motion planning stack together:
 
 ```bash
-source /opt/ros/iron/setup.bash
+source /opt/ros/humble/setup.bash
 source ~/ros2_ws/install/setup.bash
 ros2 launch ur3e_controller ur3e_hw_moveit.launch.py planner:=moveit
 ```
