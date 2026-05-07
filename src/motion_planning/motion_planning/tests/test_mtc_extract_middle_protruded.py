@@ -227,6 +227,9 @@ def main(args=None) -> int:
     place_dx = float(node.declare_parameter("place_dx", -0.08).value)
     place_dy = float(node.declare_parameter("place_dy", -0.10).value)
     place_dz = float(node.declare_parameter("place_dz", 0.0).value)
+    # Optional override: if set, passes this axis directly to the server instead of letting
+    # the server auto-detect from the planning scene. Useful for debugging forced directions.
+    extract_axis_override = str(node.declare_parameter("extract_axis", "").value).strip()
 
     scene_cache = _PlanningSceneCache(node, topic=planning_scene_topic)
     tf_buffer = Buffer()
@@ -356,9 +359,14 @@ def main(args=None) -> int:
     goal.block_index = int(block_index)
     goal.block_pose = block
     goal.place_pose = place
+    # Leave extract_axis empty so the server auto-detects from the planning scene,
+    # unless an explicit override was supplied via --ros-args -p extract_axis:=x.
+    goal.extract_axis = extract_axis_override
 
+    axis_log = f"explicit override='{extract_axis_override}'" if extract_axis_override else "server auto-detect"
     node.get_logger().info(
-        f"Sending extract-middle for block {block_index} after protrude {protrude_distance_m:.3f} m along {protrude_axis}..."
+        f"Sending extract-middle for block {block_index} after protrude {protrude_distance_m:.3f} m along {protrude_axis} "
+        f"(extract_axis: {axis_log})..."
     )
     send_fut = client.send_goal_async(goal, feedback_callback=_on_feedback)
     rclpy.spin_until_future_complete(node, send_fut, timeout_sec=10.0)
