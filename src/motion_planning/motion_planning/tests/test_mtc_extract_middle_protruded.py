@@ -151,18 +151,12 @@ def _validate_subframes(
         "end_minus": {"x": -half_len, "z": 0.0000},
         "grasp_plus": {"x": +float(grasp_offset_m), "z": 0.0075},
         "grasp_minus": {"x": -float(grasp_offset_m), "z": 0.0075},
-    expected = {
-        "end_plus": {"x": +half_len, "z": 0.0000},
-        "end_minus": {"x": -half_len, "z": 0.0000},
-        "grasp_plus": {"x": +float(grasp_offset_m), "z": 0.0075},
-        "grasp_minus": {"x": -float(grasp_offset_m), "z": 0.0075},
     }
-    for n, exp in expected.items():
     for n, exp in expected.items():
         p = by_name[n]
         _assert_close(node, f"{obj.id}/{n}.position.x", float(p.position.x), exp["x"], tol)
-        _assert_close(node, f"{obj.id}/{n}.position.x", float(p.position.x), exp["x"], tol)
         _assert_close(node, f"{obj.id}/{n}.position.y", float(p.position.y), 0.0, tol)
+        _assert_close(node, f"{obj.id}/{n}.position.z", float(p.position.z), exp["z"], tol)
         _assert_close(node, f"{obj.id}/{n}.position.z", float(p.position.z), exp["z"], tol)
         # Orientation is expected identity in object-local coordinates.
         _assert_close(node, f"{obj.id}/{n}.orientation.x", float(p.orientation.x), 0.0, tol)
@@ -239,11 +233,9 @@ def main(args=None) -> int:
     validate_subframes = bool(node.declare_parameter("validate_subframes", True).value)
     subframe_tol = float(node.declare_parameter("subframe_tol", 1e-6).value)
     box_x = float(node.declare_parameter("block_box_x", 0.075).value)
-    grasp_offset_m = float(node.declare_parameter("grasp_offset_m", 0.0325).value)
+    grasp_offset_m = float(node.declare_parameter("grasp_offset_m", 0.035).value)
 
     layout_path_param = str(node.declare_parameter("layout_path", "").value)
-    place_dx = float(node.declare_parameter("place_dx", -0.12).value)
-    place_dy = float(node.declare_parameter("place_dy", -0.08).value)
     place_dx = float(node.declare_parameter("place_dx", -0.12).value)
     place_dy = float(node.declare_parameter("place_dy", -0.08).value)
     place_dz = float(node.declare_parameter("place_dz", 0.0).value)

@@ -230,7 +230,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
         stage->properties().set("marker_ns", "grasp_pose");
         stage->setPreGraspPose(open_state_);
         const bool extract_positive = effective_extract_axis.empty() ? true : (effective_extract_axis[0] != '-');
-        const std::string subframe = extract_positive ? "end_plus" : "end_minus";
+        const std::string subframe = extract_positive ? "grasp_plus" : "grasp_minus";
         stage->setObject(block_id + "/" + subframe);
 
         // Log the numeric world-frame pose of the selected subframe target.

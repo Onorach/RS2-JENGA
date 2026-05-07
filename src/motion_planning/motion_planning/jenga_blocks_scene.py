@@ -100,14 +100,6 @@ def _build_block_object(
             position=Point(x=-float(grasp_offset_m), y=0.0, z=0.0075),
             orientation=Quaternion(w=1.0),
         ),
-        Pose(
-            position=Point(x=+float(probe_offset_m), y=0.0, z=0.00),
-            orientation=Quaternion(w=1.0),
-        ),
-        Pose(
-            position=Point(x=-float(probe_offset_m), y=0.0, z=0.00),
-            orientation=Quaternion(w=1.0),
-        ),
     ]
     return co
 
@@ -167,10 +159,7 @@ class JengaBlocksSceneNode(Node):
             z=float(self.declare_parameter("block_box_z", 0.015).value),
         )
         self._grasp_offset_m = float(
-            self.declare_parameter("grasp_offset_m", 0.0325).value
-        )
-        self._probe_offset_m = float(
-            self.declare_parameter("probe_offset_m", 0.045).value
+            self.declare_parameter("grasp_offset_m", 0.035).value
         )
         initial_layout_raw = str(self.declare_parameter("initial_layout", "none").value)
         self._initial_layout = self._parse_initial_layout(initial_layout_raw)
