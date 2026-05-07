@@ -99,49 +99,6 @@ def _compose_poses(parent: Pose, child: Pose) -> Pose:
     )
 
 
-def _compose_poses(parent: Pose, child: Pose) -> Pose:
-    """Return the SE3 composition: world_pose = parent (object anchor) * child (shape offset).
-
-    Handles both CollisionObject serialisation styles:
-      - Old style: parent = identity, child = world pose  → result = world pose
-      - New style: parent = world pose, child = identity   → result = world pose
-    A zero-norm parent quaternion (ROS default Quaternion()) is treated as identity.
-    """
-    px = float(parent.orientation.x)
-    py = float(parent.orientation.y)
-    pz = float(parent.orientation.z)
-    pw = float(parent.orientation.w)
-    if px * px + py * py + pz * pz + pw * pw < 1e-12:
-        pw = 1.0
-    px, py, pz, pw = _q_normalize(px, py, pz, pw)
-
-    cx = float(child.position.x)
-    cy = float(child.position.y)
-    cz = float(child.position.z)
-    tx = 2.0 * (py * cz - pz * cy)
-    ty = 2.0 * (pz * cx - px * cz)
-    tz = 2.0 * (px * cy - py * cx)
-    rx = cx + pw * tx + (py * tz - pz * ty)
-    ry = cy + pw * ty + (pz * tx - px * tz)
-    rz = cz + pw * tz + (px * ty - py * tx)
-
-    cqx = float(child.orientation.x)
-    cqy = float(child.orientation.y)
-    cqz = float(child.orientation.z)
-    cqw = float(child.orientation.w)
-    qx, qy, qz, qw = _q_mul(px, py, pz, pw, cqx, cqy, cqz, cqw)
-    qx, qy, qz, qw = _q_normalize(qx, qy, qz, qw)
-
-    return Pose(
-        position=Point(
-            x=float(parent.position.x) + rx,
-            y=float(parent.position.y) + ry,
-            z=float(parent.position.z) + rz,
-        ),
-        orientation=Quaternion(x=qx, y=qy, z=qz, w=qw),
-    )
-
-
 def _qdict_to_msg(d: dict[str, float]) -> Quaternion:
     return Quaternion(
         x=float(d.get("x", 0.0)),
@@ -187,10 +144,6 @@ class _PlanningSceneCache:
             node.create_subscription(PlanningScene, topic, self._on_scene, qos_volatile),
             node.create_subscription(PlanningScene, topic, self._on_scene, qos_transient),
         ]
-        subs = [
-            node.create_subscription(PlanningScene, topic, self._on_scene, qos_volatile),
-            node.create_subscription(PlanningScene, topic, self._on_scene, qos_transient),
-        ]
         self._subs = subs
 
     def _on_scene(self, msg: PlanningScene) -> None:
@@ -200,6 +153,7 @@ class _PlanningSceneCache:
             ps = PoseStamped()
             ps.header.frame_id = obj.header.frame_id or "world"
             ps.header.stamp = msg.robot_state.joint_state.header.stamp
+            ps.pose = _compose_poses(obj.pose, obj.primitive_poses[0])
             ps.pose = _compose_poses(obj.pose, obj.primitive_poses[0])
             self._poses[obj.id] = ps
 
@@ -533,8 +487,8 @@ def main(args: list[str] | None = None) -> int:
     place_top_slot = int(node.declare_parameter("place_top_slot", -1).value)
 
     # Handoff pose relative to tower base (defaults copied from extract-middle protruded test).
-    handoff_dx = float(node.declare_parameter("handoff_dx", -0.15).value)
-    handoff_dy = float(node.declare_parameter("handoff_dy", -0.12).value)
+    handoff_dx = float(node.declare_parameter("handoff_dx", -0.10).value)
+    handoff_dy = float(node.declare_parameter("handoff_dy", -0.10).value)
     handoff_dz = float(node.declare_parameter("handoff_dz", 0.0).value)
 
     scene_cache = _PlanningSceneCache(node, topic=planning_scene_topic)
