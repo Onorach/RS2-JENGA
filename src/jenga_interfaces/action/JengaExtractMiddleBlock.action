@@ -2,6 +2,7 @@
 uint32 block_index
 geometry_msgs/PoseStamped block_pose
 geometry_msgs/PoseStamped place_pose
+string extract_axis   # e.g. "x", "-x". Empty string → auto-detect from planning scene; explicit string → override.
 ---
 # Result: outcome
 bool success
