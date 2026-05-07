@@ -146,17 +146,17 @@ def _validate_subframes(
 
     by_name = {n: p for n, p in zip(names, poses)}
     half_len = 0.5 * float(box_x)
-    expected_x = {
-        "end_plus": +half_len,
-        "end_minus": -half_len,
-        "grasp_plus": +float(grasp_offset_m),
-        "grasp_minus": -float(grasp_offset_m),
+    expected = {
+        "end_plus": {"x": +half_len, "z": 0.0000},
+        "end_minus": {"x": -half_len, "z": 0.0000},
+        "grasp_plus": {"x": +float(grasp_offset_m), "z": 0.0075},
+        "grasp_minus": {"x": -float(grasp_offset_m), "z": 0.0075},
     }
-    for n, exp_x in expected_x.items():
+    for n, exp in expected.items():
         p = by_name[n]
-        _assert_close(node, f"{obj.id}/{n}.position.x", float(p.position.x), exp_x, tol)
+        _assert_close(node, f"{obj.id}/{n}.position.x", float(p.position.x), exp["x"], tol)
         _assert_close(node, f"{obj.id}/{n}.position.y", float(p.position.y), 0.0, tol)
-        _assert_close(node, f"{obj.id}/{n}.position.z", float(p.position.z), 0.0, tol)
+        _assert_close(node, f"{obj.id}/{n}.position.z", float(p.position.z), exp["z"], tol)
         # Orientation is expected identity in object-local coordinates.
         _assert_close(node, f"{obj.id}/{n}.orientation.x", float(p.orientation.x), 0.0, tol)
         _assert_close(node, f"{obj.id}/{n}.orientation.y", float(p.orientation.y), 0.0, tol)
@@ -221,11 +221,11 @@ def main(args=None) -> int:
     validate_subframes = bool(node.declare_parameter("validate_subframes", True).value)
     subframe_tol = float(node.declare_parameter("subframe_tol", 1e-6).value)
     box_x = float(node.declare_parameter("block_box_x", 0.075).value)
-    grasp_offset_m = float(node.declare_parameter("grasp_offset_m", 0.03).value)
+    grasp_offset_m = float(node.declare_parameter("grasp_offset_m", 0.035).value)
 
     layout_path_param = str(node.declare_parameter("layout_path", "").value)
-    place_dx = float(node.declare_parameter("place_dx", -0.08).value)
-    place_dy = float(node.declare_parameter("place_dy", -0.10).value)
+    place_dx = float(node.declare_parameter("place_dx", -0.12).value)
+    place_dy = float(node.declare_parameter("place_dy", -0.08).value)
     place_dz = float(node.declare_parameter("place_dz", 0.0).value)
     # Optional override: if set, passes this axis directly to the server instead of letting
     # the server auto-detect from the planning scene. Useful for debugging forced directions.

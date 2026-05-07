@@ -28,14 +28,14 @@ parametric:
 # parametric:
 #   stock:
 #     rows:
-#       - {x: 0.2130}
-#       - {x: -0.2120}
+#       - {x: 0.2125}
+#       - {x: -0.2125}
 #     y_centre:  0.26
 #     z: 0.0138
 #     step_along_y: 0.0251
 #     blocks_per_row: 9
 #   tower:
-#     base: {x: 0.005, y: 0.297, z: 0.0138}
+#     base: {x: 0.000, y: 0.297, z: 0.0138}
 #     tower_yaw_deg: 45.0
 #     blocks_per_layer: 3
 #     layers: 2
