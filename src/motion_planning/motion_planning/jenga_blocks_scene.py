@@ -94,11 +94,11 @@ def _build_block_object(
         Pose(position=Point(x=+half_len, y=0.0, z=0.0), orientation=Quaternion(w=1.0)),
         Pose(position=Point(x=-half_len, y=0.0, z=0.0), orientation=Quaternion(w=1.0)),
         Pose(
-            position=Point(x=+float(grasp_offset_m), y=0.0, z=0.0),
+            position=Point(x=+float(grasp_offset_m), y=0.0, z=0.0075),
             orientation=Quaternion(w=1.0),
         ),
         Pose(
-            position=Point(x=-float(grasp_offset_m), y=0.0, z=0.0),
+            position=Point(x=-float(grasp_offset_m), y=0.0, z=0.0075),
             orientation=Quaternion(w=1.0),
         ),
     ]
@@ -160,7 +160,7 @@ class JengaBlocksSceneNode(Node):
             z=float(self.declare_parameter("block_box_z", 0.015).value),
         )
         self._grasp_offset_m = float(
-            self.declare_parameter("grasp_offset_m", 0.03).value
+            self.declare_parameter("grasp_offset_m", 0.035).value
         )
 
         # Use transient-local durability so late subscribers still receive the latest

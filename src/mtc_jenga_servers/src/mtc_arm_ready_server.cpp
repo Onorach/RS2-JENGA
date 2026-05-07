@@ -26,7 +26,7 @@ class MtcArmReadyServer : public rclcpp::Node {
   explicit MtcArmReadyServer(const rclcpp::NodeOptions& options = rclcpp::NodeOptions())
   : rclcpp::Node("mtc_arm_ready_server", options) {
     action_name_ = declare_parameter("action_name", "jenga_arm_ready");
-    ur_onrobot_manipulator_ = declare_parameter("arm_group", "ur_onrobot_manipulator");
+    arm_group_name = declare_parameter("arm_group", "ur_onrobot_manipulator");
     arm_home_state_ = declare_parameter("arm_home_state", "ready_position");
     plan_max_attempts_ = static_cast<uint32_t>(declare_parameter("plan_max_attempts", 3));
     vel_scale_ = declare_parameter("max_velocity_scaling_factor", 0.1);
@@ -75,15 +75,15 @@ class MtcArmReadyServer : public rclcpp::Node {
     task.stages()->setName("jenga_arm_ready");
     auto node_ptr = rclcpp::Node::shared_from_this();
     task.loadRobotModel(node_ptr);
-    task.setProperty("group", ur_onrobot_manipulator_);
+    task.setProperty("group", arm_group_name);
 
     auto stage_state_current = std::make_unique<mtc::stages::CurrentState>("current");
     task.add(std::move(stage_state_current));
 
     auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(node_ptr);
-    sampling_planner->setPlannerId("RRTstarkConfigDefault");
+    sampling_planner->setPlannerId("RRTstarArmReadyOptimized");
     sampling_planner->setProperty("goal_joint_tolerance", 1e-4);
-    sampling_planner->setProperty("planning_time", 2.0);
+    sampling_planner->setProperty("planning_time", 4.0);
     sampling_planner->setProperty("enforce_joint_model_state_space", true);
     sampling_planner->setMaxVelocityScalingFactor(vel_scale_);
     sampling_planner->setMaxAccelerationScalingFactor(acc_scale_);
@@ -92,7 +92,7 @@ class MtcArmReadyServer : public rclcpp::Node {
       auto stage = std::make_unique<mtc::stages::MoveTo>("move to ready", sampling_planner);
       stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
       stage->setGoal(named_state);
-      stage->setTimeout(4.0);
+      stage->setTimeout(8.0);
       task.add(std::move(stage));
     }
     return task;
@@ -119,7 +119,7 @@ class MtcArmReadyServer : public rclcpp::Node {
       return false;
     }
 
-    mtc_jenga::retimeArmSubTrajectoriesWithTotg(*task.solutions().front(), ur_onrobot_manipulator_, vel_scale_,
+    mtc_jenga::retimeArmSubTrajectoriesWithTotg(*task.solutions().front(), arm_group_name, vel_scale_,
                                                 acc_scale_, get_logger());
 
     task.introspection().publishSolution(*task.solutions().front());
@@ -189,7 +189,7 @@ class MtcArmReadyServer : public rclcpp::Node {
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_status_;
 
   std::string action_name_;
-  std::string ur_onrobot_manipulator_;
+  std::string arm_group_name;
   std::string arm_home_state_;
   std::string status_topic_;
   uint32_t plan_max_attempts_{3};
