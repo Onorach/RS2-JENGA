@@ -4,7 +4,15 @@
 layout: parametric
 
 parametric:
-  # tower first so stock can alias layer_dz / slot_dx (stack spacing matches tower slot/layer pitch)
+  stock:
+    # Two rows along y (base_link / goal frame); +x row first, then -x row (9 picks each).
+    rows:
+      - {x: 0.2125}
+      - {x: -0.2125}
+    y_centre:  0.297
+    z: 0.0138
+    step_along_y: 0.03583 # ((platform width + (block width * 0.5)) / blocks per row) - 0.01
+    blocks_per_row: 9
   tower:
     base: {x: 0.000, y: 0.297, z: 0.0138}
     # Rotate the entire tower footprint about +Z of goal_frame (yaw, in degrees).
