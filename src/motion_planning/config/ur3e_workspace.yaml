@@ -7,18 +7,16 @@
 # static_transform world -> base_link.
 
 exclusion_zones:
-  - type: box
-    id: wheeled_cabinet
-    frame_id: base_link
-    # Top surface at z=-0.03 (1.5 cm below base_link) so padding does not
-    # create a false collision between base_link and the cabinet.
-    position: [0.0, 0.20, -0.555]
-    size: [0.71, 0.735, 1.05]
+  # - type: box
+  #   id: wheeled_cabinet
+  #   frame_id: base_link
+  #   position: [0.0, 0.20, -0.555]
+  #   size: [0.71, 0.735, 1.05]
 
   - type: box
     id: platform
     frame_id: base_link
-    position: [0.005, 0.297, 0.000]
+    position: [0.000, 0.297, -0.00075]
     size: [0.500, 0.320, 0.0125]
 
   # - type: box
@@ -26,3 +24,27 @@ exclusion_zones:
   #   frame_id: base_link
   #   position: [0.005, 0.297, 0.066]
   #   size: [0.085, 0.085, 0.135]
+
+  # Trolley mesh collision object (UR3eTrolley_decimated.dae).
+
+  # The DAE node transform (scale 0.01 + Blender-Y-up → COLLADA-Z-up rotation)
+  # is applied automatically by the loader.  After the transform the mesh
+  # bounding box in its LOCAL frame is:
+  #   X: [-0.432, +0.370] m   Y: [-0.356, +0.356] m   Z: [-0.031, +1.060] m
+  # The origin sits at floor level (Z ≈ 0).
+
+  # 'position' shifts that origin to the trolley's floor footprint in 'world'.
+  # A starting estimate aligned with the existing wheeled_cabinet box is given
+  # below (world Y = 0.20 m puts the cabinet under the robot arm).
+  # Tune X/Y until the mesh visually overlaps the physical trolley in RViz.
+
+  # To activate: uncomment the block below, then rebuild and relaunch, or use:
+  #   ros2 topic pub --once /add_exclusion_zone std_msgs/msg/String "data: trolley_mesh"
+
+  - type: mesh
+    id: trolley_mesh
+    frame_id: world
+    mesh_path: "package://motion_planning/meshes/UR3eTrolley_decimated.dae"
+    position: [0.0, 0.20, -1.055]       # metres – trolley floor origin in world frame
+    orientation: [0.0, 0.0, 1.0, 0.0]  # xyzw quaternion
+    color: [0.78, 0.78, 0.80, 1.0]     # rgba 0–1; stainless steel (cool silver, fully opaque)
