@@ -400,24 +400,39 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
     return task;
   }
 
-  // Infer the extract axis from the planning scene when the caller does not supply one.
-  // Queries all collision objects, computes their XY centroid as the tower centre,
-  // then projects the target block's displacement onto its local X axis.
-  // Returns "x" if the block has shifted toward its +X end, "-x" otherwise.
-  // Falls back to the extract_axis_ parameter with a warning if no peer blocks exist.
   std::string detectExtractAxis(const geometry_msgs::msg::PoseStamped& block_pose,
                                 const std::string& block_id) const {
     moveit::planning_interface::PlanningSceneInterface psi;
     const auto objects = psi.getObjects();
 
+    auto worldXY = [](const moveit_msgs::msg::CollisionObject& obj)
+        -> std::pair<double, double> {
+      double x = obj.pose.position.x;
+      double y = obj.pose.position.y;
+      if (!obj.primitive_poses.empty()) {
+        x += obj.primitive_poses[0].position.x;
+        y += obj.primitive_poses[0].position.y;
+      }
+      return {x, y};
+    };
+
     double sum_x = 0.0, sum_y = 0.0;
     int count = 0;
+    double target_x = 0.0, target_y = 0.0;
+    bool found_target = false;
+
     for (const auto& [id, obj] : objects) {
-      if (id == block_id) continue;
       if (id.size() < 6 || id.substr(0, 6) != "block_") continue;
       if (obj.primitive_poses.empty()) continue;
-      sum_x += obj.primitive_poses[0].position.x;
-      sum_y += obj.primitive_poses[0].position.y;
+      const auto [wx, wy] = worldXY(obj);
+      if (id == block_id) {
+        target_x = wx;
+        target_y = wy;
+        found_target = true;
+        continue;
+      }
+      sum_x += wx;
+      sum_y += wy;
       ++count;
     }
 
@@ -432,19 +447,24 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
     const double cx = sum_x / count;
     const double cy = sum_y / count;
 
+    // Use PSI-derived position for consistent frame; fall back to goal pose.
+    const double bx = found_target ? target_x : block_pose.pose.position.x;
+    const double by = found_target ? target_y : block_pose.pose.position.y;
+
     // Block's local X axis in world frame — first column of the rotation matrix.
     const auto& q = block_pose.pose.orientation;
     const Eigen::Quaterniond qe(q.w, q.x, q.y, q.z);
     const Eigen::Vector3d local_x = qe.normalized() * Eigen::Vector3d::UnitX();
 
-    const double dx = block_pose.pose.position.x - cx;
-    const double dy = block_pose.pose.position.y - cy;
+    const double dx = bx - cx;
+    const double dy = by - cy;
     const double proj = dx * local_x.x() + dy * local_x.y();
 
     const std::string axis = (proj >= 0.0) ? "x" : "-x";
     RCLCPP_INFO(get_logger(),
-                "Auto-detected extract_axis='%s' (proj=%.4f m, tower_centre=%.3f,%.3f, %d peer blocks)",
-                axis.c_str(), proj, cx, cy, count);
+                "Auto-detected extract_axis='%s' (proj=%.4f m, tower_centre=%.3f,%.3f, "
+                "block=%.3f,%.3f, %d peer blocks)",
+                axis.c_str(), proj, cx, cy, bx, by, count);
     return axis;
   }
 
