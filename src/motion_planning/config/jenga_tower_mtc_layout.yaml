@@ -7,8 +7,8 @@ parametric:
   stock:
     # Two rows along y (base_link / goal frame); +x row first, then -x row (9 picks each).
     rows:
-      - {x: 0.2175}
-      - {x: -0.2075}
+      - {x: 0.2125}
+      - {x: -0.2125}
     y_centre:  0.297
     z: 0.0138
     step_along_y: 0.03583 # ((platform width + (block width * 0.5)) / blocks per row) - 0.01
