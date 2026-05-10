@@ -135,7 +135,7 @@ class MtcProbeBlockServer : public rclcpp::Node {
     task.add(std::move(stage_state_current));
 
     auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(node_ptr);
-    sampling_planner->setPlannerId("RRTstarkConfigDefault");
+    sampling_planner->setPlannerId("RRTstarPathLengthOptimized");
     sampling_planner->setProperty("goal_joint_tolerance", 1e-4);
     sampling_planner->setProperty("planning_time", 2.0);
     sampling_planner->setProperty("enforce_joint_model_state_space", true);

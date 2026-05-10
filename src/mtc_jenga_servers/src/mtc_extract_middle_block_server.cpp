@@ -106,7 +106,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
     extract_axis_ = declare_parameter("extract_axis", "x");
     approach_axis_ = declare_parameter("approach_axis", "-x");
     grasp_r_ = declare_parameter("grasp_frame_roll", 0.0);
-    grasp_p_ = declare_parameter("grasp_frame_pitch", M_PI / 1.0);
+    grasp_p_ = declare_parameter("grasp_frame_pitch", (11.0 * M_PI) / 12.0);
     grasp_y_ = declare_parameter("grasp_frame_yaw", 0.0);
     grasp_angle_delta_ = declare_parameter("grasp_angle_delta", M_PI / 1.0);
     grasp_offset_m_ = declare_parameter("grasp_offset_m", 0.03);
@@ -172,7 +172,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
     task.add(std::move(stage_state_current));
 
     auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(node_ptr);
-    sampling_planner->setPlannerId("RRTstarkConfigDefault");
+    sampling_planner->setPlannerId("RRTstarPathLengthOptimized");
     sampling_planner->setProperty("goal_joint_tolerance", 1e-4);
     sampling_planner->setProperty("planning_time", 1.0);
     sampling_planner->setProperty("enforce_joint_model_state_space", true);
@@ -227,7 +227,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
         stage->properties().set("marker_ns", "grasp_pose");
         stage->setPreGraspPose(open_state_);
         const bool extract_positive = effective_extract_axis.empty() ? true : (effective_extract_axis[0] != '-');
-        const std::string subframe = extract_positive ? "grasp_plus" : "grasp_minus";
+        const std::string subframe = extract_positive ? "end_plus" : "end_minus";
         stage->setObject(block_id + "/" + subframe);
 
         // Log the numeric world-frame pose of the selected subframe target.
@@ -252,7 +252,8 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
         auto w = std::make_unique<mtc::stages::ComputeIK>("grasp IK", std::move(stage));
         w->setMaxIKSolutions(4);
         w->setMinSolutionDistance(0.5);
-        Eigen::Isometry3d grasp_ik_frame = rpyToIso(grasp_r_, grasp_p_, grasp_y_);
+        const int grasp_p_sign = extract_positive ? -1.0 : 1.0;
+        Eigen::Isometry3d grasp_ik_frame = rpyToIso(grasp_r_, grasp_p_sign * grasp_p_, grasp_y_);
         grasp_ik_frame.translation() = Eigen::Vector3d(0.0, 0.0, grasp_offset_z_);
         w->setIKFrame(grasp_ik_frame, hand_frame);
         w->properties().configureInitFrom(mtc::Stage::PARENT, {"eef", "group"});
@@ -498,9 +499,9 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
                                 place_pose.pose.position.z);
         const double along = (p - b).dot(ax);
         const Eigen::Vector3d p_adj = p - 2.0 * along * ax;
-        adjusted_place.pose.position.x = p_adj.x();
-        adjusted_place.pose.position.y = p_adj.y();
-        adjusted_place.pose.position.z = p_adj.z();
+        adjusted_place.pose.position.x = -place_pose.pose.position.x;
+        adjusted_place.pose.position.y = place_pose.pose.position.y;
+        adjusted_place.pose.position.z = place_pose.pose.position.z;
         RCLCPP_INFO(get_logger(),
                     "place_pose adjusted for negative extract axis '%s': "
                     "(%.3f,%.3f,%.3f) -> (%.3f,%.3f,%.3f)",
