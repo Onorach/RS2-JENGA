@@ -11,7 +11,7 @@ exclusion_zones:
   #   id: wheeled_cabinet
   #   frame_id: base_link
   #   position: [0.0, 0.20, -0.555]
-  #   size: [0.71, 0.735, 1.05]
+  #   size: [0.73, 0.71, 1.05]
 
   - type: box
     id: platform

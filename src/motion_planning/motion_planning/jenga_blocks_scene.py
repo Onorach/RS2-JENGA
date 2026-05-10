@@ -159,7 +159,7 @@ class JengaBlocksSceneNode(Node):
             z=float(self.declare_parameter("block_box_z", 0.015).value),
         )
         self._grasp_offset_m = float(
-            self.declare_parameter("grasp_offset_m", 0.035).value
+            self.declare_parameter("grasp_offset_m", 0.0325).value
         )
         initial_layout_raw = str(self.declare_parameter("initial_layout", "none").value)
         self._initial_layout = self._parse_initial_layout(initial_layout_raw)
