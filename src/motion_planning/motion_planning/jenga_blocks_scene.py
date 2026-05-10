@@ -160,7 +160,7 @@ class JengaBlocksSceneNode(Node):
             z=float(self.declare_parameter("block_box_z", 0.015).value),
         )
         self._grasp_offset_m = float(
-            self.declare_parameter("grasp_offset_m", 0.035).value
+            self.declare_parameter("grasp_offset_m", 0.0325).value
         )
 
         # Use transient-local durability so late subscribers still receive the latest

@@ -221,7 +221,7 @@ def main(args=None) -> int:
     validate_subframes = bool(node.declare_parameter("validate_subframes", True).value)
     subframe_tol = float(node.declare_parameter("subframe_tol", 1e-6).value)
     box_x = float(node.declare_parameter("block_box_x", 0.075).value)
-    grasp_offset_m = float(node.declare_parameter("grasp_offset_m", 0.035).value)
+    grasp_offset_m = float(node.declare_parameter("grasp_offset_m", 0.0325).value)
 
     layout_path_param = str(node.declare_parameter("layout_path", "").value)
     place_dx = float(node.declare_parameter("place_dx", -0.12).value)
