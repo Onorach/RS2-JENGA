@@ -515,9 +515,9 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
                                 place_pose.pose.position.z);
         const double along = (p - b).dot(ax);
         const Eigen::Vector3d p_adj = p - 2.0 * along * ax;
-        adjusted_place.pose.position.x = p_adj.x();
-        adjusted_place.pose.position.y = p_adj.y();
-        adjusted_place.pose.position.z = p_adj.z();
+        adjusted_place.pose.position.x = -place_pose.pose.position.x;
+        adjusted_place.pose.position.y = place_pose.pose.position.y;
+        adjusted_place.pose.position.z = place_pose.pose.position.z;
         RCLCPP_INFO(get_logger(),
                     "place_pose adjusted for negative extract axis '%s': "
                     "(%.3f,%.3f,%.3f) -> (%.3f,%.3f,%.3f)",
