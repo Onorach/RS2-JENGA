@@ -1,7 +1,7 @@
 """
 Send a JengaProbeBlock action to mtc_probe_block_server.
 
-1) Call set_jenga_blocks_layout with tower layout (planning scene assembled tower)
+1) Call set_jenga_blocks_tower_layout (planning scene assembled tower)
 2) Read the selected block pose from the planning scene
 3) Send the probe action with block_index and that pose (optional TF into goal_frame)
 """
@@ -11,18 +11,22 @@ from __future__ import annotations
 import sys
 import time
 from typing import Any, Optional
+import time
+from typing import Any, Optional
 
 import rclpy
+from geometry_msgs.msg import PoseStamped
+from moveit_msgs.msg import PlanningScene
 from geometry_msgs.msg import PoseStamped
 from moveit_msgs.msg import PlanningScene
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_srvs.srv import Trigger
 from tf2_geometry_msgs import do_transform_pose_stamped
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from jenga_interfaces.action import JengaProbeBlock
-from jenga_interfaces.srv import SetJengaBlocksLayout
 
 _OUTCOME_NAMES = {0: "UNKNOWN", 1: "LOOSE", 2: "STUCK", 3: "ERROR"}
 
@@ -71,29 +75,18 @@ class _PlanningSceneCache:
         return None
 
 
-def _call_set_layout(
-    node: Node,
-    target_layout: str,
-    *,
-    srv_name: str = "set_jenga_blocks_layout",
-    timeout_sec: float = 10.0,
-) -> bool:
-    cli = node.create_client(SetJengaBlocksLayout, srv_name)
+def _call_trigger(node: Node, name: str, timeout_sec: float = 10.0) -> bool:
+    cli = node.create_client(Trigger, name)
     if not cli.wait_for_service(timeout_sec=timeout_sec):
-        node.get_logger().error(f"Service not available: {srv_name}")
+        node.get_logger().error(f"Service not available: {name}")
         return False
-    req = SetJengaBlocksLayout.Request()
-    req.block_indices = []
-    req.target_layout = target_layout
-    fut = cli.call_async(req)
+    fut = cli.call_async(Trigger.Request())
     rclpy.spin_until_future_complete(node, fut, timeout_sec=timeout_sec)
     resp = fut.result()
     if not resp or not resp.success:
-        node.get_logger().error(
-            f"{srv_name} ({target_layout}) failed: {getattr(resp, 'message', '<no message>')}"
-        )
+        node.get_logger().error(f"{name} failed: {getattr(resp, 'message', '<no message>')}")
         return False
-    node.get_logger().info(f"{srv_name} ({target_layout}): {resp.message}")
+    node.get_logger().info(f"{name}: {resp.message}")
     return True
 
 
@@ -114,9 +107,19 @@ def _format_result(jr) -> str:
     )
 
 
+def _format_result(jr) -> str:
+    outcome_str = _OUTCOME_NAMES.get(jr.probe_outcome, f"?({jr.probe_outcome})")
+    return (
+        f"message={jr.message} score={jr.score:.3f} "
+        f"outcome={outcome_str} displacement={jr.displacement_m:.4f} m "
+        f"max_force={jr.max_force_n:.2f} N"
+    )
+
+
 def main(args=None) -> int:
     rclpy.init(args=args)
     node = Node("test_mtc_probe_block")
+
 
     action_name = str(node.declare_parameter("action_name", "jenga_probe_block").value)
     goal_frame = str(node.declare_parameter("goal_frame", "world").value)
@@ -124,11 +127,15 @@ def main(args=None) -> int:
     planning_scene_topic = str(node.declare_parameter("planning_scene_topic", "/planning_scene").value)
     scene_timeout_sec = float(node.declare_parameter("scene_timeout_sec", 2.0).value)
     tf_timeout_sec = float(node.declare_parameter("tf_timeout_sec", 0.5).value)
+    set_tower_service = str(
+        node.declare_parameter("set_tower_service", "set_jenga_blocks_tower_layout").value
+    )
+
     scene_cache = _PlanningSceneCache(node, topic=planning_scene_topic)
     tf_buffer = Buffer()
     tf_listener = TransformListener(tf_buffer, node, spin_thread=False)
 
-    if not _call_set_layout(node, "tower", timeout_sec=10.0):
+    if not _call_trigger(node, set_tower_service, timeout_sec=10.0):
         rclpy.shutdown()
         return 10
 
@@ -171,8 +178,10 @@ def main(args=None) -> int:
 
     goal = JengaProbeBlock.Goal()
     goal.block_index = block_index
+    goal.block_index = block_index
     goal.block_pose = block
 
+    node.get_logger().info("Sending FT-guided probe action...")
     node.get_logger().info("Sending FT-guided probe action...")
     send_fut = client.send_goal_async(goal, feedback_callback=_on_feedback)
     rclpy.spin_until_future_complete(node, send_fut, timeout_sec=10.0)
@@ -190,8 +199,10 @@ def main(args=None) -> int:
     jr = wrapped.result
     if jr.success:
         node.get_logger().info(f"Result OK: {_format_result(jr)}")
+        node.get_logger().info(f"Result OK: {_format_result(jr)}")
         rclpy.shutdown()
         return 0
+    node.get_logger().error(f"Result FAIL: (code {jr.error_code}) {_format_result(jr)}")
     node.get_logger().error(f"Result FAIL: (code {jr.error_code}) {_format_result(jr)}")
     rclpy.shutdown()
     return 4

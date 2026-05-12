@@ -9,6 +9,7 @@ ROS2 package for motion planning with a UR3e: pose goals, RMRC (Resolved Motion 
 - **Exclusion zones** – No-go regions (boxes, spheres) loaded from YAML or added in code
 - **E-stop integration** – Works with `ur3e_controller` estop node to cancel trajectories
 - **MoveIt Task Constructor (MTC)** – Jenga pick/place, extract, probe, and arm-ready actions via `mtc_jenga_servers` when `planner:=mtc` (default in `motion_planning.launch.py`)
+- **MoveIt Task Constructor (MTC)** – Jenga pick/place, extract, probe, and arm-ready actions via `mtc_jenga_servers` when `planner:=mtc` (default in `motion_planning.launch.py`)
 
 ## Requirements
 
@@ -17,12 +18,14 @@ ROS2 package for motion planning with a UR3e: pose goals, RMRC (Resolved Motion 
 - `ur_moveit_config` (when using MoveIt pose goal node)
 - `ur_description` (for RMRC)
 - For **MTC**: `jenga_interfaces`, `mtc_jenga_servers`, `moveit_task_constructor`, and a MoveIt config that matches your robot (e.g. `ur_onrobot_moveit_config` with gripper groups)
+- For **MTC**: `jenga_interfaces`, `mtc_jenga_servers`, `moveit_task_constructor`, and a MoveIt config that matches your robot (e.g. `ur_onrobot_moveit_config` with gripper groups)
 - Python/ROS deps: `numpy`, `python3-pykdl`, `kdl_parser_py`, `urdf_parser_py`, `yaml`
 
 ## Build
 
 ```bash
 source /opt/ros/humble/setup.bash  # or iron
+colcon build --packages-select jenga_interfaces mtc_jenga_servers motion_planning
 colcon build --packages-select jenga_interfaces mtc_jenga_servers motion_planning
 source install/setup.bash
 ```
@@ -46,15 +49,16 @@ By default (`jenga_blocks_startup_layout:=none`), no blocks are published at sta
 
 | Service | Type | Effect |
 |---------|------|--------|
+| `set_jenga_blocks_stock_layout` | `std_srvs/Trigger` | Republish all `block_XX` collision objects at **stock** poses from `jenga_tower_mtc_layout.yaml`. |
+| `set_jenga_blocks_tower_layout` | `std_srvs/Trigger` | Republish the same objects at **assembled tower** poses (same geometry as MTC place poses). Useful to test planning against a full tower instantly. |
 | `set_jenga_blocks_layout` | `jenga_interfaces/srv/SetJengaBlocksLayout` | Republish selected `block_indices` (or all if empty) at either `target_layout: "stock"` or `"tower"` (planning scene only). |
 | `protrude_jenga_block` | `jenga_interfaces/srv/ProtrudeJengaBlock` | Move one block’s collision object along an axis by `distance_m` (planning scene only; used by extraction tests). |
 
 Example:
 
 ```bash
-# Full tower or stock layout
-ros2 service call /set_jenga_blocks_layout jenga_interfaces/srv/SetJengaBlocksLayout "{block_indices: [], target_layout: 'tower'}"
-ros2 service call /set_jenga_blocks_layout jenga_interfaces/srv/SetJengaBlocksLayout "{block_indices: [], target_layout: 'stock'}"
+ros2 service call /set_jenga_blocks_tower_layout std_srvs/srv/Trigger
+ros2 service call /set_jenga_blocks_stock_layout std_srvs/srv/Trigger
 
 # Reset only specific indices (example: put block_10 and block_11 back to stock)
 ros2 service call /set_jenga_blocks_layout jenga_interfaces/srv/SetJengaBlocksLayout "{block_indices: [10, 11], target_layout: 'stock'}"
@@ -188,7 +192,7 @@ Run with the workspace sourced and the MTC stack (and MoveIt) running.
 | `ros2 run motion_planning test_mtc_extract_side` | `JengaExtractSideBlock` | Params: `action_name`, `goal_frame` |
 | `ros2 run motion_planning test_mtc_extract_middle` | `JengaExtractMiddleBlock` | Params: `action_name`, `goal_frame` |
 | `ros2 run motion_planning test_mtc_extract_middle_protruded` | `JengaExtractMiddleBlock` | Sets tower scene, calls `protrude_jenga_block`, then extracts. Params include `block_index`, `protrude_distance_m`, `protrude_axis`, `layout_path`, `planning_scene_topic`, `extract_axis`, … |
-| `ros2 run motion_planning test_mtc_probe_block` | `JengaProbeBlock` | Calls `set_jenga_blocks_layout` with tower layout (planning scene only), reads `block_{index}` pose from `planning_scene_topic`, sends probe goal. Params: `action_name`, `goal_frame`, `block_index`, `planning_scene_topic`, `scene_timeout_sec`, `tf_timeout_sec` |
+| `ros2 run motion_planning test_mtc_probe_block` | `JengaProbeBlock` | Calls `set_jenga_blocks_tower_layout` (planning scene only), reads `block_{index}` pose from `planning_scene_topic`, sends probe goal. Params: `action_name`, `goal_frame`, `block_index`, `planning_scene_topic`, `scene_timeout_sec`, `tf_timeout_sec`, `set_tower_service` |
 | `ros2 run motion_planning mtc_action_client` | `JengaPickPlace` | Minimal one-shot pick/place with built-in default poses; overlaps with `test_mtc_pick_place` |
 
 Example:
@@ -271,5 +275,7 @@ from motion_planning.exclusion_zones_loader import apply_exclusion_zones_to_scen
 ## See also
 
 - [ur3e_controller](../ur3e_controller/README.md) – joint control, sim launch files, move client API
+- [jenga_interfaces](../jenga_interfaces/README.md) – action and service definitions
+- [mtc_jenga_servers](../mtc_jenga_servers/README.md) – MTC action server nodes and standalone launches
 - [jenga_interfaces](../jenga_interfaces/README.md) – action and service definitions
 - [mtc_jenga_servers](../mtc_jenga_servers/README.md) – MTC action server nodes and standalone launches

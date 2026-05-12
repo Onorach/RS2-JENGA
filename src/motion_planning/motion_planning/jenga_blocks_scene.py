@@ -4,9 +4,11 @@ Publish persistent Jenga block collision objects to the MoveIt2 planning scene.
 Optional startup publish via ROS parameter ``initial_layout`` (``none`` default,
 ``stock`` or ``tower`` to spawn all blocks after ``startup_delay_sec``).
 
-- ``set_jenga_blocks_layout`` (SetJengaBlocksLayout): republish selected indices (or all
-  when ``block_indices`` is empty) at either stock or tower layout.
-- ``protrude_jenga_block`` (ProtrudeJengaBlock): offset one block along an axis.
+- ``set_jenga_blocks_stock_layout`` (Trigger): republish blocks at **stock** poses from YAML.
+- ``set_jenga_blocks_tower_layout`` (Trigger): republish blocks at **assembled tower**
+  poses (planning scene only; does not move Gazebo or hardware).
+- ``set_jenga_blocks_layout`` (SetJengaBlocksLayout): republish selected indices (or all)
+  at either stock or tower layout.
 """
 
 from __future__ import annotations
@@ -24,12 +26,15 @@ from motion_planning.jenga_tower_mtc_sequencer import (
     tower_poses_from_layout_dict,
 )
 from moveit_msgs.msg import CollisionObject, ObjectColor, PlanningScene, PlanningSceneWorld
+from moveit_msgs.msg import CollisionObject, ObjectColor, PlanningScene, PlanningSceneWorld
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import ColorRGBA, Header
+from std_srvs.srv import Trigger
 
 from jenga_interfaces.srv import ProtrudeJengaBlock
+from jenga_interfaces.srv import SetJengaBlocksLayout
 from jenga_interfaces.srv import SetJengaBlocksLayout
 
 import math
@@ -173,6 +178,12 @@ class JengaBlocksSceneNode(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
         self._pub = self.create_publisher(PlanningScene, "/planning_scene", qos)
+        self._srv_stock_layout = self.create_service(
+            Trigger, "set_jenga_blocks_stock_layout", self._on_set_stock_layout
+        )
+        self._srv_tower_layout = self.create_service(
+            Trigger, "set_jenga_blocks_tower_layout", self._on_set_tower_layout
+        )
         self._srv_set_layout = self.create_service(
             SetJengaBlocksLayout, "set_jenga_blocks_layout", self._on_set_layout
         )
@@ -181,6 +192,7 @@ class JengaBlocksSceneNode(Node):
         )
 
         self._cached_objects: list[CollisionObject] = []
+        self._wood_color = ColorRGBA(r=0.8, g=0.5, b=0.3, a=1.0)
         self._wood_color = ColorRGBA(r=0.8, g=0.5, b=0.3, a=1.0)
         self._done = False
         self._timer = None
@@ -285,11 +297,14 @@ class JengaBlocksSceneNode(Node):
         scene.world.collision_objects = objects
 
         scene.object_colors = [ObjectColor(id=obj.id, color=self._wood_color) for obj in objects]
+
+        scene.object_colors = [ObjectColor(id=obj.id, color=self._wood_color) for obj in objects]
         self._pub.publish(scene)
 
     def _publish_object(self, obj: CollisionObject) -> None:
         scene = PlanningScene(is_diff=True, world=PlanningSceneWorld())
         scene.world.collision_objects = [obj]
+        scene.object_colors = [ObjectColor(id=obj.id, color=self._wood_color)]
         scene.object_colors = [ObjectColor(id=obj.id, color=self._wood_color)]
         self._pub.publish(scene)
 
@@ -347,11 +362,7 @@ class JengaBlocksSceneNode(Node):
             return (True, f"Republished {n} Jenga block collision object(s) at {target_layout} layout.")
 
         if not self._cached_objects:
-            return (
-                False,
-                "no cached objects yet (call set_jenga_blocks_layout with empty "
-                "block_indices for a full layout first)",
-            )
+            return (False, "no cached objects yet (wait for startup publish)")
         if len(self._cached_objects) != n:
             return (
                 False,
@@ -373,6 +384,30 @@ class JengaBlocksSceneNode(Node):
             f"Republished {len(selected)} Jenga block collision object(s) at {target_layout} layout: indices={uniq}",
         )
 
+    def _on_set_stock_layout(
+        self, request: Trigger.Request, response: Trigger.Response
+    ) -> Trigger.Response:
+        try:
+            ok, msg = self._apply_layout(target_layout="stock", block_indices=None)
+            response.success = bool(ok)
+            response.message = msg
+        except Exception as exc:
+            response.success = False
+            response.message = f"set stock layout failed: {exc}"
+        return response
+
+    def _on_set_tower_layout(
+        self, request: Trigger.Request, response: Trigger.Response
+    ) -> Trigger.Response:
+        try:
+            ok, msg = self._apply_layout(target_layout="tower", block_indices=None)
+            response.success = bool(ok)
+            response.message = msg
+        except Exception as exc:
+            response.success = False
+            response.message = f"set tower layout failed: {exc}"
+        return response
+
     def _on_set_layout(
         self,
         request: SetJengaBlocksLayout.Request,
@@ -388,6 +423,7 @@ class JengaBlocksSceneNode(Node):
             response.message = msg
         except Exception as exc:
             response.success = False
+            response.message = f"set layout failed: {exc}"
             response.message = f"set layout failed: {exc}"
         return response
 
