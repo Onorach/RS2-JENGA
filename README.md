@@ -75,7 +75,7 @@ python3 src/perception/play_live.py
 
 **Step 3 — Launch the JENGA Interface (GUI):**
 ```bash
-python3 src/interaction_perception/GUI.py
+python3 src/interaction_execution/GUI.py
 ```
 
 ### Expected Outcome
