@@ -41,6 +41,7 @@ setup(
             "jenga_tower_mtc_sequencer = motion_planning.jenga_tower_mtc_sequencer:main",
             "jenga_extract_middle_to_top_sequencer = motion_planning.jenga_extract_middle_to_top_sequencer:main",
             "robot_gui = motion_planning.robot_gui:main",
+            "robot_state_bridge_node = motion_planning.robot_state_bridge_node:main",
         ],
     },
 )

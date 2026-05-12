@@ -17,7 +17,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
 import rclpy
 import yaml
@@ -385,6 +385,73 @@ def _block_index_from_params(node: Node) -> int:
     return int(node.declare_parameter("block_index", 0).value)
 
 
+def _resolve_place_top_target(
+    node: Node,
+    tp: _TowerParams,
+    *,
+    place_top_indices: Sequence[int],
+    place_top_layer: int,
+    place_top_slot: int,
+) -> tuple[int, int, bool] | None:
+    """Return (layer, slot, is_manual) or None if parameters are invalid.
+
+    is_manual False means caller should run auto slot detection; layer/slot are dummies.
+    Resolution: explicit ``place_top_indices`` [layer, slot] when both are >= 0; else explicit
+    ``place_top_layer`` and ``place_top_slot`` when both are >= 0; else auto when all are
+    negative; partial specifications are rejected.
+    """
+    idx = [int(x) for x in place_top_indices]
+    arr_explicit: tuple[int, int] | None = None
+    if len(idx) == 0:
+        pass
+    elif len(idx) == 1:
+        node.get_logger().error("place_top_indices must be empty or length 2, got length 1")
+        return None
+    elif len(idx) > 2:
+        node.get_logger().error(f"place_top_indices must have at most 2 elements, got {len(idx)}")
+        return None
+    else:
+        l_a, s_a = idx[0], idx[1]
+        if l_a >= 0 and s_a >= 0:
+            arr_explicit = (l_a, s_a)
+        elif l_a < 0 and s_a < 0:
+            pass
+        else:
+            node.get_logger().error(
+                "place_top_indices mixes negative and non-negative values (partial spec); "
+                "use both >= 0 for manual placement or both < 0 for auto"
+            )
+            return None
+
+    if arr_explicit is not None:
+        l, s = arr_explicit
+        if s >= tp.blocks_per_layer:
+            node.get_logger().error(
+                f"place_top_indices [{l}, {s}] invalid: need "
+                f"0 <= slot < blocks_per_layer ({tp.blocks_per_layer})"
+            )
+            return None
+        return (l, s, True)
+
+    if place_top_layer >= 0 and place_top_slot >= 0:
+        if place_top_slot >= tp.blocks_per_layer:
+            node.get_logger().error(
+                f"place_top_slot {place_top_slot} out of range; "
+                f"need 0 <= slot < blocks_per_layer ({tp.blocks_per_layer})"
+            )
+            return None
+        return (place_top_layer, place_top_slot, True)
+
+    if place_top_layer < 0 and place_top_slot < 0:
+        return (0, 0, False)
+
+    node.get_logger().error(
+        "place_top_layer / place_top_slot partial spec: set both >= 0 for manual placement "
+        "or both < 0 for auto"
+    )
+    return None
+
+
 def main(args: list[str] | None = None) -> int:
     rclpy.init(args=args)
     node = Node("jenga_extract_middle_to_top_sequencer")
@@ -412,6 +479,11 @@ def main(args: list[str] | None = None) -> int:
     slot_z_tol_m = float(node.declare_parameter("slot_z_tol_m", 0.012).value)
     tower_radius_m = float(node.declare_parameter("tower_radius_m", 0.25).value)
     max_extra_layers = int(node.declare_parameter("max_extra_layers", 6).value)
+
+    place_top_indices_raw = node.declare_parameter("place_top_indices", [-1, -1]).value
+    place_top_indices = [int(x) for x in (place_top_indices_raw or [])]
+    place_top_layer = int(node.declare_parameter("place_top_layer", -1).value)
+    place_top_slot = int(node.declare_parameter("place_top_slot", -1).value)
 
     # Handoff pose relative to tower base (defaults copied from extract-middle protruded test).
     handoff_dx = float(node.declare_parameter("handoff_dx", -0.12).value)
@@ -490,19 +562,35 @@ def main(args: list[str] | None = None) -> int:
         rclpy.shutdown()
         return 17
 
-    snap = {}
-    snap.update(fallback_cache.snapshot())
-    snap.update(scene_cache.snapshot())
-    layer, slot, top_pose = _detect_next_free_top_slot(
-        node=node,
-        tp=tp,
-        scene_poses=snap,
-        slot_xy_tol_m=slot_xy_tol_m,
-        slot_z_tol_m=slot_z_tol_m,
-        tower_radius_m=tower_radius_m,
-        max_extra_layers=max_extra_layers,
+    resolved = _resolve_place_top_target(
+        node,
+        tp,
+        place_top_indices=place_top_indices,
+        place_top_layer=place_top_layer,
+        place_top_slot=place_top_slot,
     )
-    node.get_logger().info(f"Top slot selection: layer={layer} slot={slot}")
+    if resolved is None:
+        rclpy.shutdown()
+        return 18
+
+    layer, slot, place_manual = resolved
+    if place_manual:
+        top_pose = _expected_slot_pose(tp, layer=layer, slot=slot)
+        node.get_logger().info(f"Top slot manual: layer={layer} slot={slot}")
+    else:
+        snap = {}
+        snap.update(fallback_cache.snapshot())
+        snap.update(scene_cache.snapshot())
+        layer, slot, top_pose = _detect_next_free_top_slot(
+            node=node,
+            tp=tp,
+            scene_poses=snap,
+            slot_xy_tol_m=slot_xy_tol_m,
+            slot_z_tol_m=slot_z_tol_m,
+            tower_radius_m=tower_radius_m,
+            max_extra_layers=max_extra_layers,
+        )
+        node.get_logger().info(f"Top slot selection: layer={layer} slot={slot}")
 
     # Build handoff pose (extract places here).
     handoff_pose = PoseStamped()

@@ -75,7 +75,7 @@ def _load_yaml(path: str) -> dict[str, Any]:
 
 
 def _stock_pick_xyz_list(stock: dict[str, Any], *, n_tower: int) -> list[tuple[float, float, float]]:
-    """Ordered (x, y, z) for each stock pick: rows in YAML order, y low -> high per row."""
+    """Ordered (x, y, z) for each stock pick: rows in YAML order (optional dz per row), y low -> high per row."""
     if "rows" in stock:
         rows = stock["rows"]
         y_centre = float(stock["y_centre"])
@@ -86,9 +86,11 @@ def _stock_pick_xyz_list(stock: dict[str, Any], *, n_tower: int) -> list[tuple[f
         out: list[tuple[float, float, float]] = []
         for row in rows:
             x = float(row["x"])
+            dz = float(row.get("dz", 0.0151))
+            z_row = z + dz
             for j in range(bpr):
                 y = y_centre + (j - half) * step_y
-                out.append((x, y, z))
+                out.append((x, y, z_row))
         n_stock = len(out)
         if n_stock != n_tower:
             warnings.warn(

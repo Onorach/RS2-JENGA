@@ -4,10 +4,12 @@ ROS2 workspace for controlling a UR3e robot in Jenga manipulation tasks. Support
 
 ## Package Structure
 
-| Package             | Description                                                                 |
-|---------------------|-----------------------------------------------------------------------------|
-| `ur3e_controller`   | Joint trajectory control, simulation launch files, demo nodes, e-stop      |
-| `motion_planning`   | Pose goals, RMRC planner, exclusion zones, MoveIt2 integration             |
+| Package               | Description                                                                 |
+|-----------------------|-----------------------------------------------------------------------------|
+| `ur3e_controller`     | Joint trajectory control, simulation launch files, demo nodes, e-stop      |
+| `motion_planning`     | Pose goals, RMRC, exclusion zones, MoveIt2, **MTC** stack launch and Python clients |
+| `jenga_interfaces`    | ROS 2 actions and services for Jenga / MTC                                   |
+| `mtc_jenga_servers`   | C++ MoveIt Task Constructor action servers (pick/place, extract, probe, arm ready) |
 
 ## Requirements
 
@@ -19,8 +21,8 @@ ROS2 workspace for controlling a UR3e robot in Jenga manipulation tasks. Support
 
 ```bash
 cd ~/ros2_ws
-source /opt/ros/iron/setup.bash  # or humble
-colcon build --packages-select ur3e_controller motion_planning
+source /opt/ros/humble/setup.bash
+colcon build --packages-select ur3e_controller jenga_interfaces mtc_jenga_servers motion_planning
 source install/setup.bash
 ```
 
@@ -176,11 +178,15 @@ Tweak `use_fake_hardware`, `robot_ip`, `base_height` / `base_yaw` for the real b
 
 Edit [`motion_planning/config/jenga_tower_mtc_layout.yaml`](src/motion_planning/config/jenga_tower_mtc_layout.yaml) for stock and tower frame positions.
 
-To **instantly** place Jenga block collision objects in the assembled tower layout in MoveIt (no robot motion), call `set_jenga_blocks_tower` on `jenga_blocks_scene` (`std_srvs/Trigger`). Use `reset_jenga_blocks` to return them to the stock layout. This only updates the planning scene, not Gazebo or hardware.
+To **instantly** place Jenga block collision objects in the assembled tower layout in MoveIt (no robot motion), call `set_jenga_blocks_tower_layout` on `jenga_blocks_scene` (`std_srvs/Trigger`). Use `set_jenga_blocks_stock_layout` to return them to the stock layout. This only updates the planning scene, not Gazebo or hardware.
+
+For **all action names**, **CLI smoke tests**, **sequencers**, `mtc_server_mode`, and planning-scene services (`protrude_jenga_block`, etc.), see the MoveIt Task Constructor section in [motion_planning/README.md](src/motion_planning/README.md).
 
 ---
 
 ## Documentation
 
 - [ur3e_controller](src/ur3e_controller/README.md) – joint control, launch files, move client API
-- [motion_planning](src/motion_planning/README.md) – pose goals, RMRC, exclusion zones, MoveIt2 integration
+- [motion_planning](src/motion_planning/README.md) – pose goals, RMRC, exclusion zones, MoveIt2 integration, **MTC runbook** (actions, tests, sequencers)
+- [jenga_interfaces](src/jenga_interfaces/README.md) – action and service definitions
+- [mtc_jenga_servers](src/mtc_jenga_servers/README.md) – MTC C++ servers and standalone launches

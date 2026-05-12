@@ -16,6 +16,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/JengaExtractMiddleBlock.action"
   "action/JengaProbeBlock.action"
   "srv/ProtrudeJengaBlock.srv"
+  "srv/SetJengaBlocksLayout.srv"
   DEPENDENCIES geometry_msgs
 )
 

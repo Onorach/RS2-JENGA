@@ -662,6 +662,13 @@ def generate_launch_description():
         ],
     )
 
+    robot_state_bridge_node = Node(
+        package=pkg_planning,
+        executable="robot_state_bridge_node",
+        name="robot_state_bridge_node",
+        output="screen",
+    )
+
     return LaunchDescription([
         exclusion_zones_file_arg,
         add_floor_plane_arg,
@@ -720,4 +727,5 @@ def generate_launch_description():
         mtc_arm_ready_server_node,
         exclusion_zones_node,
         estop_node,
+        robot_state_bridge_node,
     ])
