@@ -236,7 +236,7 @@ def main(args=None) -> int:
     tf_listener = TransformListener(tf_buffer, node, spin_thread=False)
 
     # 1) Put blocks in tower layout in planning scene
-    if not _call_trigger(node, "set_jenga_blocks_tower", timeout_sec=10.0):
+    if not _call_trigger(node, "set_jenga_blocks_tower_layout", timeout_sec=10.0):
         rclpy.shutdown()
         return 10
 
