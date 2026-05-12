@@ -18,7 +18,7 @@ Project JENGA addresses two classic frustrations: finding a worthy Jenga opponen
 
 ## Dependencies
 
-### Hardware (Bill of Materials)
+### Hardware
 
 - **Robot:** UR3 / UR3e Collaborative Robot
 - **Camera:** Intel RealSense Camera
@@ -70,7 +70,7 @@ ros2 launch realsense2_camera rs_launch.py \
 
 **Step 2 — Launch Vision Processing (Perception):**
 ```bash
-python3 src/interaction_perception/play_live.py
+python3 src/perception/play_live.py
 ```
 
 **Step 3 — Launch the JENGA Interface (GUI):**
@@ -116,7 +116,7 @@ Acts as the central command hub for the operator to monitor robot status, select
 1. **End-Effector Override** — Click `"Override to closed/opened"` and observe the robot end-effector move in simulation or on the physical arm.
 2. **Camera Feed** — Change something in the camera's field of view and confirm the live feed updates inside the GUI.
 3. **Goal Selection** — Click a block button in the **Next Goal** section and verify the goal position description updates on the GUI.
-4. **Software ESTOP** — Click the ESTOP button and confirm the Robot State reflects the stop and that arm movement has paused.
+4. **Software ESTOP** — Click the ESTOP button and confirm the Robot State reflects the stop and that arm movement has paused in simulation or real life.
 
 ---
 
