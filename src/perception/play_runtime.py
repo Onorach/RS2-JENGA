@@ -386,7 +386,7 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
                 active_cells = [cell for layer in locked_layer_cells for cell in layer]
                 _last_pct_results = compute_percentages(bgr, cells=active_cells)
                 row_cells = [(layer[0], layer[1]) for layer in locked_layer_cells]
-                tower = analyse_tower(bgr, row_cells)
+                tower = analyse_tower(bgr, depth_mm, row_cells)
                 
                 
                 if tower and publish_top_layer:
@@ -395,14 +395,6 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
                 
                 
                 _last_tower_img = build_tower_image(tower)
-                for i, layer_data in enumerate(tower):
-                    print(
-                        f"layer {i}  orientation={layer_data['orientation']}  "
-                        + "  ".join(
-                            f"{b['colour']}({'present' if b['present'] else 'missing'})"
-                            for b in layer_data["blocks"]
-                        )
-                    )
             if _last_pct_results:
                 active_cells = [cell for layer in locked_layer_cells for cell in layer]
                 _ensure_window_open("Box percentages")
@@ -419,23 +411,6 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
             pct_results = compute_percentages(bgr, cells=active_cells)
             _ensure_window_open("Box percentages")
             cv2.imshow("Box percentages", build_debug_image(bgr, pct_results, cells=active_cells))
-        if TOWER_ANALYSIS_ENABLED and tower_depth is not None:
-            print("tower depth = " + f"{tower_depth['tower_depth_m']:.3f}m")
-        elif TOWER_ANALYSIS_ENABLED:
-            print("tower distance unavailable — " + explain_tower_depth_skip(bgr, depth_mm, pts))
-        if TOWER_ANALYSIS_ENABLED and tower_offset is not None:
-            if tower_offset["lateral_m"] is None:
-                print(
-                    "tower offset "
-                    + f"dx_px={tower_offset['dx_px']:+.1f}px"
-                )
-            else:
-                print(
-                    "tower offset "
-                    + f"dx_px={tower_offset['dx_px']:+.1f}px  "
-                    + f"lateral={tower_offset['lateral_m']:+.3f}m"
-                )
-
         if (cv2.waitKey(1) & 0xFF) == ord("q"):
             break
 

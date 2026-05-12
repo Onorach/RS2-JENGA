@@ -25,7 +25,7 @@ except ImportError:
     _ROS_AVAILABLE = False
     Node = object
 
-from colour_identification import classify_frame, compute_roi
+from colour_identification import classify_frame, classify_hsv, compute_roi
 from perception_config import HSV_RANGES, COLOUR_BGR, DIVIDE_LINE
 
 # ---------------------------------------------------------------------------
@@ -80,15 +80,13 @@ def compute_percentages(bgr_frame: np.ndarray,
     ih, iw = bgr_frame.shape[:2]
     hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
 
+    # Use the same filtered classification as the colour mask window
+    # (median blur + morphological open via classify_hsv)
     label_img    = np.full((ih, iw), "none", dtype=object)
     unclassified = np.ones((ih, iw), dtype=bool)
 
-    for colour, ranges in HSV_RANGES.items():
-        combined = np.zeros((ih, iw), dtype=np.uint8)
-        for lo, hi in ranges:
-            combined |= cv2.inRange(hsv, np.array(lo, dtype=np.uint8),
-                                         np.array(hi, dtype=np.uint8))
-        matched = combined.astype(bool) & unclassified
+    for colour in HSV_RANGES:
+        matched = classify_hsv(hsv, colour) & unclassified
         label_img[matched] = colour
         unclassified &= ~matched
 
@@ -122,12 +120,8 @@ def _colour_centroids(bgr_frame: np.ndarray, cell: dict) -> dict[str, float]:
     total    = int(quad.sum())
 
     centroids: dict[str, float] = {}
-    for colour, ranges in HSV_RANGES.items():
-        combined = np.zeros((ih, iw), dtype=np.uint8)
-        for lo, hi in ranges:
-            combined |= cv2.inRange(hsv, np.array(lo, dtype=np.uint8),
-                                         np.array(hi, dtype=np.uint8))
-        mask = quad & combined.astype(bool)
+    for colour in HSV_RANGES:
+        mask = quad & classify_hsv(hsv, colour)
         ys, xs = np.where(mask)
         if len(xs) == 0:
             continue
@@ -151,12 +145,8 @@ def colour_mean_x_in_cell(bgr_frame: np.ndarray, cell: dict) -> dict[str, float]
     if total == 0:
         return {}
     out: dict[str, float] = {}
-    for colour, ranges in HSV_RANGES.items():
-        combined = np.zeros((ih, iw), dtype=np.uint8)
-        for lo, hi in ranges:
-            combined |= cv2.inRange(hsv, np.array(lo, dtype=np.uint8),
-                                         np.array(hi, dtype=np.uint8))
-        mask = quad & combined.astype(bool)
+    for colour in HSV_RANGES:
+        mask = quad & classify_hsv(hsv, colour)
         ys, xs = np.where(mask)
         if len(xs) == 0:
             continue
@@ -165,6 +155,69 @@ def colour_mean_x_in_cell(bgr_frame: np.ndarray, cell: dict) -> dict[str, float]
         out[colour] = float(np.mean(xs))
     return out
 
+
+def colour_mean_depth_in_cell(
+    bgr_frame: np.ndarray,
+    depth_frame: np.ndarray,
+    cell: dict,
+) -> dict[str, float]:
+    """
+    Mean REAL depth (mm) per colour inside a cell.
+
+    Returns:
+        {
+            "red": 312.4,
+            "blue": 358.1,
+            ...
+        }
+
+    Uses eroded masks for stability.
+    """
+
+    ih, iw = bgr_frame.shape[:2]
+
+    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
+    quad = _quad_mask((ih, iw), cell["corners"])
+
+    total = int(quad.sum())
+    if total == 0:
+        return {}
+
+    out: dict[str, float] = {}
+
+    kernel = np.ones((5, 5), np.uint8)
+
+    for colour in HSV_RANGES:
+
+        mask = quad & classify_hsv(hsv, colour)
+
+        # Erode to avoid edge contamination
+        mask = cv2.erode(
+            mask.astype(np.uint8),
+            kernel,
+            iterations=2,
+        ).astype(bool)
+
+        colour_pct = float(mask.sum()) / total * 100.0
+
+        if colour_pct < MIN_COLOUR_PCT:
+            continue
+
+        depth_values = depth_frame[mask]
+
+        # Remove invalid depths
+        depth_values = depth_values[
+            (depth_values > 0)
+            & np.isfinite(depth_values)
+        ]
+
+        if len(depth_values) < 20:
+            continue
+
+        # Median is MUCH more stable than mean
+        out[colour] = float(np.median(depth_values))
+
+    return out
 
 def analyse_layer(bgr_frame: np.ndarray,
                   left_result: dict, right_result: dict,
@@ -234,12 +287,8 @@ def build_debug_image(bgr_frame: np.ndarray, results: list[dict],
         quad         = _quad_mask((ih, iw), cell["corners"])
         unclassified = quad.copy()
 
-        for colour, ranges in HSV_RANGES.items():
-            combined = np.zeros((ih, iw), dtype=np.uint8)
-            for lo, hi in ranges:
-                combined |= cv2.inRange(hsv, np.array(lo, dtype=np.uint8),
-                                             np.array(hi, dtype=np.uint8))
-            matched = quad & combined.astype(bool) & unclassified
+        for colour in HSV_RANGES:
+            matched = quad & classify_hsv(hsv, colour) & unclassified
             unclassified &= ~matched
             canvas[matched[min_y:max_y, min_x:max_x]] = COLOUR_BGR[colour]
 
@@ -297,4 +346,3 @@ def main_ros():
     finally:
         node.destroy_node()
         rclpy.shutdown()
-

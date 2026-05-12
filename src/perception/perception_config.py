@@ -4,13 +4,20 @@ Shared configuration for perception scripts.
 Centralize values used by active runtime modules.
 """
 
+# Activation 
+
+# Tower finder, depth feed, depth/offset metrics and related prints.
+TOWER_ANALYSIS_ENABLED = False
+
+# Grey edge windows (Edges grey / history) and processing.
+EDGE_DETECTION_ENABLED = True
 
 # ---------------------------------------------------------------------------
 # Core shared settings (ROI, colour identification, overlays)
 # ---------------------------------------------------------------------------
 
 # Search Area: (cx_frac, cy_frac, w_frac, h_frac).
-SEARCH_AREA = (0.51, 0.51, 0.38, 0.53) # Bigger w/h = wider search; cx/cy shifts ROI.
+SEARCH_AREA = (0.6, 0.44, 0.35, 0.45) # Bigger w/h = wider search; cx/cy shifts ROI.
 
 # HSV ranges per colour (changes classification sensitivity).
 HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
@@ -63,9 +70,6 @@ DEFAULT_WINDOW_SIZE = (960, 540)  # UI sizing only; no processing effect.
 # Tower analysis + tower mask
 # ---------------------------------------------------------------------------
 
-# Tower finder, depth feed, depth/offset metrics and related prints.
-TOWER_ANALYSIS_ENABLED = True
-
 # ---------------- Saturation Mask ----------------
 
 # Min saturation for tower-mask foreground.
@@ -103,9 +107,6 @@ TOWER_ANALYSIS_DEPTH_PAD_PX = 30  # Higher = larger depth-feed crop.
 # ---------------------------------------------------------------------------
 # Edge detection
 # ---------------------------------------------------------------------------
-
-# Grey edge windows (Edges grey / history) and processing.
-EDGE_DETECTION_ENABLED = True
 
 # Number of frames accumulated in grey-edge history.
 EDGE_HISTORY_FRAMES = 30  # Higher = longer line trails.
