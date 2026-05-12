@@ -3,10 +3,12 @@ colour_identification.py
 ------------------------
 Classifies every pixel in the search ROI by colour using HSV masks.
 
-ROS topics published
---------------------
-/jenga/colour_frame   (sensor_msgs/Image)   BGR image painted with class colours.
+Published topics
+----------------
+/jenga/colour_frame   (sensor_msgs/Image)   BGR image with each pixel painted
+                                             its classified colour (black = none).
 /jenga/colour_labels  (std_msgs/String)      JSON 2-D array of colour-name strings.
+
 """
 
 import json
@@ -27,14 +29,13 @@ except ImportError:
     _ROS_AVAILABLE = False
     Node = object
 
-# Spatial pre-filters applied before HSV classification.
-# Median blur smooths fringe pixels; morphological open removes specks.
+# Spatial pre-filters: median blur smooths fringe pixels, morphological open removes specks.
 PREFILTER_MEDIAN_PX = 5  # 0 = disabled
 PREFILTER_OPEN_PX   = 5  # 0 = disabled
 
 
 def compute_roi(iw: int, ih: int) -> tuple[int, int, int, int]:
-    """Return (x, y, w, h) of the search ROI in full-frame pixel coordinates."""
+    """Return (x, y, w, h) of the search ROI in full-frame pixel coords."""
     cx_f, cy_f, w_f, h_f = SEARCH_AREA
     cw = int(iw * w_f)
     ch = int(ih * h_f)
@@ -66,7 +67,7 @@ def classify_hsv(hsv: np.ndarray, colour: str) -> np.ndarray:
 
 def classify_frame(bgr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """
-    Classify every pixel in the search ROI.
+    Classify every pixel in the search ROI of bgr.
 
     Returns
     -------
@@ -106,3 +107,14 @@ class ColourIdentificationNode(Node):
         label_msg = String()
         label_msg.data = json.dumps(label_grid.tolist())
         self._pub_labels.publish(label_msg)
+
+
+def main_ros():
+    rclpy.init()
+    node = ColourIdentificationNode()
+    try:
+        rclpy.spin(node)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
