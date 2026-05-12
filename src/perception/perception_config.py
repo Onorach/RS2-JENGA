@@ -7,7 +7,7 @@ Centralize values used by active runtime modules.
 # Activation 
 
 # Tower finder, depth feed, depth/offset metrics and related prints.
-TOWER_ANALYSIS_ENABLED = False
+TOWER_ANALYSIS_ENABLED = True
 
 # Grey edge windows (Edges grey / history) and processing.
 EDGE_DETECTION_ENABLED = True
@@ -73,13 +73,13 @@ DEFAULT_WINDOW_SIZE = (960, 540)  # UI sizing only; no processing effect.
 # ---------------- Saturation Mask ----------------
 
 # Min saturation for tower-mask foreground.
-TOWER_MASK_SAT_MIN = 120  # Lower = includes duller colours.
+TOWER_MASK_SAT_MIN = 170  # Lower = includes duller colours.
 
 # Min brightness/value for tower-mask foreground.
-TOWER_MASK_VAL_MIN = 60  # Lower = includes darker/shadow pixels.
+TOWER_MASK_VAL_MIN = 70  # Lower = includes darker/shadow pixels.
 
 # Morphological close kernel size (pixels) on tower mask.
-TOWER_MASK_MORPH_CLOSE_PX = 10  # Higher = fills larger mask gaps.
+TOWER_MASK_MORPH_CLOSE_PX = 8  # Higher = fills larger mask gaps.
 
 # Morphological open kernel size (pixels) on tower mask.
 TOWER_MASK_MORPH_OPEN_PX = 10  # Higher = removes larger noise blobs.

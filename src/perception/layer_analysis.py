@@ -14,7 +14,7 @@ from box_percentages import (
     colour_mean_depth_in_cell,
     compute_percentages,
 )
-from perception_config import COLOUR_BGR, HSV_RANGES
+from perception_config import COLOUR_BGR, HSV_RANGES, CAMERA_HFOV_DEG
 
 BLOCK_LENGTH_MM = 75.0
 CAMERA_ANGLE_DEG = 45.0
@@ -25,9 +25,8 @@ CENTROID_OFFSET_MM = (BLOCK_LENGTH_MM / 2.0) * np.cos(
 )
 
 # Distance between neighbouring block centroids
-DEPTH_STEP_MM = BLOCK_LENGTH_MM * np.cos(
-    np.deg2rad(CAMERA_ANGLE_DEG)
-)
+BLOCK_WIDTH_MM = 25.0
+DEPTH_STEP_MM = BLOCK_WIDTH_MM * np.sin(np.deg2rad(CAMERA_ANGLE_DEG))
 
 SINGLE_DOMINANT_PCT = 55.0
 # Increased threshold to 25% for better stability when blocks are removed
@@ -131,6 +130,7 @@ def _blocks_from_endon(
                 "colour": colour,
                 "present": True,
                 "face_depth_mm": round(face_depth, 1),
+                "mean_x_px": mx,
             }
 
     # Convert lane ordering to front->back ordering
@@ -143,12 +143,7 @@ def _blocks_from_endon(
         if not block["present"]:
             continue
 
-        block["depth_mm"] = round(
-            block["face_depth_mm"]
-            + CENTROID_OFFSET_MM
-            + i * DEPTH_STEP_MM,
-            1,
-        )
+        block["depth_mm"] = round(block["face_depth_mm"] + CENTROID_OFFSET_MM, 1)
 
     return res
 
@@ -180,15 +175,26 @@ def analyse_layer(
     else:
         endon_pcts, endon_cell = right_pcts, right_cell
 
-    mean_x = colour_mean_x_in_cell(
-    bgr_frame,
-    endon_cell,
-)
-
+    # Compute depth first — used both for block positions and to gate mean_x.
+    # Depth gating removes side-face pixels from adjacent layers that share the
+    # same colour but sit at a different depth, which otherwise biases mean_x
+    # outward (most visible on -> layers as inflated lateral values).
     mean_depth = colour_mean_depth_in_cell(
         bgr_frame,
         depth_frame,
         endon_cell,
+    )
+
+    target_depth_mm = (
+        float(np.mean(list(mean_depth.values()))) if mean_depth else None
+    )
+
+    mean_x = colour_mean_x_in_cell(
+        bgr_frame,
+        endon_cell,
+        depth_frame=depth_frame,
+        target_depth_mm=target_depth_mm,
+        depth_tolerance_mm=40.0,
     )
 
     endon_blocks = _blocks_from_endon(
@@ -199,12 +205,23 @@ def analyse_layer(
         orientation=orientation,
     )
 
-    return {"orientation": orientation, "blocks": endon_blocks}
+    frame_width = bgr_frame.shape[1]
+    frame_centre_x = frame_width / 2.0
+    _tan_half_hfov = np.tan(np.deg2rad(CAMERA_HFOV_DEG) / 2.0)
+
+    for block in endon_blocks:
+        if block["present"] and "mean_x_px" in block:
+            lateral_px = block["mean_x_px"] - frame_centre_x
+            fd = block.get("face_depth_mm")
+            if fd is not None and fd > 0:
+                mm_per_px = 2.0 * fd * _tan_half_hfov / frame_width
+                block["lateral_mm"] = lateral_px * mm_per_px
+
+    return {"orientation": orientation, "blocks": endon_blocks, "frame_centre_x": frame_centre_x}
 
 
 def _adjusted_depth(face_depth_mm: float) -> float:
-    """Apply calibration correction: +1 % then offset by 2.65 mm."""
-    return face_depth_mm * 1.02 + 2.65
+    return face_depth_mm + 26.5
 
 
 def _print_tower(tower: list[dict]) -> None:
@@ -216,22 +233,30 @@ def _print_tower(tower: list[dict]) -> None:
     """
     print("── Layer Analysis (front → mid → back) ────")
     for layer in tower:
-        idx         = layer["layer"]
-        orientation = layer["orientation"]
-        arrow       = "<-" if orientation == "left" else "->"
-        labels      = ["front", " mid ", " back"]
-        parts = []
+        idx           = layer["layer"]
+        orientation   = layer["orientation"]
+        arrow         = "<-" if orientation == "left" else "->"
+        frame_cx      = layer.get("frame_centre_x")
+        labels        = ["front", " mid ", " back"]
+        parts         = []
+        px_debug      = []
         for label, block in zip(labels, layer["blocks"]):
             if block["present"]:
-                fd = block.get("face_depth_mm")
-                if fd is not None:
-                    d = _adjusted_depth(fd)
-                    parts.append(f"{label}: {block['colour']} @d={d:.1f}mm")
-                else:
-                    parts.append(f"{label}: {block['colour']}")
+                fd  = block.get("face_depth_mm")
+                lx  = block.get("lateral_mm")
+                mx  = block.get("mean_x_px")
+                d_str = f" @d={_adjusted_depth(fd):.1f}mm" if fd is not None else ""
+                x_offset = 26.5 if orientation == "left" else -40
+                x_str = f" @x={lx + x_offset:+.1f}mm" if lx is not None else ""
+                parts.append(f"{label}: {block['colour']}{d_str}{x_str}")
+                if mx is not None:
+                    px_debug.append(f"{label.strip()}={mx:.0f}px")
             else:
                 parts.append(f"{label}: missing")
         print(f"  L{idx} {arrow}  " + "  |  ".join(parts))
+        centre_str = f"  centre={frame_cx:.0f}px" if frame_cx is not None else ""
+        if px_debug:
+            print(f"    [px debug]{centre_str}  " + "  ".join(px_debug))
     print()
 
 

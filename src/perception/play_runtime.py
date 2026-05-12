@@ -5,6 +5,7 @@ Shared display loop and ROS wiring used by play_bag and play_live.
 """
 
 import threading
+import time
 from collections import deque
 import cv2
 import numpy as np
@@ -235,7 +236,12 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
     live_valid_points_full: list[tuple[int, int]] = []
     _last_pct_results: list[dict] = []
     _last_tower_img: np.ndarray | None = None
-    ANALYSIS_INTERVAL = 5  # re-run heavy analysis every N frames after lock
+    _last_tower_finder_print: float = 0.0
+    _cached_pts: np.ndarray | None = None
+    _hex_frame_n: int = 0
+    HEX_RECOMPUTE_INTERVAL = 60   # recompute hex detection every N frames
+    ANALYSIS_INTERVAL = 5         # re-run heavy analysis every N frames after lock
+    TOWER_PRINT_INTERVAL_S = 3.0
 
     while True:
         bgr, depth_mm = get_frame_pair()
@@ -264,6 +270,11 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
                 lx, ly = int(px - dx1), int(py - dy1)
                 if 0 <= lx < live_disp.shape[1] and 0 <= ly < live_disp.shape[0]:
                     cv2.circle(live_disp, (lx, ly), 2, (0, 0, 255), -1)
+        # Centre line of the full camera frame (not the ROI)
+        cx = iw // 2 - dx1
+        if 0 <= cx < live_disp.shape[1]:
+            cv2.line(live_disp, (cx, 0), (cx, live_disp.shape[0] - 1),
+                     (0, 255, 255), 1, cv2.LINE_AA)
         cv2.imshow("Live + grid", live_disp)
 
         colour_img = None
@@ -329,18 +340,28 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
                     on_points_locked()
 
         tower_analysis_active = TOWER_ANALYSIS_ENABLED
-        pts = compute_hex_region(bgr) if tower_analysis_active else None
-        sat_disp = build_display(bgr, pts) if tower_analysis_active else None
-        tower_depth = estimate_tower_depth_stats(depth_mm, pts) if tower_analysis_active else None
-        tower_offset = (
-            estimate_tower_offset(
+        if tower_analysis_active:
+            # Recompute hex detection every HEX_RECOMPUTE_INTERVAL frames
+            _hex_frame_n += 1
+            if _hex_frame_n >= HEX_RECOMPUTE_INTERVAL or _cached_pts is None:
+                _cached_pts = compute_hex_region(bgr)
+                _hex_frame_n = 0
+            pts = _cached_pts
+            # Rebuild display every frame (fresh video) using cached hex outline
+            sat_disp = build_display(bgr, pts) if pts is not None else None
+            tower_depth = estimate_tower_depth_stats(depth_mm, pts)
+            tower_offset = estimate_tower_offset(
                 pts=pts,
                 image_width_px=iw,
                 depth_m=None if tower_depth is None else tower_depth["tower_depth_m"],
+                image_shape=(ih, iw),
             )
-            if tower_analysis_active
-            else None
-        )
+        else:
+            pts = None
+            sat_disp = None
+            tower_depth = None
+            tower_offset = None
+
         if tower_analysis_active and sat_disp is not None:
             if tower_depth is not None:
                 cv2.putText(
@@ -354,28 +375,30 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
                     cv2.LINE_AA,
                 )
             if tower_offset is not None:
-                if tower_offset["lateral_m"] is not None:
-                    cv2.putText(
-                        sat_disp,
-                        f"Offset from center: {tower_offset['dx_px']:+.0f}px  (~{tower_offset['lateral_m']:+.3f} m)",
-                        (10, 52),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.50,
-                        (255, 255, 255),
-                        2,
-                        cv2.LINE_AA,
+                _off_txt = (
+                    f"Offset from center: {tower_offset['dx_px']:+.0f}px"
+                    + (f"  (~{tower_offset['lateral_m']:+.3f} m)" if tower_offset["lateral_m"] is not None else "")
+                )
+                cv2.putText(sat_disp, _off_txt, (10, 52),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 2, cv2.LINE_AA)
+            # Calibrated depth + lateral — values computed entirely in tower_analysis
+            _tf_parts = []
+            if tower_depth is not None:
+                _tf_parts.append(f"@d={tower_depth['depth_mm']:.1f}mm")
+            if tower_offset is not None and tower_offset["lateral_mm"] is not None:
+                _tf_parts.append(f"@x={tower_offset['lateral_mm']:+.1f}mm")
+            if _tf_parts:
+                cv2.putText(sat_disp, "  ".join(_tf_parts), (10, 78),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 255, 255), 2, cv2.LINE_AA)
+                _now = time.monotonic()
+                if _now - _last_tower_finder_print >= TOWER_PRINT_INTERVAL_S:
+                    _cx_str = (
+                        f"  [px debug] centroid={tower_offset['centroid_x_px']:.0f}px"
+                        f"  frame_centre={iw/2:.0f}px"
+                        if tower_offset is not None else ""
                     )
-                else:
-                    cv2.putText(
-                        sat_disp,
-                        f"Offset from center: {tower_offset['dx_px']:+.0f}px",
-                        (10, 52),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.50,
-                        (255, 255, 255),
-                        2,
-                        cv2.LINE_AA,
-                    )
+                    print("Tower finder:  " + "  ".join(_tf_parts) + _cx_str)
+                    _last_tower_finder_print = _now
             cv2.imshow("Tower finder", _crop_tower_finder_display(sat_disp, pts, iw, ih))
         if tower_analysis_active:
             cv2.imshow("Depth feed", build_depth_feed_display(depth_mm, bgr.shape, pts))

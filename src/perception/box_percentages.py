@@ -44,8 +44,9 @@ LAYER_CELLS: list[list[dict]] = [
 
 GRID_CELLS: list[dict] = [cell for layer in LAYER_CELLS for cell in layer]
 
-DOMINANT_PCT = 55.0  # above this → side-on face
-MIN_COLOUR_PCT = 10.0  # colour must cover at least this % of the cell to count
+DOMINANT_PCT = 55.0       # above this → side-on face
+MIN_COLOUR_PCT = 10.0     # colour must cover at least this % of the cell to count
+MIN_COLOUR_PIXELS = 50    # absolute floor regardless of cell size
 
 # ---------------------------------------------------------------------------
 # Core helpers
@@ -80,8 +81,6 @@ def compute_percentages(bgr_frame: np.ndarray,
     ih, iw = bgr_frame.shape[:2]
     hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
 
-    # Use the same filtered classification as the colour mask window
-    # (median blur + morphological open via classify_hsv)
     label_img    = np.full((ih, iw), "none", dtype=object)
     unclassified = np.ones((ih, iw), dtype=bool)
 
@@ -131,28 +130,90 @@ def _colour_centroids(bgr_frame: np.ndarray, cell: dict) -> dict[str, float]:
     return centroids
 
 
-def colour_mean_x_in_cell(bgr_frame: np.ndarray, cell: dict) -> dict[str, float]:
+def colour_mean_x_in_cell(
+    bgr_frame: np.ndarray,
+    cell: dict,
+    depth_frame: np.ndarray | None = None,
+    target_depth_mm: float | None = None,
+    depth_tolerance_mm: float = 40.0,
+) -> dict[str, float]:
     """
-    Mean image-space x per colour in ``cell`` (pixels above MIN_COLOUR_PCT).
+    Mean image-space x-coordinate per colour inside ``cell``.
 
-    Used to order blocks left-to-right on the end-on face regardless of
-    percentage noise (unstable when sorting by coverage alone).
+    Only colours covering at least MIN_COLOUR_PCT of the cell (or MIN_COLOUR_PIXELS
+    absolute) are returned.  Used to assign blocks to lanes left-to-right on the
+    end-on face.
+
+    Depth gating (optional)
+    -----------------------
+    When ``depth_frame`` and ``target_depth_mm`` are both supplied, each colour's
+    pixel set is further filtered to pixels whose depth lies within
+    ``target_depth_mm ± depth_tolerance_mm``.  This removes side-face pixels from
+    adjacent layers that share the same colour but sit at a different depth,
+    which would otherwise bias the mean-x toward the outer edge of the cell.
+
+    The percentage threshold is evaluated on the *un-gated* mask so that genuine
+    but partially-occluded back blocks are not inadvertently rejected.
+
+    Parameters
+    ----------
+    bgr_frame         : full-resolution BGR image
+    cell              : cell dict with "corners" key ([TL, TR, BL, BR] pixel coords)
+    depth_frame       : aligned depth image in mm (same shape as bgr_frame), or None
+    target_depth_mm   : expected depth of this layer's blocks in mm, or None
+    depth_tolerance_mm: half-width of the depth acceptance window (default 40 mm,
+                        which spans ±2× the 17.7 mm block step at 45°)
+
+    Returns
+    -------
+    {colour: mean_x_pixels, ...}  — only colours that pass the threshold
     """
     ih, iw = bgr_frame.shape[:2]
-    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
-    quad = _quad_mask((ih, iw), cell["corners"])
-    total = int(quad.sum())
+    hsv    = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
+    quad   = _quad_mask((ih, iw), cell["corners"])
+    total  = int(quad.sum())
     if total == 0:
         return {}
+
+    # Build depth-gate mask once (avoid recomputing per colour)
+    if depth_frame is not None and target_depth_mm is not None:
+        df = depth_frame.astype(np.float32)
+        depth_gate: np.ndarray | None = (
+            (df > 0)
+            & np.isfinite(df)
+            & (np.abs(df - target_depth_mm) <= depth_tolerance_mm)
+        )
+    else:
+        depth_gate = None
+
     out: dict[str, float] = {}
+
     for colour in HSV_RANGES:
-        mask = quad & classify_hsv(hsv, colour)
-        ys, xs = np.where(mask)
-        if len(xs) == 0:
+        colour_mask = quad & classify_hsv(hsv, colour)
+
+        n_colour = int(colour_mask.sum())
+        if n_colour == 0:
             continue
-        if len(xs) / total * 100 < MIN_COLOUR_PCT:
+
+        # Threshold on un-gated mask so partially-visible back blocks aren't lost
+        if n_colour < MIN_COLOUR_PIXELS:
             continue
+        if n_colour / total * 100.0 < MIN_COLOUR_PCT:
+            continue
+
+        # Apply depth gate for mean-x only (doesn't affect presence detection)
+        if depth_gate is not None:
+            gated = colour_mask & depth_gate
+            _, gated_xs = np.where(gated)
+            if len(gated_xs) >= MIN_COLOUR_PIXELS:
+                out[colour] = float(np.mean(gated_xs))
+                continue
+            # Depth gate removed too many pixels (invalid depth region) — fall back
+            # to un-gated mean so the block is still localised, just less accurately
+
+        _, xs = np.where(colour_mask)
         out[colour] = float(np.mean(xs))
+
     return out
 
 
@@ -162,78 +223,41 @@ def colour_mean_depth_in_cell(
     cell: dict,
 ) -> dict[str, float]:
     """
-    Mean REAL depth (mm) per colour inside a cell.
-
-    Returns:
-        {
-            "red": 312.4,
-            "blue": 358.1,
-            ...
-        }
-
-    Uses eroded masks for stability.
+    Median depth (mm) per colour inside a cell.  Uses eroded masks for stability.
     """
-
     ih, iw = bgr_frame.shape[:2]
-
-    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
-    quad = _quad_mask((ih, iw), cell["corners"])
-
-    total = int(quad.sum())
+    hsv    = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
+    quad   = _quad_mask((ih, iw), cell["corners"])
+    total  = int(quad.sum())
     if total == 0:
         return {}
 
+    kernel = np.ones((5, 5), np.uint8)
     out: dict[str, float] = {}
 
-    kernel = np.ones((5, 5), np.uint8)
-
     for colour in HSV_RANGES:
-
         mask = quad & classify_hsv(hsv, colour)
+        mask = cv2.erode(mask.astype(np.uint8), kernel, iterations=2).astype(bool)
 
-        # Erode to avoid edge contamination
-        mask = cv2.erode(
-            mask.astype(np.uint8),
-            kernel,
-            iterations=2,
-        ).astype(bool)
-
-        colour_pct = float(mask.sum()) / total * 100.0
-
-        if colour_pct < MIN_COLOUR_PCT:
+        if float(mask.sum()) / total * 100.0 < MIN_COLOUR_PCT:
             continue
 
         depth_values = depth_frame[mask]
-
-        # Remove invalid depths
-        depth_values = depth_values[
-            (depth_values > 0)
-            & np.isfinite(depth_values)
-        ]
+        depth_values = depth_values[(depth_values > 0) & np.isfinite(depth_values)]
 
         if len(depth_values) < 20:
             continue
 
-        # Median is MUCH more stable than mean
         out[colour] = float(np.median(depth_values))
 
     return out
+
 
 def analyse_layer(bgr_frame: np.ndarray,
                   left_result: dict, right_result: dict,
                   left_cell: dict,  right_cell: dict) -> dict:
     """
     Determine orientation and block positions for one layer.
-
-    Returns
-    -------
-    {
-        "orientation": "left" | "right",
-        "blocks": [
-            {"colour": str, "position": float, "present": bool},
-            ...
-        ]  # sorted front-to-back (smallest abs distance from divide line first)
-    }
     """
     def _max_pct(result: dict) -> float:
         pcts = [i["pct"] for c, i in result["colours"].items() if c != "none"]
@@ -247,7 +271,6 @@ def analyse_layer(bgr_frame: np.ndarray,
     elif left_dom and not right_dom:
         orientation, endon_cell = "right", right_cell
     else:
-        # Ambiguous — treat the less-dominant side as end-on
         if _max_pct(left_result) <= _max_pct(right_result):
             orientation, endon_cell = "left",  left_cell
         else:
@@ -301,7 +324,6 @@ def build_debug_image(bgr_frame: np.ndarray, results: list[dict],
             lx, ly = ox - min_x, oy - min_y
             cv2.circle(canvas, (lx, ly), 4, (30, 30, 30), -1)
 
-    # Legend
     for i, (name, bgr) in enumerate(COLOUR_BGR.items()):
         ly = ch - (len(COLOUR_BGR) - i) * 16
         cv2.rectangle(canvas, (6, ly), (18, ly + 12), bgr, -1)

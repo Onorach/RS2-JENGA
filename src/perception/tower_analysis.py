@@ -11,6 +11,9 @@ import numpy as np
 from tower_mask import build_hex_mask
 from perception_config import CAMERA_HFOV_DEG, TOWER_ANALYSIS_DEPTH_PAD_PX
 
+# Precomputed once — must match the value used in layer_analysis.py
+_TAN_HALF_HFOV = np.tan(np.deg2rad(CAMERA_HFOV_DEG / 2.0))
+
 
 def build_depth_feed_display(
     depth_mm: np.ndarray | None,
@@ -53,7 +56,6 @@ def build_depth_feed_display(
     cv2.putText(canvas, f"Depth valid in hex: {valid_n}/{total_n}", (12, 26),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
 
-    # Return a view slightly larger than the detected hex area.
     x_min = max(0, int(np.min(pts[:, 0])) - TOWER_ANALYSIS_DEPTH_PAD_PX)
     x_max = min(w, int(np.max(pts[:, 0])) + TOWER_ANALYSIS_DEPTH_PAD_PX)
     y_min = max(0, int(np.min(pts[:, 1])) - TOWER_ANALYSIS_DEPTH_PAD_PX)
@@ -66,9 +68,6 @@ def explain_tower_depth_skip(
     depth_mm: np.ndarray | None,
     pts: np.ndarray | None,
 ) -> str:
-    """
-    Human-readable reason when ``estimate_tower_depth_stats`` is None, for live debugging.
-    """
     if depth_mm is None:
         return (
             "no depth image (enable depth in rs_launch, subscribe to "
@@ -87,7 +86,7 @@ def explain_tower_depth_skip(
     valid = (depth_mm > 0) & hex_mask
     if not np.any(valid):
         return "zero/invalid depth inside hex (out of range, IR glare, or reflectivity)"
-    return "internal error"  # stats should be non-None if we reach here
+    return "internal error"
 
 
 def estimate_tower_depth_stats(depth_mm: np.ndarray | None, pts: np.ndarray | None) -> dict | None:
@@ -101,39 +100,92 @@ def estimate_tower_depth_stats(depth_mm: np.ndarray | None, pts: np.ndarray | No
     if not np.any(used):
         return None
 
-    depth_used_m = depth_mm[used].astype(np.float32) / 1000.0
-    sorted_depth_m = np.sort(depth_used_m)
-    n = int(sorted_depth_m.size)
+    depth_used_mm = depth_mm[used].astype(np.float32)
+    sorted_mm = np.sort(depth_used_mm)
+    n = int(sorted_mm.size)
     i95 = min(n - 1, max(0, int(np.floor(0.95 * (n - 1)))))
     i98 = min(n, max(i95 + 1, int(np.ceil(0.98 * (n - 1))) + 1))
-    band = sorted_depth_m[i95:i98]
+    band = sorted_mm[i95:i98]
     if band.size == 0:
-        band = sorted_depth_m[-1:]
+        band = sorted_mm[-1:]
+    depth_raw_mm = float(band.mean())
     return {
-        "tower_depth_m": float(band.mean()),
+        "tower_depth_m": depth_raw_mm / 1000.0,
+        "depth_mm": depth_raw_mm,
     }
 
 
 def estimate_tower_offset(
     pts: np.ndarray | None,
     image_width_px: int,
-    depth_m: float | None,
+    depth_mm: float | None = None,
+    depth_m: float | None = None,    # legacy — converted automatically
+    image_shape: tuple[int, int] | None = None,
 ) -> dict | None:
-    """Estimate left/right tower offset from camera center."""
+    """
+    Estimate the tower's left/right offset from the camera centre in mm.
+
+    The lateral conversion uses the identical pinhole formula to layer_analysis.py::
+
+        mm_per_px  = 2 * depth_mm * tan(HFOV/2) / image_width_px
+        lateral_mm = dx_px * mm_per_px
+
+    Centroid x
+    ----------
+    When ``image_shape`` (h, w) is supplied, centroid_x is the mean x over
+    **all pixels inside the hex mask** — i.e. the mean x of the whole visible
+    tower face.  This is the correct reference for robot positioning.
+
+    Without image_shape the fallback is the mean of the 6 hex vertex
+    x-coordinates, which is less stable.  Always pass image_shape.
+
+    Parameters
+    ----------
+    pts            : (N, 2) int32 hex polygon vertices from tower_mask
+    image_width_px : full frame width in pixels
+    depth_mm       : tower depth in mm — pass estimate_tower_depth_stats["depth_mm"]
+    depth_m        : legacy metres kwarg — ignored when depth_mm is given
+    image_shape    : (h, w) of the full colour frame — pass bgr.shape[:2]
+
+    Returns
+    -------
+    {
+        "centroid_x_px" : float,   # mean x of hex pixels in frame coords
+        "dx_px"         : float,   # signed offset from frame centre (+ = right)
+        "lateral_mm"    : float,   # signed lateral offset in mm   (+ = right)
+        "lateral_m"     : float,   # same in metres (legacy compat)
+    }
+    or None if pts is None.
+    """
     if pts is None:
         return None
 
-    centroid_x = float(np.mean(pts[:, 0]))
-    center_x = (image_width_px - 1) / 2.0
-    dx_px = centroid_x - center_x
-    angle_deg = (dx_px / image_width_px) * CAMERA_HFOV_DEG
+    # Normalise depth to mm regardless of which kwarg the caller used
+    if depth_mm is None and depth_m is not None:
+        depth_mm = depth_m * 1000.0
 
-    lateral_m = None
-    if depth_m is not None:
-        lateral_m = float(depth_m * np.tan(np.deg2rad(angle_deg)))
+    center_x = (image_width_px - 1) / 2.0
+
+    if image_shape is not None:
+        # Mean over every pixel inside hex — the mean x of the whole tower
+        hex_mask = build_hex_mask(image_shape, pts) > 0
+        _, xs = np.where(hex_mask)
+        centroid_x = float(np.mean(xs)) if len(xs) > 0 else float(np.mean(pts[:, 0]))
+    else:
+        # Less accurate fallback — pass image_shape to avoid this
+        centroid_x = float(np.mean(pts[:, 0]))
+
+    dx_px = centroid_x - center_x
+
+    lateral_mm = None
+    if depth_mm is not None:
+        # Same formula as layer_analysis.py block lateral calculation
+        mm_per_px  = 2.0 * depth_mm * _TAN_HALF_HFOV / image_width_px
+        lateral_mm = dx_px * mm_per_px
 
     return {
         "centroid_x_px": centroid_x,
-        "dx_px": dx_px,
-        "lateral_m": lateral_m,
+        "dx_px":         dx_px,
+        "lateral_mm":    lateral_mm,
+        "lateral_m":     lateral_mm / 1000.0 if lateral_mm is not None else None,
     }
