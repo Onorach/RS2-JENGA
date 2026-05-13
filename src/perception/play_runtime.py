@@ -15,8 +15,8 @@ import cv2
 import numpy as np
 from std_msgs.msg import String
 
-from colour_identification import classify_frame, compute_roi, ColourIdentificationNode
-from box_percentages import BoxPercentagesNode, compute_percentages, build_debug_image
+from colour_identification import classify_frame, compute_roi
+from box_percentages import compute_percentages, build_debug_image
 from layer_analysis import analyse_tower, build_tower_image
 from grid_generation import (
     build_edge_display,
@@ -37,7 +37,7 @@ from tower_analysis import (
     estimate_tower_offset,
 )
 from perception_config import (
-    TOWER_ANALYSIS_ENABLED,
+    TOWER_ANALYSIS,
     BLOCK_ANALYSIS,
     SEARCH_AREA_MARGIN,
     EDGE_HISTORY_FRAMES,
@@ -79,7 +79,7 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
         cv2.namedWindow("Edges",           cv2.WINDOW_NORMAL)
         cv2.namedWindow("Box percentages", cv2.WINDOW_NORMAL)
         cv2.namedWindow("Layer Analysis",  cv2.WINDOW_NORMAL)
-    if TOWER_ANALYSIS_ENABLED:
+    if TOWER_ANALYSIS:
         cv2.namedWindow("Tower finder", cv2.WINDOW_NORMAL)
 
     frame_n          = 0
@@ -172,7 +172,7 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
 
         # --- Tower analysis ---
                 # --- Tower analysis ---
-        if TOWER_ANALYSIS_ENABLED:
+        if TOWER_ANALYSIS:
 
             _hex_frame_n += 1
 
@@ -240,7 +240,7 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
             tower_depth = None
             tower_offset = None
 
-        if TOWER_ANALYSIS_ENABLED and sat_disp is not None:
+        if TOWER_ANALYSIS and sat_disp is not None:
             if tower_depth is not None:
                 cv2.putText(sat_disp, f"Tower depth ~ {tower_depth['tower_depth_m']:.3f} m",
                             (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
@@ -293,26 +293,17 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
 # ---------------------------------------------------------------------------
 
 class _ImageBridge(Node):
-    def __init__(self, color_topic: str, depth_topic: str | list[str] | tuple[str, ...]):
+    def __init__(self, color_topic: str, depth_topic: str):
         super().__init__("play_image_bridge")
         self._bridge = CvBridge()
         self._lock   = threading.Lock()
         self._bgr    = None
         self._depth_mm = None
         self._depth_enc_warned   = False
-        self._active_depth_topic: str | None = None
-        self._depth_subscriptions = []
-
         self.create_subscription(Image, color_topic, self._cb, 10)
         self.top_layer_pub = self.create_publisher(String, "/top_layer_state", 10)
-
-        depth_topics = [depth_topic] if isinstance(depth_topic, str) else list(depth_topic)
-        for topic in depth_topics:
-            sub = self.create_subscription(
-                Image, topic, lambda msg, t=topic: self._depth_cb(msg, t), 10,
-            )
-            self._depth_subscriptions.append(sub)
-        self.get_logger().info("Depth topic candidates: " + ", ".join(depth_topics))
+        self.create_subscription(Image, depth_topic, self._depth_cb, 10)
+        self.get_logger().info(f"Using depth topic: {depth_topic}")
 
     def publish_top_layer(self, layer_data) -> None:
         msg      = String()
@@ -329,9 +320,7 @@ class _ImageBridge(Node):
         with self._lock:
             self._bgr = bgr
 
-    def _depth_cb(self, msg: Image, topic_name: str) -> None:
-        if self._active_depth_topic is not None and topic_name != self._active_depth_topic:
-            return
+    def _depth_cb(self, msg: Image) -> None:
         enc = (msg.encoding or "").lower()
         if "16uc1" in enc or "mono16" in enc:
             depth_mm = self._bridge.imgmsg_to_cv2(msg, "16UC1")
@@ -348,9 +337,6 @@ class _ImageBridge(Node):
             return
         with self._lock:
             self._depth_mm = depth_mm
-        if self._active_depth_topic is None:
-            self._active_depth_topic = topic_name
-            self.get_logger().info(f"Using depth topic: {topic_name} (encoding={msg.encoding})")
 
     def get_frame_pair(self):
         with self._lock:
@@ -418,29 +404,17 @@ def run_with_pipeline(pipeline) -> None:
 
 def run_subscribe(
     color_topic: str,
-    depth_topic: str | list[str] | tuple[str, ...],
+    depth_topic: str,
 ) -> None:
     """Run the display loop subscribed to ROS topics."""
     rclpy.init()
     bridge = _ImageBridge(color_topic, depth_topic)
     nodes: list = [bridge]
-    if BLOCK_ANALYSIS:
-        nodes.append(ColourIdentificationNode(color_topic))
     executor = _start_executor(nodes)
-    box_node: BoxPercentagesNode | None = None
-
-    def _start_box_percentages_node() -> None:
-        nonlocal box_node
-        if not BLOCK_ANALYSIS or box_node is not None:
-            return
-        box_node = BoxPercentagesNode(color_topic)
-        nodes.append(box_node)
-        executor.add_node(box_node)
 
     try:
         _run_loop(
             bridge.get_frame_pair,
-            on_points_locked=_start_box_percentages_node,
             publish_top_layer=bridge.publish_top_layer,
         )
     finally:

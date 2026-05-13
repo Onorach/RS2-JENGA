@@ -22,3 +22,12 @@ echo "Listing installed ROS2 RealSense packages"
 ros2 pkg list | grep realsense2
 
 echo "Setup complete."
+
+## old depth filter
+
+# DEPTH_TOPIC_CANDIDATES = [
+#     "/camera/camera/aligned_depth_to_color/image_raw",
+#     "/camera/aligned_depth_to_color/image_raw",
+#     "/camera/camera/depth/image_rect_raw",
+#     "/camera/depth/image_rect_raw",
+# ]

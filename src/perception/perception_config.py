@@ -5,7 +5,7 @@ Central configuration for all perception modules.
 Tune values here; nothing else needs to change.
 """
 
-TOWER_ANALYSIS_ENABLED = True
+TOWER_ANALYSIS = True
 
 BLOCK_ANALYSIS = True
 
@@ -56,11 +56,10 @@ COLOUR_BGR: dict[str, tuple[int, int, int]] = {
 # Tower mask
 # ---------------------------------------------------------------------------
 
-TOWER_MASK_SAT_MIN          = 170   # Min HSV saturation for tower foreground.
-TOWER_MASK_VAL_MIN          = 70    # Min HSV value (brightness) for tower foreground.
-TOWER_MASK_MORPH_CLOSE_PX   = 8     # Close kernel size — fills small mask holes.
-TOWER_MASK_MORPH_OPEN_PX    = 10    # Open kernel size — removes noise blobs.
-
+TOWER_MASK_SAT_MIN                 = 170   # Min HSV saturation for tower foreground.
+TOWER_MASK_BRIGHTNESS_MIN          = 70    # Min HSV value (brightness) for tower foreground.
+# TOWER_MASK_MORPH_CLOSE_PX        = 8     # Close kernel size — fills small mask holes.
+# TOWER_MASK_MORPH_OPEN_PX         = 10    # Open kernel size — removes noise blobs.
 
 # ---------------------------------------------------------------------------
 # Edge detection

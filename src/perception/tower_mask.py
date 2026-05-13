@@ -13,9 +13,7 @@ from colour_identification import compute_roi
 
 from perception_config import (
     TOWER_MASK_SAT_MIN,
-    TOWER_MASK_VAL_MIN,
-    TOWER_MASK_MORPH_CLOSE_PX,
-    TOWER_MASK_MORPH_OPEN_PX,
+    TOWER_MASK_BRIGHTNESS_MIN,
     SEARCH_AREA_MARGIN,
 )
 
@@ -32,7 +30,7 @@ def compute_saturation_mask(bgr: np.ndarray) -> np.ndarray:
     mask = (
         (hsv[:, :, 1] >= TOWER_MASK_SAT_MIN)
         &
-        (hsv[:, :, 2] >= TOWER_MASK_VAL_MIN)
+        (hsv[:, :, 2] >= TOWER_MASK_BRIGHTNESS_MIN)
     ).astype(np.uint8) * 255
 
     return mask
