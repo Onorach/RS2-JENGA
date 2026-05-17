@@ -36,15 +36,20 @@ def compute_saturation_mask(bgr: np.ndarray) -> np.ndarray:
     return mask
 
 
-def compute_hex_region(bgr: np.ndarray) -> np.ndarray | None:
+def compute_hex_region(
+    bgr: np.ndarray,
+    roi_xywh: tuple[int, int, int, int] | None = None,
+) -> np.ndarray | None:
     """
     Find the largest high-saturation blob within the ROI and fit a
     6-sided polygon around it.
     """
 
     ih, iw = bgr.shape[:2]
-
-    rx, ry, rw, rh = compute_roi(iw, ih)
+    if roi_xywh is None:
+        rx, ry, rw, rh = compute_roi(iw, ih)
+    else:
+        rx, ry, rw, rh = roi_xywh
 
     roi = bgr[ry:ry + rh, rx:rx + rw]
 
@@ -100,6 +105,7 @@ def build_display(
     bgr: np.ndarray,
     pts: np.ndarray | None,
     centroid_x: float | None = None,
+    roi_xywh: tuple[int, int, int, int] | None = None,
 ) -> np.ndarray:
     """
     Draw the ROI box, polygon, centroid line,
@@ -107,8 +113,10 @@ def build_display(
     """
 
     ih, iw = bgr.shape[:2]
-
-    rx, ry, rw, rh = compute_roi(iw, ih)
+    if roi_xywh is None:
+        rx, ry, rw, rh = compute_roi(iw, ih)
+    else:
+        rx, ry, rw, rh = roi_xywh
 
     # ---------------------------------------------------------
     # Right panel — saturation mask

@@ -10,7 +10,12 @@ Usage
 from play_runtime import run_subscribe
 
 COLOR_TOPIC = "/camera/camera/color/image_raw"
-DEPTH_TOPIC = "/camera/camera/aligned_depth_to_color/image_raw"
+DEPTH_TOPIC = [
+    "/camera/camera/aligned_depth_to_color/image_raw",
+    "/camera/aligned_depth_to_color/image_raw",
+    "/camera/camera/depth/image_rect_raw",
+    "/camera/depth/image_rect_raw",
+]
 
 
 def main() -> None:

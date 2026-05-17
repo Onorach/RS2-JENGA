@@ -17,11 +17,17 @@ import numpy as np
 
 from colour_identification import compute_roi
 from perception_config import (
-    CANNY_GREY_LOW,
-    CANNY_GREY_HIGH,
-    HOUGH_THRESHOLD,
-    HOUGH_MIN_LENGTH,
-    HOUGH_MAX_GAP,
+    CANNY_MASK_LOW,
+    CANNY_MASK_HIGH,
+    CANNY_ORIGINAL_LOW,
+    CANNY_ORIGINAL_HIGH,
+    CANNY_CENTRE_BAND_PCT,
+    HOUGH_MASK_THRESHOLD,
+    HOUGH_MASK_MIN_LENGTH,
+    HOUGH_MASK_MAX_GAP,
+    HOUGH_ORIGINAL_THRESHOLD,
+    HOUGH_ORIGINAL_MIN_LENGTH,
+    HOUGH_ORIGINAL_MAX_GAP,
     MAX_HORIZ_DEG,
     MAX_VERT_DEG,
     CLEAN_MASK_KERNEL_PX,
@@ -51,53 +57,82 @@ def clean_colour_mask(colour_img: np.ndarray) -> np.ndarray:
 # Edge and line detection
 # ---------------------------------------------------------------------------
 
+def apply_centre_band_mask(img: np.ndarray) -> np.ndarray:
+    """Zero pixels outside the centred horizontal band (CANNY_CENTRE_BAND_PCT)."""
+    pct = float(CANNY_CENTRE_BAND_PCT)
+    if pct >= 100.0 or pct <= 0.0:
+        return img
+    h, w = img.shape[:2]
+    band_w = max(1, int(round(w * pct / 100.0)))
+    x_lo   = max(0, (w - band_w) // 2)
+    x_hi   = min(w, x_lo + band_w)
+    masked = np.zeros_like(img)
+    masked[:, x_lo:x_hi] = img[:, x_lo:x_hi]
+    return masked
+
+
 def compute_edges(colour_img: np.ndarray) -> np.ndarray:
     """Compute Canny edges from the colour-mask image."""
     cleaned = clean_colour_mask(colour_img)
     grey = cv2.cvtColor(cleaned, cv2.COLOR_BGR2GRAY)
-    return cv2.Canny(grey, CANNY_GREY_LOW, CANNY_GREY_HIGH)
+    return cv2.Canny(grey, CANNY_MASK_LOW, CANNY_MASK_HIGH)
+
+
+def compute_original_edges(
+    original_bgr_img: np.ndarray,
+    target_shape: tuple[int, int],
+) -> np.ndarray:
+    """
+    Canny edges from the original image in ROI space.
+
+    If original_bgr_img already matches target_shape, it is treated as a
+    pre-cropped ROI. Otherwise, ROI is extracted via compute_roi.
+    """
+    th, tw = target_shape
+    if original_bgr_img.shape[:2] == (th, tw):
+        original_roi = original_bgr_img
+    else:
+        roi_x, roi_y, roi_w, roi_h = compute_roi(
+            int(original_bgr_img.shape[1]), int(original_bgr_img.shape[0]),
+        )
+        original_roi = original_bgr_img[roi_y:roi_y + roi_h, roi_x:roi_x + roi_w]
+    if original_roi.shape[:2] != (th, tw):
+        original_roi = cv2.resize(
+            original_roi, (int(tw), int(th)), interpolation=cv2.INTER_LINEAR,
+        )
+    return cv2.Canny(
+        cv2.cvtColor(original_roi, cv2.COLOR_BGR2GRAY),
+        CANNY_ORIGINAL_LOW,
+        CANNY_ORIGINAL_HIGH,
+    )
 
 
 def compute_combined_edges(
     colour_img: np.ndarray,
     original_bgr_img: np.ndarray | None = None,
 ) -> np.ndarray:
-    """
-    OR-combine edges from the colour mask and the original BGR frame.
-
-    The colour-mask edges are the primary signal; the optional original-frame
-    edges recover boundaries that may be weak in the mask.
-    """
+    """OR-combine Canny from the colour mask and (optionally) the original BGR frame."""
     mask_edges = compute_edges(colour_img)
     if original_bgr_img is None:
         return mask_edges
-
-    roi_x, roi_y, roi_w, roi_h = compute_roi(
-        int(original_bgr_img.shape[1]), int(original_bgr_img.shape[0]),
-    )
-    original_roi = original_bgr_img[roi_y:roi_y + roi_h, roi_x:roi_x + roi_w]
-    if original_roi.shape[:2] != colour_img.shape[:2]:
-        original_roi = cv2.resize(
-            original_roi,
-            (int(colour_img.shape[1]), int(colour_img.shape[0])),
-            interpolation=cv2.INTER_LINEAR,
-        )
-
-    original_edges = cv2.Canny(
-        cv2.cvtColor(original_roi, cv2.COLOR_BGR2GRAY), CANNY_GREY_LOW, CANNY_GREY_HIGH,
-    )
+    original_edges = compute_original_edges(original_bgr_img, colour_img.shape[:2])
     return cv2.bitwise_or(mask_edges, original_edges)
 
 
-def find_lines(edges: np.ndarray) -> list[tuple]:
+def find_lines(
+    edges: np.ndarray,
+    threshold: int,
+    min_line_length: int,
+    max_line_gap: int,
+) -> list[tuple]:
     """Run probabilistic Hough transform and return raw line tuples."""
     lines = cv2.HoughLinesP(
         edges,
         rho=1,
         theta=np.pi / 180,
-        threshold=HOUGH_THRESHOLD,
-        minLineLength=HOUGH_MIN_LENGTH,
-        maxLineGap=HOUGH_MAX_GAP,
+        threshold=max(1, int(threshold)),
+        minLineLength=max(1, int(min_line_length)),
+        maxLineGap=max(0, int(max_line_gap)),
     )
     return [] if lines is None else [tuple(l[0]) for l in lines]
 
@@ -292,21 +327,63 @@ def draw_lines(base_img: np.ndarray, lines: list[tuple]) -> np.ndarray:
 def build_edge_display(
     colour_img: np.ndarray,
     original_bgr_img: np.ndarray | None = None,
-) -> tuple[np.ndarray, list[tuple]]:
+) -> tuple[np.ndarray, list[tuple], np.ndarray, np.ndarray]:
     """
-    Full pipeline: edges → Hough lines → classified display.
+    Full pipeline: Canny on each source → Hough lines → combined display.
 
-    Returns the display image and the raw line list for history accumulation.
+    Behaviour:
+      - Colour-mask Canny contributes BOTH horizontal and vertical Hough lines.
+      - Original-image Canny contributes ONLY vertical Hough lines.
+      - The two line sets are concatenated; the overlay shows them on top of
+        the OR of both Canny edge images.
+
+    Returns
+    -------
+    disp_grey      : BGR image — OR of both Canny edges with combined lines drawn.
+    lines_all      : union of Hough lines used for intersection detection.
+    edges_colour   : single-channel Canny from the colour mask.
+    edges_original : single-channel Canny from the original BGR frame
+                     (zeros if original_bgr_img was not provided).
     """
-    edges_grey = compute_combined_edges(colour_img, original_bgr_img)
-    lines_grey = find_lines(edges_grey)
-    horiz_lines, vert_lines = classify_lines(lines_grey)
+    edges_colour = compute_edges(colour_img)
+    edges_original = (
+        compute_original_edges(original_bgr_img, colour_img.shape[:2])
+        if original_bgr_img is not None
+        else np.zeros_like(edges_colour)
+    )
+    # Colour-mask edges run on the full ROI.
+    edges_colour_search = edges_colour
+    # Original-image edges are restricted to the configured centre band.
+    edges_original_search = apply_centre_band_mask(edges_original)
+
+    lines_colour_all = find_lines(
+        edges_colour_search,
+        HOUGH_MASK_THRESHOLD,
+        HOUGH_MASK_MIN_LENGTH,
+        HOUGH_MASK_MAX_GAP,
+    )
+    if original_bgr_img is not None:
+        _, vert_original = classify_lines(
+            find_lines(
+                edges_original_search,
+                HOUGH_ORIGINAL_THRESHOLD,
+                HOUGH_ORIGINAL_MIN_LENGTH,
+                HOUGH_ORIGINAL_MAX_GAP,
+            )
+        )
+    else:
+        vert_original = []
+
+    lines_all = list(lines_colour_all) + list(vert_original)
+
+    combined = cv2.bitwise_or(edges_colour_search, edges_original_search)
+    horiz_lines, vert_lines = classify_lines(lines_all)
     disp_grey = draw_classified_lines(
-        cv2.cvtColor(edges_grey, cv2.COLOR_GRAY2BGR),
+        cv2.cvtColor(combined, cv2.COLOR_GRAY2BGR),
         horiz_lines,
         vert_lines,
     )
-    return disp_grey, lines_grey
+    return disp_grey, lines_all, edges_colour_search, edges_original_search
 
 
 # ---------------------------------------------------------------------------
