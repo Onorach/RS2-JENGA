@@ -154,6 +154,8 @@ def colour_mean_depth_in_cell(
     cell: dict,
 ) -> dict[str, float]:
     """Median depth (mm) per colour inside a cell.  Uses eroded masks for stability."""
+    if depth_frame is None:
+        return {}
     ih, iw = bgr_frame.shape[:2]
     hsv    = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
     quad   = _quad_mask((ih, iw), cell["corners"])
