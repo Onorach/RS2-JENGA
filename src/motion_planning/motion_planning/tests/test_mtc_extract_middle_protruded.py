@@ -151,16 +151,9 @@ def _validate_subframes(
         "end_minus": {"x": -half_len, "z": 0.0000},
         "grasp_plus": {"x": +float(grasp_offset_m), "z": 0.0075},
         "grasp_minus": {"x": -float(grasp_offset_m), "z": 0.0075},
-    expected = {
-        "end_plus": {"x": +half_len, "z": 0.0000},
-        "end_minus": {"x": -half_len, "z": 0.0000},
-        "grasp_plus": {"x": +float(grasp_offset_m), "z": 0.0075},
-        "grasp_minus": {"x": -float(grasp_offset_m), "z": 0.0075},
     }
     for n, exp in expected.items():
-    for n, exp in expected.items():
         p = by_name[n]
-        _assert_close(node, f"{obj.id}/{n}.position.x", float(p.position.x), exp["x"], tol)
         _assert_close(node, f"{obj.id}/{n}.position.x", float(p.position.x), exp["x"], tol)
         _assert_close(node, f"{obj.id}/{n}.position.y", float(p.position.y), 0.0, tol)
         _assert_close(node, f"{obj.id}/{n}.position.z", float(p.position.z), exp["z"], tol)
@@ -242,8 +235,6 @@ def main(args=None) -> int:
     grasp_offset_m = float(node.declare_parameter("grasp_offset_m", 0.0325).value)
 
     layout_path_param = str(node.declare_parameter("layout_path", "").value)
-    place_dx = float(node.declare_parameter("place_dx", -0.12).value)
-    place_dy = float(node.declare_parameter("place_dy", -0.08).value)
     place_dx = float(node.declare_parameter("place_dx", -0.12).value)
     place_dy = float(node.declare_parameter("place_dy", -0.08).value)
     place_dz = float(node.declare_parameter("place_dz", 0.0).value)

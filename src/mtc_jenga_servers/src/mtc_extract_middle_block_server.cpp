@@ -14,7 +14,6 @@
 #include <jenga_interfaces/action/jenga_extract_middle_block.hpp>
 #include <moveit_msgs/msg/move_it_error_codes.hpp>
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
-#include <moveit/planning_scene_interface/planning_scene_interface.h>
 #include <moveit/task_constructor/solvers.h>
 #include <moveit/task_constructor/stages.h>
 #include <moveit/task_constructor/task.h>
@@ -96,7 +95,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
     box_z_ = mtc_jenga::param<double>(this, "block_box_z", 0.015);
 
     plan_max_attempts_ = static_cast<uint32_t>(mtc_jenga::param<int>(this, "plan_max_attempts", 1));
-    plan_time_ = mtc_jenga::param<double>(this, "plan_time", 0.5);
+    plan_time_ = mtc_jenga::param<double>(this, "plan_time", 1.0);
     vel_scale_ = mtc_jenga::param<double>(this, "max_velocity_scaling_factor", 0.1);
     acc_scale_ = mtc_jenga::param<double>(this, "max_acceleration_scaling_factor", 0.1);
     cart_step_ = mtc_jenga::param<double>(this, "cartesian_step", 0.004);
@@ -159,8 +158,6 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
 
   mtc::Task buildExtractTask(const std::string& block_id,
                              const geometry_msgs::msg::PoseStamped& place_in_world,
-                             const geometry_msgs::msg::PoseStamped& block_pose,
-                             const std::string& effective_extract_axis) {
                              const geometry_msgs::msg::PoseStamped& block_pose,
                              const std::string& effective_extract_axis) {
     mtc::Task task;
@@ -233,7 +230,6 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
         stage->properties().set("marker_ns", "grasp_pose");
         stage->setPreGraspPose(open_state_);
         const bool extract_positive = effective_extract_axis.empty() ? true : (effective_extract_axis[0] != '-');
-        const bool extract_positive = effective_extract_axis.empty() ? true : (effective_extract_axis[0] != '-');
         const std::string subframe = extract_positive ? "end_plus" : "end_minus";
         stage->setObject(block_id + "/" + subframe);
 
@@ -303,11 +299,9 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
         stage1->setIKFrame(hand_frame);
         stage1->setMinMaxDistance(wiggle_distance_, wiggle_distance_);
         stage1->setDirection(axisToDirInFrame(effective_extract_axis, block_pose, "world"));
-        stage1->setDirection(axisToDirInFrame(effective_extract_axis, block_pose, "world"));
         grasp->insert(std::move(stage1));
 
         // opposite direction
-        std::string inv = effective_extract_axis;
         std::string inv = effective_extract_axis;
         if (!inv.empty() && inv[0] == '-') inv = inv.substr(1);
         else inv = "-" + inv;
@@ -472,8 +466,6 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
                      const geometry_msgs::msg::PoseStamped& place_pose,
                      const std::string& block_id,
                      const std::string& goal_extract_axis) {
-                     const std::string& block_id,
-                     const std::string& goal_extract_axis) {
     if (estop_.load()) {
       RCLCPP_WARN(get_logger(), "E-stop active: refusing to plan/execute MTC task");
       return false;
@@ -482,11 +474,6 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
       RCLCPP_ERROR(get_logger(), "Invalid approach_axis: '%s' (expected x|y|z|-x|-y|-z)", approach_axis_.c_str());
       return false;
     }
-    const std::string effective_extract_axis = goal_extract_axis.empty()
-        ? detectExtractAxis(block_pose, block_id)
-        : goal_extract_axis;
-    if (!axisToLocalVec(effective_extract_axis)) {
-      RCLCPP_ERROR(get_logger(), "Invalid extract_axis: '%s' (expected x|y|z|-x|-y|-z)", effective_extract_axis.c_str());
     const std::string effective_extract_axis = goal_extract_axis.empty()
         ? detectExtractAxis(block_pose, block_id)
         : goal_extract_axis;
@@ -531,7 +518,6 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
                                grasp_offset_m_);
 
     mtc::Task task = buildExtractTask(block_id, adjusted_place, block_pose, effective_extract_axis);
-    mtc::Task task = buildExtractTask(block_id, adjusted_place, block_pose, effective_extract_axis);
     try {
       task.init();
     } catch (const mtc::InitStageException& e) {
@@ -556,7 +542,6 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
       RCLCPP_ERROR(get_logger(), "MTC execute failed: %d", res.val);
       return false;
     }
-    mtc_jenga::applyBlockBoxAt(block_id, adjusted_place.header.frame_id, adjusted_place.pose, box_x_, box_y_, box_z_,
     mtc_jenga::applyBlockBoxAt(block_id, adjusted_place.header.frame_id, adjusted_place.pose, box_x_, box_y_, box_z_,
                                grasp_offset_m_);
     return true;
@@ -586,7 +571,6 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
 
     send_fb("extract_middle_start", 0.0F);
     const std::string block_id = mtc_jenga::blockIdFromIndex(goal->block_index);
-    const bool ok = runExtractMtc(goal->block_pose, goal->place_pose, block_id, goal->extract_axis);
     const bool ok = runExtractMtc(goal->block_pose, goal->place_pose, block_id, goal->extract_axis);
     send_fb("extract_middle_done", 100.0F);
 
@@ -623,15 +607,14 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
   std::string status_topic_;
 
   double box_x_{0.075}, box_y_{0.025}, box_z_{0.015};
-  uint32_t plan_max_attempts_{3};
-  double plan_time_{0.5};
+  uint32_t plan_max_attempts_{1};
+  double plan_time_{1.0};
   double vel_scale_{0.20};
   double acc_scale_{0.20};
   double cart_step_{0.004};
 
   double approach_min_{0.005}, approach_max_{0.03};
   double extract_min_{0.06}, extract_max_{0.10};
-  double lift_after_extract_{0.01};
   double lift_after_extract_{0.01};
   std::string extract_axis_{"x"};
   std::string approach_axis_{"-x"};
