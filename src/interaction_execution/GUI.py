@@ -262,38 +262,59 @@ class JengaInterfaceApp:
                     return str(b_id) if b_id is not None and b_id != "" else "000"
         return "000"
 
-    def select_block_sequence(self, layer, pos_idx):
-        """State machine workflow executing sequence configurations (layer 0 = bottom)."""
-        block_id = self._get_block_id_from_memory(layer, pos_idx)
+    def get_top_incomplete_layer(self):
+        """Finds the highest layer (0-5) that has any empty spots."""
+        if not self.ros_node.top_layer_data: return 0
+        layers = _layers_from_tower_message(self.ros_node.top_layer_data)
+        for layer in range(len(layers) - 1, -1, -1):
+            blocks = layers[layer].get("blocks", [])
+            # Layer is incomplete if it has missing blocks or unknown/none colours
+            for b in blocks:
+                if not b.get("present", False) or b.get("colour") in ["unknown", "none", None]:
+                    return layer
+        return 0
+
+    def is_eligible(self, layer, pos_idx):
+        """Returns True if the spot is actually available."""
+        target_layer = self.get_top_incomplete_layer()
+        if layer != target_layer: return False
         
-        # If sequence was previously complete, clicking resets state machine to Pick Selection
+        layers = _layers_from_tower_message(self.ros_node.top_layer_data)
+        if layer < len(layers):
+            blocks = layers[layer].get("blocks", [])
+            b = blocks[pos_idx - 1] if (pos_idx - 1) < len(blocks) else {}
+            return not b.get("present", False) or b.get("colour") in ["unknown", "none", None]
+        return True
+
+    def select_block_sequence(self, layer, pos_idx):
         if self.sequence_state == "COMPLETE":
             self.sequence_state = "WAITING_PICK"
             self.pick_selection = None
             self.place_selection = None
 
         if self.sequence_state == "WAITING_PICK":
-            self.pick_selection = [block_id, layer, pos_idx]
+            # Optional: Add logic here to restrict picking as well if desired
+            self.pick_selection = [self._get_block_id_from_memory(layer, pos_idx), layer, pos_idx]
             self.sequence_state = "WAITING_PLACE"
+            target = self.get_top_incomplete_layer()
             self.goal_status_label.config(
-                text=f"Block {pos_idx} on layer L{layer} has been selected. Pick placement position",
+                text=f"Selected L{layer} P{pos_idx}. Now click an empty spot on L{target}.",
                 fg="blue"
             )
 
         elif self.sequence_state == "WAITING_PLACE":
-            self.place_selection = [block_id, layer, pos_idx]
-            self.sequence_state = "COMPLETE"
-
-            p_id, p_lay, p_pos = self.pick_selection
-            self.goal_status_label.config(
-                text=f"Block {p_pos} on layer L{p_lay} will be placed at position {pos_idx} on layer L{layer}. Select another block to reset the next sequence", 
-                fg="green"
-            )
-            
-            # Publish full sequence matrix array [[pick], [place]] over /selected_goal
-            full_sequence_matrix = [self.pick_selection, self.place_selection]
-            self.ros_node.publish_goal(full_sequence_matrix)
-
+            if self.is_eligible(layer, pos_idx):
+                self.place_selection = [self._get_block_id_from_memory(layer, pos_idx), layer, pos_idx]
+                self.sequence_state = "COMPLETE"
+                self.goal_status_label.config(text="Valid placement selected.", fg="green")
+                # Publish
+                self.ros_node.publish_goal([self.pick_selection, self.place_selection])
+            else:
+                self.goal_status_label.config(
+                    text=f"Invalid! Only empty spots on L{self.get_top_incomplete_layer()} are eligible.",
+                    fg="red"
+                )
+                
     def refresh_buttons(self):
         for idx, active in enumerate(self.ee_override_array):
             color = COLOUR_RED if active else COLOUR_YELLOW
