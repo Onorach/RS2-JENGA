@@ -145,8 +145,8 @@ def _button_at(panel_x: int, panel_y: int, panel_w: int) -> str | None:
     return None
 
 
-def run_search_area_setup(get_frame_pair: Callable[[], tuple[np.ndarray | None, object]]) -> None:
-    """Run the setup UI until Set, Cancel, or window close."""
+def run_search_area_setup(get_frame_pair: Callable[[], tuple[np.ndarray | None, object]]) -> bool:
+    """Run setup UIs. Returns True if search area, colour, and tower mask were saved."""
     original_frac = load_search_area_from_config()
     original_px: list[int] = [0, 0, 1, 1]
     current_px: list[int] = [0, 0, 1, 1]
@@ -278,19 +278,16 @@ def run_search_area_setup(get_frame_pair: Callable[[], tuple[np.ndarray | None, 
             f"Saved SEARCH_AREA = {values} "
             f"(centre {cx_px},{cy_px}px, size {rw_px}x{rh_px}px) to {_CONFIG_PATH}"
         )
-        run_colour_setup(get_frame_pair, search_area=values)
-    elif save_on_exit:
+        return run_colour_setup(get_frame_pair, search_area=values)
+    if save_on_exit:
         print("Could not save — no camera frame received.")
-        cv2.destroyAllWindows()
     else:
         print("Setup cancelled — SEARCH_AREA unchanged.")
-        cv2.destroyAllWindows()
+    cv2.destroyAllWindows()
+    return False
 
 
-def run_search_area_setup_subscribe(
-    color_topic: str,
-    depth_topic: str | list[str] | tuple[str, ...],
-) -> None:
+def run_search_area_setup_subscribe(color_topic: str, depth_topic: str) -> None:
     """ROS live-camera entry point for search-area setup."""
     import rclpy
 

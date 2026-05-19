@@ -5,36 +5,18 @@ Central configuration for all perception modules.
 Tune values here; nothing else needs to change.
 """
 
-TOWER_ANALYSIS = False
+TOWER_ANALYSIS = True
 
-BLOCK_ANALYSIS = True
+BLOCK_ANALYSIS = False
 
 # Search area centre and fraction of the full frame
-SEARCH_AREA = (0.492, 0.553, 0.259, 0.388)
+SEARCH_AREA = (0.559, 0.483, 0.259, 0.449)
 
 # Crop margin around the search area
 SEARCH_AREA_MARGIN     = 0.10
 
 # Camera horizontal field of view — used for px → mm lateral conversion.
 CAMERA_HFOV_DEG = 69.0
-
-# Master toggle for the artificial saturation/contrast boost for both live
-# (ROS) and bag/pipeline frames. The boost requires a BGR <-> HSV round-trip
-# per frame, so disable it if frame rate is suffering.
-BOOST_ENABLED = True
-
-# Apply boost only on the search-area crop (+ SEARCH_AREA_MARGIN) instead of
-# the full frame. This reduces per-frame boost cost.
-BOOST_SEARCH_CROP_ONLY = True
-
-# Multiplier applied to the HSV S-channel of every incoming frame before any
-# perception runs. 1.0 = unchanged, >1.0 boosts saturation, <1.0 desaturates.
-SATURATION_BOOST = 1.9
-
-# Contrast multiplier applied to the HSV V-channel of every incoming frame
-# around mid-grey (128). 1.0 = unchanged, >1.0 stretches contrast, <1.0
-# flattens it.
-CONTRAST_BOOST = 1.2
 
 # ---------------------------------------------------------------------------
 # Colour Settings
@@ -47,16 +29,16 @@ HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] =
         ((170, 150, 118), (179, 255, 255)),
     ],
     "yellow": [
-        (( 18, 120, 140), ( 39, 255, 255)),
+        (( 18,  55, 104), ( 39, 255, 255)),
     ],
     "green": [
         (( 39,  51,  79), ( 85, 255, 255)),
     ],
     "blue": [
-        (( 90, 171, 105), (110, 255, 255)),
+        (( 90, 171, 105), (104, 255, 255)),
     ],
     "purple": [
-        ((109,  56,  37), (140, 255, 255)),
+        ((109,  74,  64), (140, 255, 255)),
     ],
 }
 
@@ -79,8 +61,8 @@ COLOUR_BGR: dict[str, tuple[int, int, int]] = {
 # Tower mask
 # ---------------------------------------------------------------------------
 
-TOWER_MASK_SAT_MIN                 = 140   # Min HSV saturation for tower foreground.
-TOWER_MASK_BRIGHTNESS_MIN          = 60    # Min HSV value (brightness) for tower foreground.
+TOWER_MASK_SAT_MIN                 = 75   # Min HSV saturation for tower foreground.
+TOWER_MASK_BRIGHTNESS_MIN          = 53    # Min HSV value (brightness) for tower foreground.
 # TOWER_MASK_MORPH_CLOSE_PX        = 8     # Close kernel size — fills small mask holes.
 # TOWER_MASK_MORPH_OPEN_PX         = 10    # Open kernel size — removes noise blobs.
 

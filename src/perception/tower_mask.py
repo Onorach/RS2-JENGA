@@ -22,15 +22,21 @@ def _odd(k: int) -> int:
     return k if k % 2 == 1 else k + 1
 
 
-def compute_saturation_mask(bgr: np.ndarray) -> np.ndarray:
-    """Return a binary mask (HxW uint8) of high-saturation pixels."""
+def compute_saturation_mask(
+    bgr: np.ndarray,
+    *,
+    sat_min: int | None = None,
+    brightness_min: int | None = None,
+) -> np.ndarray:
+    """Return a binary mask (HxW uint8) of high-saturation, sufficiently bright pixels."""
+    s_min = TOWER_MASK_SAT_MIN if sat_min is None else sat_min
+    v_min = TOWER_MASK_BRIGHTNESS_MIN if brightness_min is None else brightness_min
 
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
     mask = (
-        (hsv[:, :, 1] >= TOWER_MASK_SAT_MIN)
-        &
-        (hsv[:, :, 2] >= TOWER_MASK_BRIGHTNESS_MIN)
+        (hsv[:, :, 1] >= s_min)
+        & (hsv[:, :, 2] >= v_min)
     ).astype(np.uint8) * 255
 
     return mask
@@ -39,6 +45,9 @@ def compute_saturation_mask(bgr: np.ndarray) -> np.ndarray:
 def compute_hex_region(
     bgr: np.ndarray,
     roi_xywh: tuple[int, int, int, int] | None = None,
+    *,
+    sat_min: int | None = None,
+    brightness_min: int | None = None,
 ) -> np.ndarray | None:
     """
     Find the largest high-saturation blob within the ROI and fit a
@@ -53,7 +62,9 @@ def compute_hex_region(
 
     roi = bgr[ry:ry + rh, rx:rx + rw]
 
-    mask = compute_saturation_mask(roi)
+    mask = compute_saturation_mask(
+        roi, sat_min=sat_min, brightness_min=brightness_min,
+    )
 
     contours, _ = cv2.findContours(
         mask,
@@ -106,6 +117,9 @@ def build_display(
     pts: np.ndarray | None,
     centroid_x: float | None = None,
     roi_xywh: tuple[int, int, int, int] | None = None,
+    *,
+    sat_min: int | None = None,
+    brightness_min: int | None = None,
 ) -> np.ndarray:
     """
     Draw the ROI box, polygon, centroid line,
@@ -123,7 +137,9 @@ def build_display(
     # ---------------------------------------------------------
 
     roi_mask = compute_saturation_mask(
-        bgr[ry:ry + rh, rx:rx + rw]
+        bgr[ry:ry + rh, rx:rx + rw],
+        sat_min=sat_min,
+        brightness_min=brightness_min,
     )
 
     sat_colour = np.zeros((ih, iw), dtype=np.uint8)

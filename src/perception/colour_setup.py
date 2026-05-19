@@ -18,7 +18,6 @@ import cv2
 import numpy as np
 
 from colour_identification import classify_roi_bgr, compute_roi
-from play_runtime import _apply_boost
 
 _CONFIG_PATH = Path(__file__).resolve().parent / "perception_config.py"
 _WINDOW = "Colour setup"
@@ -263,8 +262,8 @@ def _ordered_lo_hi(h_lo: int, h_hi: int, s_lo: int, s_hi: int, v_lo: int, v_hi: 
 def run_colour_setup(
     get_frame_pair: Callable[[], tuple[np.ndarray | None, object]],
     search_area: tuple[float, float, float, float] | None = None,
-) -> None:
-    """HSV mask calibration UI; returns after Set, Cancel, or quit."""
+) -> bool:
+    """HSV mask calibration UI. Returns True if Set was pressed (config saved)."""
     active_search_area = search_area if search_area is not None else load_search_area_from_config()
 
     original_ranges = load_hsv_ranges_from_config()
@@ -400,7 +399,7 @@ def run_colour_setup(
         if bgr_full is not None and trackbars_ready:
             ih, iw = bgr_full.shape[:2]
             rx, ry, rw, rh = compute_roi(iw, ih, search_area=active_search_area)
-            roi_bgr = _apply_boost(bgr_full[ry : ry + rh, rx : rx + rw])
+            roi_bgr = bgr_full[ry : ry + rh, rx : rx + rw]
             colour_img, _ = classify_roi_bgr(roi_bgr, current_ranges)
 
             colour = _active_colour()
@@ -441,5 +440,8 @@ def run_colour_setup(
     if save_on_exit:
         save_hsv_ranges_to_config(current_ranges)
         print(f"Saved all HSV_RANGES to {_CONFIG_PATH}")
-    else:
-        print("Colour setup cancelled — HSV_RANGES unchanged.")
+        from tower_setup import run_tower_setup
+
+        return run_tower_setup(get_frame_pair, search_area=active_search_area)
+    print("Colour setup cancelled — HSV_RANGES unchanged.")
+    return False
