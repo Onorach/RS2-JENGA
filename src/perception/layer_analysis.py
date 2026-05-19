@@ -188,8 +188,8 @@ def _adjusted_depth(face_depth_mm: float) -> float:
 
 
 def _print_tower(tower: list[dict]) -> None:
-    print("── Layer Analysis (front → mid → back) ────")
-    for layer in tower:
+    print("── Layer Analysis (L0 = bottom, blocks: front → mid → back) ────")
+    for layer in sorted(tower, key=lambda item: item["layer"]):
         idx         = layer["layer"]
         orientation = layer["orientation"]
         arrow       = "<-" if orientation == "left" else "->"
@@ -225,12 +225,14 @@ def analyse_tower(
 ) -> list[dict]:
     global _last_print_time
     tower = []
-    for layer_idx, (left_def, right_def) in enumerate(row_cells):
+    n_layers = len(row_cells)
+    for row_idx, (left_def, right_def) in enumerate(row_cells):
         pct_results = compute_percentages(bgr_frame, cells=[left_def, right_def])
         layer = analyse_layer(
             bgr_frame, depth_frame, pct_results[0], pct_results[1], left_def, right_def,
         )
-        layer["layer"] = layer_idx
+        # row_cells[0] is the topmost band in the image; L0 is the bottom of the tower.
+        layer["layer"] = (n_layers - 1) - row_idx
         tower.append(layer)
 
     now = time.monotonic()
@@ -258,7 +260,8 @@ def build_tower_image(tower: list[dict]) -> np.ndarray:
         layer_idx   = layer_data["layer"]
         orientation = layer_data["orientation"]
         blocks      = layer_data["blocks"]
-        y0 = margin + layer_idx * layer_h
+        # L0 at bottom of the diagram, highest layer index at top.
+        y0 = margin + (n_layers - 1 - layer_idx) * layer_h
         y1 = y0 + block_h
         cv2.putText(canvas, f"L{layer_idx}", (margin, y1 - 8),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, (180, 180, 180), 1, cv2.LINE_AA)

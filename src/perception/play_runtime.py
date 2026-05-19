@@ -27,6 +27,8 @@ from grid_generation import (
     build_layer_cells_from_points,
 )
 from tower_mask import (
+    HEX_RECOMPUTE_INTERVAL,
+    append_tower_info_panel,
     compute_hex_region,
     build_display,
     crop_tower_finder_display,
@@ -40,10 +42,6 @@ from perception_config import (
     TOWER_ANALYSIS,
     BLOCK_ANALYSIS,
     SEARCH_AREA_MARGIN,
-    BOOST_ENABLED,
-    BOOST_SEARCH_CROP_ONLY,
-    SATURATION_BOOST,
-    CONTRAST_BOOST,
 )
 
 import rclpy
@@ -66,41 +64,13 @@ def _ensure_window_open(name: str) -> None:
         cv2.namedWindow(name, cv2.WINDOW_NORMAL)
 
 
-def _boost_saturation_contrast(
-    bgr: np.ndarray,
-    sat_factor: float,
-    contrast_factor: float,
-) -> np.ndarray:
-    """Boost HSV saturation and (V-channel) contrast in a single conversion."""
-    if bgr is None or (sat_factor == 1.0 and contrast_factor == 1.0):
-        return bgr
-    hsv     = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    h, s, v = cv2.split(hsv)
-    if sat_factor != 1.0:
-        s = np.clip(s.astype(np.float32) * float(sat_factor), 0, 255).astype(np.uint8)
-    if contrast_factor != 1.0:
-        v = np.clip(
-            (v.astype(np.float32) - 128.0) * float(contrast_factor) + 128.0,
-            0,
-            255,
-        ).astype(np.uint8)
-    return cv2.cvtColor(cv2.merge([h, s, v]), cv2.COLOR_HSV2BGR)
-
-
-def _apply_boost(bgr: np.ndarray) -> np.ndarray:
-    """Apply configured saturation/contrast boost to a frame."""
-    if not BOOST_ENABLED:
-        return bgr
-    return _boost_saturation_contrast(bgr, SATURATION_BOOST, CONTRAST_BOOST)
-
-
 # ---------------------------------------------------------------------------
 # Dynamic cell building from locked grid points
 # ---------------------------------------------------------------------------
 
 # Runtime-only history and timing controls for the live grid pipeline.
 EDGE_HISTORY_FRAMES         = 30
-POINTS_OVERLAY_PAUSE_FRAMES = 30
+POINTS_OVERLAY_PAUSE_FRAMES = 60
 GRID_POINTS_MAX_INPUT_LINES = 500
 
 # ---------------------------------------------------------------------------
@@ -108,9 +78,8 @@ GRID_POINTS_MAX_INPUT_LINES = 500
 # ---------------------------------------------------------------------------
 
 def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> None:
-    cv2.namedWindow("Live + grid",         cv2.WINDOW_NORMAL)
-    cv2.namedWindow("Raw crop",            cv2.WINDOW_NORMAL)
     if BLOCK_ANALYSIS:
+        cv2.namedWindow("Live + grid",         cv2.WINDOW_NORMAL)
         cv2.namedWindow("Colour mask",         cv2.WINDOW_NORMAL)
         cv2.namedWindow("Canny (colour mask)", cv2.WINDOW_NORMAL)
         cv2.namedWindow("Canny (original)",    cv2.WINDOW_NORMAL)
@@ -132,7 +101,6 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
     _cached_pts:   np.ndarray | None = None
     _hex_frame_n:  int = 0
 
-    HEX_RECOMPUTE_INTERVAL = 60   # Recompute hex detection every N frames.
     ANALYSIS_INTERVAL      = 5    # Re-run heavy analysis every N frames after lock.
     TOWER_PRINT_INTERVAL_S = 3.0
 
@@ -154,25 +122,21 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
         dx2 = min(iw, rx + rw + mx); dy2 = min(ih, ry + rh + my)
         roi_x, roi_y = rx - dx1, ry - dy1
 
-        raw_crop = bgr_full[dy1:dy2, dx1:dx2]
-        if BOOST_SEARCH_CROP_ONLY:
-            bgr = _apply_boost(raw_crop)
-        else:
-            bgr = _apply_boost(bgr_full)[dy1:dy2, dx1:dx2]
+        bgr = bgr_full[dy1:dy2, dx1:dx2]
         depth_mm = None if depth_mm_full is None else depth_mm_full[dy1:dy2, dx1:dx2]
 
-        # --- Live view ---
-        live_disp = bgr.copy()
-        cv2.imshow("Raw crop", raw_crop)
-        cv2.rectangle(live_disp, (roi_x, roi_y), (roi_x + rw, roi_y + rh), (255, 255, 0), 2)
-        if frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES)):
-            for px, py in live_valid_points_crop:
-                if 0 <= px < live_disp.shape[1] and 0 <= py < live_disp.shape[0]:
-                    cv2.circle(live_disp, (int(px), int(py)), 2, (0, 0, 255), -1)
-        cx = (iw // 2) - dx1
-        if 0 <= cx < live_disp.shape[1]:
-            cv2.line(live_disp, (cx, 0), (cx, live_disp.shape[0] - 1), (0, 255, 255), 1, cv2.LINE_AA)
-        cv2.imshow("Live + grid", live_disp)
+        # --- Live view (block analysis only) ---
+        if BLOCK_ANALYSIS:
+            live_disp = bgr.copy()
+            cv2.rectangle(live_disp, (roi_x, roi_y), (roi_x + rw, roi_y + rh), (255, 255, 0), 2)
+            if frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES)):
+                for px, py in live_valid_points_crop:
+                    if 0 <= px < live_disp.shape[1] and 0 <= py < live_disp.shape[0]:
+                        cv2.circle(live_disp, (int(px), int(py)), 2, (0, 0, 255), -1)
+            cx = (iw // 2) - dx1
+            if 0 <= cx < live_disp.shape[1]:
+                cv2.line(live_disp, (cx, 0), (cx, live_disp.shape[0] - 1), (0, 255, 255), 1, cv2.LINE_AA)
+            cv2.imshow("Live + grid", live_disp)
 
         # --- Colour mask + edge detection ---
         colour_img = None
@@ -290,19 +254,15 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
             # Build display
             # -------------------------------------------------
 
-            sat_disp = (
-                build_display(
-                    bgr,
-                    pts,
-                    centroid_x=(
-                        None
-                        if centroid_x is None
-                        else (centroid_x - dx1)
-                    ),
-                    roi_xywh=(roi_x, roi_y, rw, rh),
-                )
-                if pts is not None
-                else None
+            sat_disp = build_display(
+                bgr,
+                pts,
+                centroid_x=(
+                    None
+                    if centroid_x is None
+                    else (centroid_x - dx1)
+                ),
+                roi_xywh=(roi_x, roi_y, rw, rh),
             )
 
         else:
@@ -312,21 +272,24 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
             tower_offset = None
 
         if TOWER_ANALYSIS and sat_disp is not None:
+            info_lines: list[str] = []
+            info_colors: list[tuple[int, int, int]] = []
             if tower_depth is not None:
-                cv2.putText(sat_disp, f"Tower depth ~ {tower_depth['tower_depth_m']:.3f} m",
-                            (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+                info_lines.append(f"Tower depth ~ {tower_depth['tower_depth_m']:.3f} m")
+                info_colors.append((255, 255, 255))
             if tower_offset is not None:
-                off_txt = f"Offset from center: {tower_offset['dx_px']:+.0f}px"
-                cv2.putText(sat_disp, off_txt, (10, 52),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 2, cv2.LINE_AA)
-            tf_parts = []
+                info_lines.append(
+                    f"Offset from center: {tower_offset['dx_px']:+.0f}px"
+                )
+                info_colors.append((255, 255, 255))
+            tf_parts: list[str] = []
             if tower_depth is not None:
                 tf_parts.append(f"@d={tower_depth['depth_mm']:.1f}mm")
             if tower_offset is not None and tower_offset["lateral_mm"] is not None:
                 tf_parts.append(f"@x={tower_offset['lateral_mm']:+.1f}mm")
             if tf_parts:
-                cv2.putText(sat_disp, "  ".join(tf_parts), (10, 78),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 255, 255), 2, cv2.LINE_AA)
+                info_lines.append("  ".join(tf_parts))
+                info_colors.append((0, 255, 255))
                 now = time.monotonic()
                 if now - _last_tower_finder_print >= TOWER_PRINT_INTERVAL_S:
                     cx_str = (
@@ -335,27 +298,34 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
                     )
                     print("Tower finder:  " + "  ".join(tf_parts) + cx_str)
                     _last_tower_finder_print = now
-            cv2.imshow(
-                "Tower finder",
-                crop_tower_finder_display(
-                    sat_disp,
-                    pts,
-                    bgr.shape[1],
-                    bgr.shape[0],
-                ),
+            if tower_offset is not None:
+                info_lines.append(
+                    f"centroid_x={tower_offset['centroid_x_px']:.0f}px"
+                    f"   |   frame centre={iw/2:.0f}px"
+                )
+                info_colors.append((255, 0, 255))
+
+            tower_view = crop_tower_finder_display(sat_disp, (roi_x, roi_y, rw, rh))
+            tower_view = append_tower_info_panel(
+                tower_view, info_lines, line_colors=info_colors,
             )
+            cv2.imshow("Tower finder", tower_view)
 
         # --- Box percentages + layer analysis (active after grid lock) ---
         if BLOCK_ANALYSIS and points_locked:
-            if frame_n % ANALYSIS_INTERVAL == 0:
-                active_cells      = [cell for layer in locked_layer_cells for cell in layer]
+            if frame_n % ANALYSIS_INTERVAL == 0 or _last_tower_img is None:
+                active_cells = [cell for layer in locked_layer_cells for cell in layer]
                 _last_pct_results = compute_percentages(bgr, cells=active_cells)
-                if depth_mm is not None:
-                    row_cells = [(layer[0], layer[1]) for layer in locked_layer_cells]
-                    tower     = analyse_tower(bgr, depth_mm, row_cells)
-                    if tower and publish_top_layer:
-                        publish_top_layer(tower[0])
-                    _last_tower_img = build_tower_image(tower)
+                row_cells = [(layer[0], layer[1]) for layer in locked_layer_cells]
+                depth_for_layers = (
+                    depth_mm
+                    if depth_mm is not None
+                    else np.zeros(bgr.shape[:2], dtype=np.uint16)
+                )
+                tower = analyse_tower(bgr, depth_for_layers, row_cells)
+                _last_tower_img = build_tower_image(tower)
+                if depth_mm is not None and tower and publish_top_layer:
+                    publish_top_layer(max(tower, key=lambda layer: layer["layer"]))
             if _last_pct_results:
                 active_cells = [cell for layer in locked_layer_cells for cell in layer]
                 _ensure_window_open("Box percentages")
@@ -373,36 +343,19 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
 # ---------------------------------------------------------------------------
 
 class _ImageBridge(Node):
-    def __init__(
-        self,
-        color_topic: str,
-        depth_topic: str | list[str] | tuple[str, ...],
-    ):
+    def __init__(self, color_topic: str, depth_topic: str) -> None:
         super().__init__("play_image_bridge")
         self._bridge = CvBridge()
         self._lock   = threading.Lock()
         self._bgr    = None
         self._depth_mm = None
-        self._depth_enc_warned: set[str] = set()
-        self._active_depth_topic: str | None = None
-        self._depth_subscriptions: list = []
+        self._depth_shape_warned = False
+        self._depth_enc_warned = False
         self.create_subscription(Image, color_topic, self._cb, 10)
+        self.create_subscription(Image, depth_topic, self._depth_cb, 10)
         self.top_layer_pub = self.create_publisher(String, "/top_layer_state", 10)
-
-        depth_topics = (
-            [depth_topic] if isinstance(depth_topic, str) else list(depth_topic)
-        )
-        for topic in depth_topics:
-            sub = self.create_subscription(
-                Image,
-                topic,
-                lambda msg, t=topic: self._depth_cb(msg, t),
-                10,
-            )
-            self._depth_subscriptions.append(sub)
-        self.get_logger().info(
-            "Depth topic candidates: " + ", ".join(depth_topics)
-        )
+        self.get_logger().info(f"Colour topic: {color_topic}")
+        self.get_logger().info(f"Depth topic:  {depth_topic}")
 
     def publish_top_layer(self, layer_data) -> None:
         msg      = String()
@@ -419,7 +372,7 @@ class _ImageBridge(Node):
         with self._lock:
             self._bgr = bgr
 
-    def _depth_cb(self, msg: Image, topic: str) -> None:
+    def _depth_cb(self, msg: Image) -> None:
         enc = (msg.encoding or "").lower()
         if "16uc1" in enc or "mono16" in enc:
             depth_mm = self._bridge.imgmsg_to_cv2(msg, "16UC1")
@@ -427,35 +380,29 @@ class _ImageBridge(Node):
             m        = self._bridge.imgmsg_to_cv2(msg, "32FC1")
             depth_mm = np.clip(m * 1000.0, 0, 65_535).astype(np.uint16)
         else:
-            if topic not in self._depth_enc_warned:
+            if not self._depth_enc_warned:
                 self.get_logger().warning(
-                    f"Ignoring depth from {topic}: encoding {msg.encoding!r} "
+                    f"Ignoring depth: encoding {msg.encoding!r} "
                     "(need 16UC1/mono16 or 32FC1)."
                 )
-                self._depth_enc_warned.add(topic)
+                self._depth_enc_warned = True
             return
 
         with self._lock:
             bgr_shape = None if self._bgr is None else self._bgr.shape[:2]
 
             if bgr_shape is None:
-                # No colour reference yet — defer; can't validate alignment.
                 return
 
             if depth_mm.shape[:2] != bgr_shape:
-                if topic not in self._depth_enc_warned:
+                if not self._depth_shape_warned:
                     self.get_logger().warning(
-                        f"Ignoring depth from {topic}: shape {depth_mm.shape[:2]} "
+                        f"Ignoring depth: shape {depth_mm.shape[:2]} "
                         f"does not match colour {bgr_shape} (not aligned to colour)."
                     )
-                    self._depth_enc_warned.add(topic)
+                    self._depth_shape_warned = True
                 return
 
-            if self._active_depth_topic is None:
-                self._active_depth_topic = topic
-                self.get_logger().info(f"Depth source locked to: {topic}")
-            elif topic != self._active_depth_topic:
-                return
             self._depth_mm = depth_mm
 
     def get_frame_pair(self):
@@ -522,10 +469,7 @@ def run_with_pipeline(pipeline) -> None:
     _run_loop(get_frame_pair)
 
 
-def run_subscribe(
-    color_topic: str,
-    depth_topic: str | list[str] | tuple[str, ...],
-) -> None:
+def run_subscribe(color_topic: str, depth_topic: str) -> None:
     """Run the display loop subscribed to ROS topics."""
     rclpy.init()
     bridge = _ImageBridge(color_topic, depth_topic)
