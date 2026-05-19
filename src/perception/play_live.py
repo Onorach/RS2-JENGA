@@ -10,7 +10,7 @@ Usage
 import argparse
 
 from play_runtime import run_subscribe
-from search_area_setup import run_search_area_setup_subscribe
+from setup.search_area_setup import run_search_area_setup_subscribe
 
 COLOR_TOPIC = "/camera/camera/color/image_raw"
 DEPTH_TOPIC = "/camera/camera/aligned_depth_to_color/image_raw"

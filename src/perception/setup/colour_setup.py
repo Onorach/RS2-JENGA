@@ -19,7 +19,7 @@ import numpy as np
 
 from colour_identification import classify_roi_bgr, compute_roi
 
-_CONFIG_PATH = Path(__file__).resolve().parent / "perception_config.py"
+_CONFIG_PATH = Path(__file__).resolve().parent.parent / "perception_config.py"
 _WINDOW = "Colour setup"
 
 _MIN_WIDTH = 520
@@ -440,7 +440,7 @@ def run_colour_setup(
     if save_on_exit:
         save_hsv_ranges_to_config(current_ranges)
         print(f"Saved all HSV_RANGES to {_CONFIG_PATH}")
-        from tower_setup import run_tower_setup
+        from setup.tower_setup import run_tower_setup
 
         return run_tower_setup(get_frame_pair, search_area=active_search_area)
     print("Colour setup cancelled — HSV_RANGES unchanged.")

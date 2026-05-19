@@ -8,7 +8,7 @@ To make sure you can run the perception correctly please ensure you have install
 
 Please run the following script to install all required packages, you may have to alter the directory based on where you have stored the repo
 
-    bash ~/src/RS2-JENGA/src/perception/perception_setup.sh
+    bash ~/src/RS2-JENGA/src/perception/setup/perception_setup.sh
     
 you should see the following at the end of the install to confirm suscess
 

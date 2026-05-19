@@ -97,6 +97,7 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
     live_valid_points_crop: list[tuple[int, int]] = []
     _last_pct_results: list[dict] = []
     _last_tower_img:   np.ndarray | None = None
+    _last_tower_state: list[dict] = []
     _last_tower_finder_print: float = 0.0
     _cached_pts:   np.ndarray | None = None
     _hex_frame_n:  int = 0
@@ -124,6 +125,7 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
 
         bgr = bgr_full[dy1:dy2, dx1:dx2]
         depth_mm = None if depth_mm_full is None else depth_mm_full[dy1:dy2, dx1:dx2]
+        camera_centre_x_crop = (iw / 2.0) - dx1
 
         # --- Live view (block analysis only) ---
         if BLOCK_ANALYSIS:
@@ -133,48 +135,46 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
                 for px, py in live_valid_points_crop:
                     if 0 <= px < live_disp.shape[1] and 0 <= py < live_disp.shape[0]:
                         cv2.circle(live_disp, (int(px), int(py)), 2, (0, 0, 255), -1)
-            cx = (iw // 2) - dx1
+            cx = int(round(camera_centre_x_crop))
             if 0 <= cx < live_disp.shape[1]:
                 cv2.line(live_disp, (cx, 0), (cx, live_disp.shape[0] - 1), (0, 255, 255), 1, cv2.LINE_AA)
             cv2.imshow("Live + grid", live_disp)
 
-        # --- Colour mask + edge detection ---
-        colour_img = None
+        # --- Colour mask (always live) ---
         if BLOCK_ANALYSIS:
             roi_bgr = bgr[roi_y:roi_y + rh, roi_x:roi_x + rw]
             colour_img, _ = classify_roi_bgr(roi_bgr)
             cv2.imshow("Colour mask", colour_img)
-
+        # --- Edge pipeline (disabled after grid lock to save compute) ---
+        if BLOCK_ANALYSIS and not points_locked:
             disp_grey, lines_grey, edges_colour, edges_original = build_edge_display(
                 colour_img, roi_bgr,
             )
             cv2.imshow("Canny (colour mask)", edges_colour)
             cv2.imshow("Canny (original)",    edges_original)
-            if not points_locked:
-                grey_line_history.append(lines_grey)
-                line_cap = max(1, int(GRID_POINTS_MAX_INPUT_LINES))
-                history_lines_flat: list[tuple] = []
-                for hist_lines in reversed(grey_line_history):
-                    for line in hist_lines:
-                        history_lines_flat.append(line)
-                        if len(history_lines_flat) >= line_cap:
-                            break
+
+            grey_line_history.append(lines_grey)
+            line_cap = max(1, int(GRID_POINTS_MAX_INPUT_LINES))
+            history_lines_flat: list[tuple] = []
+            for hist_lines in reversed(grey_line_history):
+                for line in hist_lines:
+                    history_lines_flat.append(line)
                     if len(history_lines_flat) >= line_cap:
                         break
-                horiz_hist, vert_hist = classify_lines(history_lines_flat)
-                history_disp = draw_classified_lines(np.zeros_like(disp_grey), horiz_hist, vert_hist)
-                last_grid_points = find_hv_intersections_from_classified(
-                    horiz_hist, vert_hist, history_disp.shape,
-                )
-                last_grid_points = filter_points_by_x_bands(last_grid_points, rw)
-                if frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES)):
-                    live_valid_points_crop = [
-                        (int(ix + roi_x), int(iy + roi_y)) for ix, iy in last_grid_points
-                    ]
-                for ix, iy in last_grid_points:
-                    cv2.circle(history_disp, (ix, iy), 3, (0, 0, 255), -1)
-            else:
-                history_disp = disp_grey.copy()
+                if len(history_lines_flat) >= line_cap:
+                    break
+            horiz_hist, vert_hist = classify_lines(history_lines_flat)
+            history_disp = draw_classified_lines(np.zeros_like(disp_grey), horiz_hist, vert_hist)
+            last_grid_points = find_hv_intersections_from_classified(
+                horiz_hist, vert_hist, history_disp.shape,
+            )
+            last_grid_points = filter_points_by_x_bands(last_grid_points, rw)
+            if frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES)):
+                live_valid_points_crop = [
+                    (int(ix + roi_x), int(iy + roi_y)) for ix, iy in last_grid_points
+                ]
+            for ix, iy in last_grid_points:
+                cv2.circle(history_disp, (ix, iy), 3, (0, 0, 255), -1)
             cv2.imshow("Edges", history_disp)
 
         # --- Grid lock ---
@@ -313,16 +313,23 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
 
         # --- Box percentages + layer analysis (active after grid lock) ---
         if BLOCK_ANALYSIS and points_locked:
+            row_cells = [(layer[0], layer[1]) for layer in locked_layer_cells]
             if frame_n % ANALYSIS_INTERVAL == 0 or _last_tower_img is None:
                 active_cells = [cell for layer in locked_layer_cells for cell in layer]
                 _last_pct_results = compute_percentages(bgr, cells=active_cells)
-                row_cells = [(layer[0], layer[1]) for layer in locked_layer_cells]
                 depth_for_layers = (
                     depth_mm
                     if depth_mm is not None
                     else np.zeros(bgr.shape[:2], dtype=np.uint16)
                 )
-                tower = analyse_tower(bgr, depth_for_layers, row_cells)
+                tower = analyse_tower(
+                    bgr,
+                    depth_for_layers,
+                    row_cells,
+                    frame_centre_x_px=camera_centre_x_crop,
+                    frame_width_px=float(iw),
+                )
+                _last_tower_state = tower
                 _last_tower_img = build_tower_image(tower)
                 if tower and publish_top_layer:
                     # Bottom-first (L0 at index 0) so GUI L1 = bottom, L6 = top.
@@ -331,7 +338,17 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
             if _last_pct_results:
                 active_cells = [cell for layer in locked_layer_cells for cell in layer]
                 _ensure_window_open("Box percentages")
-                cv2.imshow("Box percentages", build_debug_image(bgr, _last_pct_results, cells=active_cells))
+                cv2.imshow(
+                    "Box percentages",
+                    build_debug_image(
+                        bgr,
+                        _last_pct_results,
+                        cells=active_cells,
+                        tower=_last_tower_state,
+                        row_cells=row_cells,
+                        frame_centre_x_px=camera_centre_x_crop,
+                    ),
+                )
             if _last_tower_img is not None:
                 _ensure_window_open("Layer Analysis")
                 cv2.imshow("Layer Analysis", _last_tower_img)

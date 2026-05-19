@@ -16,9 +16,9 @@ import cv2
 import numpy as np
 
 from colour_identification import compute_roi
-from colour_setup import run_colour_setup
+from setup.colour_setup import run_colour_setup
 
-_CONFIG_PATH = Path(__file__).resolve().parent / "perception_config.py"
+_CONFIG_PATH = Path(__file__).resolve().parent.parent / "perception_config.py"
 _WINDOW = "Search area setup"
 
 # Control strip below the live image (pixels)

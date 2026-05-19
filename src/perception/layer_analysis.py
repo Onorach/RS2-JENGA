@@ -10,7 +10,7 @@ import cv2
 import numpy as np
 
 from box_percentages import (
-    colour_mean_x_in_cell,
+    colour_mean_xy_in_cell,
     colour_mean_depth_in_cell,
     compute_percentages,
 )
@@ -74,8 +74,7 @@ def _detect_orientation(left_pcts: dict[str, float], right_pcts: dict[str, float
 
 def _blocks_from_endon(
     pcts: dict[str, float],
-    mean_x: dict[str, float],
-    mean_depth: dict[str, float],
+    mean_xy: dict[str, tuple[float, float]],
     cell: dict,
     orientation: str = "left",
 ) -> list[dict]:
@@ -90,15 +89,11 @@ def _blocks_from_endon(
 
     res = [{"colour": "unknown", "present": False, "depth_mm": None} for _ in range(3)]
 
-    for colour, mx in mean_x.items():
+    for colour, (mx, my) in mean_xy.items():
         pct  = pcts.get(colour, 0.0)
         lane = max(0, min(2, int((mx - x_left_bound) // lane_w)))
 
         if pct < BLOCK_PRESENT_MIN_PCT:
-            continue
-
-        face_depth = mean_depth.get(colour)
-        if face_depth is None:
             continue
 
         existing_pct = pcts.get(res[lane]["colour"], 0.0) if res[lane]["present"] else 0.0
@@ -106,18 +101,13 @@ def _blocks_from_endon(
             res[lane] = {
                 "colour":       colour,
                 "present":      True,
-                "face_depth_mm": round(face_depth, 1),
                 "mean_x_px":    mx,
+                "mean_y_px":    my,
             }
 
     # Reorder lanes from left-to-right into front-to-back.
     if orientation == "left":
         res = res[::-1]
-
-    # Convert visible face depth to block centroid depth.
-    for block in res:
-        if block["present"]:
-            block["depth_mm"] = round(block["face_depth_mm"] + CENTROID_OFFSET_MM, 1)
 
     return res
 
@@ -133,6 +123,8 @@ def analyse_layer(
     right_result: dict,
     left_cell:    dict,
     right_cell:   dict,
+    frame_centre_x_px: float | None = None,
+    frame_width_px: float | None = None,
 ) -> dict:
     left_pcts   = _colour_pcts(left_result)
     right_pcts  = _colour_pcts(right_result)
@@ -152,7 +144,7 @@ def analyse_layer(
         float(np.mean(list(mean_depth.values()))) if mean_depth else None
     )
 
-    mean_x = colour_mean_x_in_cell(
+    mean_xy = colour_mean_xy_in_cell(
         bgr_frame,
         endon_cell,
         depth_frame=depth_frame,
@@ -160,35 +152,70 @@ def analyse_layer(
         depth_tolerance_mm=40.0,
     )
 
-    endon_blocks = _blocks_from_endon(
-        endon_pcts, mean_x, mean_depth, endon_cell, orientation=orientation,
-    )
+    endon_blocks = _blocks_from_endon(endon_pcts, mean_xy, endon_cell, orientation=orientation)
 
-    frame_width    = bgr_frame.shape[1]
-    frame_centre_x = frame_width / 2.0
+    frame_width    = float(frame_width_px) if frame_width_px is not None else float(bgr_frame.shape[1])
+    frame_centre_x = float(frame_centre_x_px) if frame_centre_x_px is not None else (frame_width / 2.0)
     tan_half_hfov  = np.tan(np.deg2rad(CAMERA_HFOV_DEG) / 2.0)
 
     for block in endon_blocks:
         if block["present"] and "mean_x_px" in block:
             lateral_px = block["mean_x_px"] - frame_centre_x
-            fd = block.get("face_depth_mm")
-            if fd is not None and fd > 0:
-                mm_per_px = 2.0 * fd * tan_half_hfov / frame_width
-                block["lateral_mm"] = lateral_px * mm_per_px
+            mx = block.get("mean_x_px")
+            my = block.get("mean_y_px")
+            if mx is not None and my is not None:
+                centroid_face = _centroid_face_depth_mm(depth_frame, mx, my)
+                if centroid_face is not None and centroid_face > 0:
+                    block["centroid_face_depth_mm"] = round(centroid_face, 1)
+                    block["centroid_depth_mm"] = round(centroid_face + CENTROID_OFFSET_MM, 1)
+                    block["face_depth_mm"] = round(centroid_face, 1)
+                    block["depth_mm"] = round(centroid_face + CENTROID_OFFSET_MM, 1)
+                    mm_per_px = 2.0 * centroid_face * tan_half_hfov / frame_width
+                    block["lateral_mm"] = lateral_px * mm_per_px
 
-    return {"orientation": orientation, "blocks": endon_blocks, "frame_centre_x": frame_centre_x}
+    return {
+        "orientation": orientation,
+        "blocks": endon_blocks,
+        "frame_centre_x": frame_centre_x,
+        "frame_width_px": frame_width,
+    }
 
 
 # ---------------------------------------------------------------------------
 # Full tower analysis
 # ---------------------------------------------------------------------------
 
-def _adjusted_depth(face_depth_mm: float) -> float:
-    return face_depth_mm + 26.5
+def _centroid_face_depth_mm(
+    depth_frame: np.ndarray,
+    mean_x_px: float,
+    mean_y_px: float,
+    window_radius_px: int = 1,
+) -> float | None:
+    """
+    Estimate face depth at the detected block centroid from a local depth patch.
+    """
+    h, w = depth_frame.shape[:2]
+    cx = int(round(mean_x_px))
+    cy = int(round(mean_y_px))
+    if cx < 0 or cy < 0 or cx >= w or cy >= h:
+        return None
+
+    x0 = max(0, cx - window_radius_px)
+    x1 = min(w, cx + window_radius_px + 1)
+    y0 = max(0, cy - window_radius_px)
+    y1 = min(h, cy + window_radius_px + 1)
+    patch = depth_frame[y0:y1, x0:x1].astype(np.float32)
+    valid = patch[(patch > 0) & np.isfinite(patch)]
+    if valid.size == 0:
+        return None
+    return float(np.median(valid))
 
 
 def _print_tower(tower: list[dict]) -> None:
     print("── Layer Analysis (L0 = bottom, blocks: front → mid → back) ────")
+    max_layer_idx = max((layer["layer"] for layer in tower), default=-1)
+    top_two_layers = {idx for idx in (max_layer_idx, max_layer_idx - 1) if idx >= 0}
+    tan_half_hfov = np.tan(np.deg2rad(CAMERA_HFOV_DEG) / 2.0)
     for layer in sorted(tower, key=lambda item: item["layer"]):
         idx         = layer["layer"]
         orientation = layer["orientation"]
@@ -199,11 +226,11 @@ def _print_tower(tower: list[dict]) -> None:
 
         for label, block in zip(labels, layer["blocks"]):
             if block["present"]:
-                fd = block.get("face_depth_mm")
+                depth_mm = block.get("depth_mm")
                 lx = block.get("lateral_mm")
                 mx = block.get("mean_x_px")
-                d_str = f" @d={_adjusted_depth(fd):.1f}mm" if fd is not None else ""
-                x_offset = 26.5 if orientation == "left" else -40
+                d_str = f" @d={depth_mm:.1f}mm" if depth_mm is not None else ""
+                x_offset = 26.5 if orientation == "left" else -26.5
                 x_str = f" @x={lx + x_offset:+.1f}mm" if lx is not None else ""
                 parts.append(f"{label}: {block['colour']}{d_str}{x_str}")
                 if mx is not None:
@@ -215,6 +242,28 @@ def _print_tower(tower: list[dict]) -> None:
         centre_str = f"  centre={frame_cx:.0f}px" if frame_cx is not None else ""
         if px_debug:
             print(f"    [px debug]{centre_str}  " + "  ".join(px_debug))
+        frame_width = layer.get("frame_width_px")
+        if idx in top_two_layers and frame_cx is not None and frame_width is not None and frame_width > 0:
+            x_offset = 26.5 if orientation == "left" else -26.5
+            print("    [offset math]")
+            for label, block in zip(labels, layer["blocks"]):
+                if not block.get("present"):
+                    continue
+                mx = block.get("mean_x_px")
+                fd = block.get("face_depth_mm")
+                if mx is None or fd is None or fd <= 0:
+                    continue
+                dx_px = float(mx) - float(frame_cx)
+                mm_per_px = 2.0 * float(fd) * tan_half_hfov / frame_width
+                lateral_raw = dx_px * mm_per_px
+                lateral_display = lateral_raw + x_offset
+                print(
+                    "      "
+                    f"{label.strip()}: dx={dx_px:+.1f}px, "
+                    f"mm_per_px={mm_per_px:.4f}, "
+                    f"raw={lateral_raw:+.1f}mm, "
+                    f"display=raw{ x_offset:+.1f}={lateral_display:+.1f}mm"
+                )
     print()
 
 
@@ -222,6 +271,8 @@ def analyse_tower(
     bgr_frame: np.ndarray,
     depth_frame: np.ndarray,
     row_cells: list[tuple[dict, dict]],
+    frame_centre_x_px: float | None = None,
+    frame_width_px: float | None = None,
 ) -> list[dict]:
     global _last_print_time
     tower = []
@@ -229,7 +280,14 @@ def analyse_tower(
     for row_idx, (left_def, right_def) in enumerate(row_cells):
         pct_results = compute_percentages(bgr_frame, cells=[left_def, right_def])
         layer = analyse_layer(
-            bgr_frame, depth_frame, pct_results[0], pct_results[1], left_def, right_def,
+            bgr_frame,
+            depth_frame,
+            pct_results[0],
+            pct_results[1],
+            left_def,
+            right_def,
+            frame_centre_x_px=frame_centre_x_px,
+            frame_width_px=frame_width_px,
         )
         # row_cells[0] is the topmost band in the image; L0 is the bottom of the tower.
         layer["layer"] = (n_layers - 1) - row_idx

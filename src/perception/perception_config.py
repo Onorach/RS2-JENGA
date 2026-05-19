@@ -10,7 +10,7 @@ TOWER_ANALYSIS = False
 BLOCK_ANALYSIS = True
 
 # Search area centre and fraction of the full frame
-SEARCH_AREA = (0.545, 0.490, 0.259, 0.449)
+SEARCH_AREA = (0.56, 0.49, 0.259, 0.449)
 
 # Crop margin around the search area
 SEARCH_AREA_MARGIN     = 0.10

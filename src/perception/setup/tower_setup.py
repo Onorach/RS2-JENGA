@@ -20,7 +20,7 @@ from colour_identification import compute_roi
 from perception_config import SEARCH_AREA_MARGIN
 from tower_mask import HEX_RECOMPUTE_INTERVAL, build_display, compute_hex_region
 
-_CONFIG_PATH = Path(__file__).resolve().parent / "perception_config.py"
+_CONFIG_PATH = Path(__file__).resolve().parent.parent / "perception_config.py"
 _WINDOW = "Tower setup"
 
 _MIN_WIDTH = 900
@@ -185,7 +185,7 @@ def run_tower_setup(
     search_area: tuple[float, float, float, float] | None = None,
 ) -> bool:
     """Tower mask calibration UI. Returns True if Set was pressed (config saved)."""
-    from colour_setup import load_search_area_from_config
+    from setup.colour_setup import load_search_area_from_config
 
     active_search_area = (
         search_area if search_area is not None else load_search_area_from_config()
@@ -329,7 +329,7 @@ def run_tower_setup(
             f"Saved tower mask: SAT_MIN={current[0]}, BRIGHTNESS_MIN={current[1]}, "
             f"MORPH_CLOSE={current[2]}, MORPH_OPEN={current[3]} to {_CONFIG_PATH}"
         )
-        from depth_confirm_setup import run_depth_confirm_setup
+        from setup.depth_confirm_setup import run_depth_confirm_setup
 
         return run_depth_confirm_setup(get_frame_pair)
     print("Tower setup cancelled — tower mask settings unchanged.")

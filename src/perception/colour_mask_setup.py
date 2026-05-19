@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 
 from colour_identification import classify_roi_bgr, compute_roi
-from colour_setup import load_hsv_ranges_from_config, load_search_area_from_config
+from setup.colour_setup import load_hsv_ranges_from_config, load_search_area_from_config
 from play_runtime import _init_opencv_gui, _warn_if_no_display, waiting_frame
 
 _CONFIG_PATH = Path(__file__).resolve().parent / "perception_config.py"
@@ -304,7 +304,7 @@ def run_colour_mask_setup(
             f"Saved colour mask: MEDIAN={current[0]}, CLOSE={current[1]}, "
             f"OPEN={current[2]}, MIN_BLOB={current[3]} to {_CONFIG_PATH}"
         )
-        from tower_setup import run_tower_setup
+        from setup.tower_setup import run_tower_setup
 
         return run_tower_setup(get_frame_pair, search_area=active_search_area)
     print("Colour mask setup cancelled — colour mask settings unchanged.")

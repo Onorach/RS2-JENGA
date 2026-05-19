@@ -21,11 +21,11 @@ def _resolve_bag(path: str) -> str:
     base = os.path.dirname(__file__)
     for candidate in (
         path,
-        os.path.join(base, "camera_files", path),
+        os.path.join(base, "camera_files/rgbd_raw", path),
     ):
         if os.path.exists(candidate):
             return candidate
-    return os.path.join(base, "camera_files", path)
+    return os.path.join(base, "camera_files/rgbd_raw", path)
 
 
 def _start_pipeline(bag_path: str) -> rs.pipeline:

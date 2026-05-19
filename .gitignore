@@ -1,5 +1,5 @@
 **/.DS_Store
-**/camera_files/*
+**/rgbd_raw/*
 **/.vscode
 **/log
 **/__pycache__

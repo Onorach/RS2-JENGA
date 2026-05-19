@@ -148,6 +148,61 @@ def colour_mean_x_in_cell(
     return out
 
 
+def colour_mean_xy_in_cell(
+    bgr_frame: np.ndarray,
+    cell: dict,
+    depth_frame: np.ndarray | None = None,
+    target_depth_mm: float | None = None,
+    depth_tolerance_mm: float = 40.0,
+) -> dict[str, tuple[float, float]]:
+    """
+    Mean image-space centroid (x, y) per colour inside cell.
+
+    Uses the same mask/depth-gating logic as colour_mean_x_in_cell so centroid
+    markers match the pixels used for depth/offset estimates.
+    """
+    ih, iw = bgr_frame.shape[:2]
+    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
+    quad = _quad_mask((ih, iw), cell["corners"])
+    total = int(quad.sum())
+    if total == 0:
+        return {}
+
+    if depth_frame is not None and target_depth_mm is not None:
+        df = depth_frame.astype(np.float32)
+        depth_gate: np.ndarray | None = (
+            (df > 0)
+            & np.isfinite(df)
+            & (np.abs(df - target_depth_mm) <= depth_tolerance_mm)
+        )
+    else:
+        depth_gate = None
+
+    out: dict[str, tuple[float, float]] = {}
+
+    for colour in HSV_RANGES:
+        colour_mask = quad & classify_hsv(hsv, colour)
+
+        n_colour = int(colour_mask.sum())
+        if n_colour < MIN_COLOUR_PIXELS:
+            continue
+        if n_colour / total * 100.0 < MIN_COLOUR_PCT:
+            continue
+
+        if depth_gate is not None:
+            gated = colour_mask & depth_gate
+            ys, xs = np.where(gated)
+            if len(xs) >= MIN_COLOUR_PIXELS:
+                out[colour] = (float(np.mean(xs)), float(np.mean(ys)))
+                continue
+            # Depth gate removed too many pixels — fall back to un-gated centroid.
+
+        ys, xs = np.where(colour_mask)
+        out[colour] = (float(np.mean(xs)), float(np.mean(ys)))
+
+    return out
+
+
 def colour_mean_depth_in_cell(
     bgr_frame: np.ndarray,
     depth_frame: np.ndarray,
@@ -188,8 +243,14 @@ def colour_mean_depth_in_cell(
 # Debug visualisation
 # ---------------------------------------------------------------------------
 
-def build_debug_image(bgr_frame: np.ndarray, results: list[dict],
-                      cells: list[dict]) -> np.ndarray:
+def build_debug_image(
+    bgr_frame: np.ndarray,
+    results: list[dict],
+    cells: list[dict],
+    tower: list[dict] | None = None,
+    row_cells: list[tuple[dict, dict]] | None = None,
+    frame_centre_x_px: float | None = None,
+) -> np.ndarray:
     ih, iw = bgr_frame.shape[:2]
     hsv    = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
 
@@ -224,6 +285,42 @@ def build_debug_image(bgr_frame: np.ndarray, results: list[dict],
         cv2.rectangle(canvas, (6, ly), (18, ly + 12), bgr, -1)
         cv2.putText(canvas, name, (22, ly + 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.38, (30, 30, 30), 1, cv2.LINE_AA)
+
+    # Frame-center reference line (camera-frame center projected into this crop).
+    cx_frame = (iw / 2.0) if frame_centre_x_px is None else float(frame_centre_x_px)
+    cx_canvas = int(round(cx_frame - min_x))
+    if 0 <= cx_canvas < cw:
+        cv2.line(canvas, (cx_canvas, 0), (cx_canvas, ch - 1), (0, 0, 0), 1, cv2.LINE_AA)
+
+    if tower and row_cells:
+        n_layers = len(row_cells)
+        for layer in tower:
+            orientation = layer.get("orientation")
+            layer_idx = layer.get("layer")
+            blocks = layer.get("blocks", [])
+            if orientation not in ("left", "right") or not isinstance(layer_idx, int):
+                continue
+
+            row_idx = (n_layers - 1) - layer_idx
+            if row_idx < 0 or row_idx >= n_layers:
+                continue
+
+            for block in blocks:
+                if not block.get("present"):
+                    continue
+
+                cx = block.get("mean_x_px")
+                cy = block.get("mean_y_px")
+                if cx is None or cy is None:
+                    continue
+
+                x = int(round(float(cx) - min_x))
+                y = int(round(float(cy) - min_y))
+                if not (0 <= x < cw and 0 <= y < ch):
+                    continue
+
+                cv2.circle(canvas, (x, y), 6, (255, 255, 255), -1)
+                cv2.circle(canvas, (x, y), 3, (0, 0, 0), -1)
 
     return canvas
 
