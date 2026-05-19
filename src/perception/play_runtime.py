@@ -313,15 +313,19 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
 
         # --- Box percentages + layer analysis (active after grid lock) ---
         if BLOCK_ANALYSIS and points_locked:
-            if frame_n % ANALYSIS_INTERVAL == 0:
-                active_cells      = [cell for layer in locked_layer_cells for cell in layer]
+            if frame_n % ANALYSIS_INTERVAL == 0 or _last_tower_img is None:
+                active_cells = [cell for layer in locked_layer_cells for cell in layer]
                 _last_pct_results = compute_percentages(bgr, cells=active_cells)
-                if depth_mm is not None:
-                    row_cells = [(layer[0], layer[1]) for layer in locked_layer_cells]
-                    tower     = analyse_tower(bgr, depth_mm, row_cells)
-                    if tower and publish_top_layer:
-                        publish_top_layer(tower[0])
-                    _last_tower_img = build_tower_image(tower)
+                row_cells = [(layer[0], layer[1]) for layer in locked_layer_cells]
+                depth_for_layers = (
+                    depth_mm
+                    if depth_mm is not None
+                    else np.zeros(bgr.shape[:2], dtype=np.uint16)
+                )
+                tower = analyse_tower(bgr, depth_for_layers, row_cells)
+                _last_tower_img = build_tower_image(tower)
+                if depth_mm is not None and tower and publish_top_layer:
+                    publish_top_layer(max(tower, key=lambda layer: layer["layer"]))
             if _last_pct_results:
                 active_cells = [cell for layer in locked_layer_cells for cell in layer]
                 _ensure_window_open("Box percentages")

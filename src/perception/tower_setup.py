@@ -329,9 +329,11 @@ def run_tower_setup(
             f"Saved tower mask: SAT_MIN={current[0]}, BRIGHTNESS_MIN={current[1]}, "
             f"MORPH_CLOSE={current[2]}, MORPH_OPEN={current[3]} to {_CONFIG_PATH}"
         )
-    else:
-        print("Tower setup cancelled — tower mask settings unchanged.")
-    return save_on_exit
+        from depth_confirm_setup import run_depth_confirm_setup
+
+        return run_depth_confirm_setup(get_frame_pair)
+    print("Tower setup cancelled — tower mask settings unchanged.")
+    return False
 
 
 def run_tower_setup_subscribe(color_topic: str, depth_topic: str) -> None:

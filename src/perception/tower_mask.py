@@ -28,6 +28,16 @@ _HEX_VERTICES = 6
 HEX_RECOMPUTE_INTERVAL = 10   # Recompute tower hex polygon every N frames (live + setup).
 
 
+def _order_vertices_ccw(pts: np.ndarray) -> np.ndarray:
+    """Sort polygon vertices counter-clockwise so polylines do not cross the shape."""
+    pts = np.asarray(pts, dtype=np.float64).reshape(-1, 2)
+    if len(pts) <= 2:
+        return pts.astype(np.int32)
+    centre = pts.mean(axis=0)
+    order = np.argsort(np.arctan2(pts[:, 1] - centre[1], pts[:, 0] - centre[0]))
+    return pts[order].astype(np.int32)
+
+
 def _hex_from_hull_by_angle(hull: np.ndarray, n: int = _HEX_VERTICES) -> np.ndarray:
     """
     Pick n vertices on the convex hull by taking the outermost hull point in each
@@ -41,6 +51,7 @@ def _hex_from_hull_by_angle(hull: np.ndarray, n: int = _HEX_VERTICES) -> np.ndar
     angles = np.arctan2(pts[:, 1] - centre[1], pts[:, 0] - centre[0])
     dists = np.hypot(pts[:, 0] - centre[0], pts[:, 1] - centre[1])
 
+    used: set[int] = set()
     hex_pts: list[np.ndarray] = []
     for i in range(n):
         a0 = -np.pi + (2 * np.pi * i) / n
@@ -49,12 +60,24 @@ def _hex_from_hull_by_angle(hull: np.ndarray, n: int = _HEX_VERTICES) -> np.ndar
             in_wedge = (angles >= a0) | (angles < a1)
         else:
             in_wedge = (angles >= a0) & (angles < a1)
-        if not np.any(in_wedge):
-            in_wedge = np.ones(len(pts), dtype=bool)
-        idx = int(np.argmax(np.where(in_wedge, dists, -1.0)))
-        hex_pts.append(pts[idx])
+        candidates = np.flatnonzero(in_wedge)
+        if candidates.size == 0:
+            candidates = np.arange(len(pts))
 
-    return np.array(hex_pts, dtype=np.int32)
+        best_idx: int | None = None
+        best_dist = -1.0
+        for idx in candidates:
+            if idx in used and candidates.size > 1:
+                continue
+            if dists[idx] > best_dist:
+                best_dist = dists[idx]
+                best_idx = int(idx)
+        if best_idx is None:
+            best_idx = int(candidates[np.argmax(dists[candidates])])
+        used.add(best_idx)
+        hex_pts.append(pts[best_idx])
+
+    return _order_vertices_ccw(np.array(hex_pts))
 
 
 def _approx_hex_vertices(hull: np.ndarray, target: int = _HEX_VERTICES) -> np.ndarray:
@@ -74,11 +97,11 @@ def _approx_hex_vertices(hull: np.ndarray, target: int = _HEX_VERTICES) -> np.nd
             best_delta = delta
             best = approx.reshape(-1, 2)
         if n == target:
-            return best.astype(np.int32)
+            return _order_vertices_ccw(best)
 
     assert best is not None
     if len(best) == target:
-        return best.astype(np.int32)
+        return _order_vertices_ccw(best)
     return _hex_from_hull_by_angle(hull, target)
 
 
@@ -155,7 +178,7 @@ def compute_hex_region(
     largest = max(contours, key=cv2.contourArea)
 
     hull = cv2.convexHull(largest)
-    pts = _approx_hex_vertices(hull)
+    pts = _order_vertices_ccw(_approx_hex_vertices(hull))
     if len(pts) != _HEX_VERTICES:
         return None
 

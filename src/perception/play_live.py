@@ -21,7 +21,7 @@ def main() -> None:
     parser.add_argument(
         "--setup",
         action="store_true",
-        help="Run search-area, colour, and tower mask calibration.",
+        help="Run search-area, colour, tower mask, and depth confirm calibration.",
     )
     args = parser.parse_args()
 

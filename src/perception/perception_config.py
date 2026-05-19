@@ -5,9 +5,9 @@ Central configuration for all perception modules.
 Tune values here; nothing else needs to change.
 """
 
-TOWER_ANALYSIS = True
+TOWER_ANALYSIS = False
 
-BLOCK_ANALYSIS = False
+BLOCK_ANALYSIS = True
 
 # Search area centre and fraction of the full frame
 SEARCH_AREA = (0.559, 0.483, 0.259, 0.449)
@@ -38,7 +38,7 @@ HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] =
         (( 90, 171, 105), (104, 255, 255)),
     ],
     "purple": [
-        ((109,  74,  64), (140, 255, 255)),
+        ((109,  74,  69), (140, 255, 255)),
     ],
 }
 
@@ -61,8 +61,8 @@ COLOUR_BGR: dict[str, tuple[int, int, int]] = {
 # Tower mask
 # ---------------------------------------------------------------------------
 
-TOWER_MASK_SAT_MIN                 = 99   # Min HSV saturation for tower foreground.
-TOWER_MASK_BRIGHTNESS_MIN          = 69    # Min HSV value (brightness) for tower foreground.
+TOWER_MASK_SAT_MIN                 = 140   # Min HSV saturation for tower foreground.
+TOWER_MASK_BRIGHTNESS_MIN          = 84    # Min HSV value (brightness) for tower foreground.
 TOWER_MASK_MORPH_CLOSE_PX          = 9    # Close kernel size — fills small mask holes. 0 = disabled.
 TOWER_MASK_MORPH_OPEN_PX           = 10    # Open kernel size — removes noise blobs. 0 = disabled.
 
@@ -86,7 +86,7 @@ CANNY_ORIGINAL_HIGH = 120
 # kept, as a percentage of ROI width. Edges outside this strip are zeroed
 # before Hough line detection, so both visualisation and grid-point search
 # are restricted to the middle slice. Set to 100.0 to disable.
-CANNY_CENTRE_BAND_PCT = 8.0
+CANNY_CENTRE_BAND_PCT = 12.0
 
 # Hough settings used for lines extracted from colour-mask edges.
 HOUGH_MASK_THRESHOLD  = 10  # Min Hough votes to accept a line.
