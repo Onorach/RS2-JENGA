@@ -14,6 +14,8 @@ from colour_identification import compute_roi
 from perception_config import (
     TOWER_MASK_SAT_MIN,
     TOWER_MASK_BRIGHTNESS_MIN,
+    TOWER_MASK_MORPH_CLOSE_PX,
+    TOWER_MASK_MORPH_OPEN_PX,
     SEARCH_AREA_MARGIN,
 )
 
@@ -22,15 +24,77 @@ def _odd(k: int) -> int:
     return k if k % 2 == 1 else k + 1
 
 
+_HEX_VERTICES = 6
+HEX_RECOMPUTE_INTERVAL = 10   # Recompute tower hex polygon every N frames (live + setup).
+
+
+def _hex_from_hull_by_angle(hull: np.ndarray, n: int = _HEX_VERTICES) -> np.ndarray:
+    """
+    Pick n vertices on the convex hull by taking the outermost hull point in each
+    angular sector around the hull centroid (stable 6-gon for tower outlines).
+    """
+    pts = hull.reshape(-1, 2).astype(np.float64)
+    if len(pts) < 3:
+        return pts.astype(np.int32)
+
+    centre = pts.mean(axis=0)
+    angles = np.arctan2(pts[:, 1] - centre[1], pts[:, 0] - centre[0])
+    dists = np.hypot(pts[:, 0] - centre[0], pts[:, 1] - centre[1])
+
+    hex_pts: list[np.ndarray] = []
+    for i in range(n):
+        a0 = -np.pi + (2 * np.pi * i) / n
+        a1 = -np.pi + (2 * np.pi * (i + 1)) / n
+        if i == n - 1:
+            in_wedge = (angles >= a0) | (angles < a1)
+        else:
+            in_wedge = (angles >= a0) & (angles < a1)
+        if not np.any(in_wedge):
+            in_wedge = np.ones(len(pts), dtype=bool)
+        idx = int(np.argmax(np.where(in_wedge, dists, -1.0)))
+        hex_pts.append(pts[idx])
+
+    return np.array(hex_pts, dtype=np.int32)
+
+
+def _approx_hex_vertices(hull: np.ndarray, target: int = _HEX_VERTICES) -> np.ndarray:
+    """Simplify a convex hull to exactly ``target`` vertices when possible."""
+    peri = cv2.arcLength(hull, True)
+    if peri <= 0:
+        return _hex_from_hull_by_angle(hull, target)
+
+    best: np.ndarray | None = None
+    best_delta = 10**9
+
+    for factor in np.linspace(0.005, 0.5, 60):
+        approx = cv2.approxPolyDP(hull, float(factor) * peri, True)
+        n = len(approx)
+        delta = abs(n - target)
+        if delta < best_delta:
+            best_delta = delta
+            best = approx.reshape(-1, 2)
+        if n == target:
+            return best.astype(np.int32)
+
+    assert best is not None
+    if len(best) == target:
+        return best.astype(np.int32)
+    return _hex_from_hull_by_angle(hull, target)
+
+
 def compute_saturation_mask(
     bgr: np.ndarray,
     *,
     sat_min: int | None = None,
     brightness_min: int | None = None,
+    morph_close_px: int | None = None,
+    morph_open_px: int | None = None,
 ) -> np.ndarray:
     """Return a binary mask (HxW uint8) of high-saturation, sufficiently bright pixels."""
     s_min = TOWER_MASK_SAT_MIN if sat_min is None else sat_min
     v_min = TOWER_MASK_BRIGHTNESS_MIN if brightness_min is None else brightness_min
+    close_px = TOWER_MASK_MORPH_CLOSE_PX if morph_close_px is None else morph_close_px
+    open_px = TOWER_MASK_MORPH_OPEN_PX if morph_open_px is None else morph_open_px
 
     hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
@@ -38,6 +102,13 @@ def compute_saturation_mask(
         (hsv[:, :, 1] >= s_min)
         & (hsv[:, :, 2] >= v_min)
     ).astype(np.uint8) * 255
+
+    if close_px > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_odd(close_px),) * 2)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
+    if open_px > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_odd(open_px),) * 2)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
 
     return mask
 
@@ -48,6 +119,8 @@ def compute_hex_region(
     *,
     sat_min: int | None = None,
     brightness_min: int | None = None,
+    morph_close_px: int | None = None,
+    morph_open_px: int | None = None,
 ) -> np.ndarray | None:
     """
     Find the largest high-saturation blob within the ROI and fit a
@@ -63,7 +136,11 @@ def compute_hex_region(
     roi = bgr[ry:ry + rh, rx:rx + rw]
 
     mask = compute_saturation_mask(
-        roi, sat_min=sat_min, brightness_min=brightness_min,
+        roi,
+        sat_min=sat_min,
+        brightness_min=brightness_min,
+        morph_close_px=morph_close_px,
+        morph_open_px=morph_open_px,
     )
 
     contours, _ = cv2.findContours(
@@ -78,20 +155,9 @@ def compute_hex_region(
     largest = max(contours, key=cv2.contourArea)
 
     hull = cv2.convexHull(largest)
-
-    peri = cv2.arcLength(hull, True)
-
-    for factor in np.arange(0.02, 0.5, 0.01):
-        approx = cv2.approxPolyDP(
-            hull,
-            factor * peri,
-            True,
-        )
-
-        if len(approx) <= 6:
-            break
-
-    pts = approx.reshape(-1, 2).astype(np.int32)
+    pts = _approx_hex_vertices(hull)
+    if len(pts) != _HEX_VERTICES:
+        return None
 
     pts[:, 0] += rx
     pts[:, 1] += ry
@@ -120,6 +186,8 @@ def build_display(
     *,
     sat_min: int | None = None,
     brightness_min: int | None = None,
+    morph_close_px: int | None = None,
+    morph_open_px: int | None = None,
 ) -> np.ndarray:
     """
     Draw the ROI box, polygon, centroid line,
@@ -140,6 +208,8 @@ def build_display(
         bgr[ry:ry + rh, rx:rx + rw],
         sat_min=sat_min,
         brightness_min=brightness_min,
+        morph_close_px=morph_close_px,
+        morph_open_px=morph_open_px,
     )
 
     sat_colour = np.zeros((ih, iw), dtype=np.uint8)
@@ -233,72 +303,68 @@ def build_display(
                 cv2.LINE_AA,
             )
 
-            cv2.putText(
-                overlay,
-                f"centroid_x={cx}px",
-                (cx + 8, 30),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (255, 0, 255),
-                2,
-                cv2.LINE_AA,
-            )
-
-
     return np.hstack([overlay, sat_colour])
+
+
+def append_tower_info_panel(
+    tower_view: np.ndarray,
+    lines: list[str],
+    *,
+    line_colors: list[tuple[int, int, int]] | None = None,
+) -> np.ndarray:
+    """Stack a text strip below the tower finder image (overlay | mask)."""
+    if not lines:
+        return tower_view
+
+    panel_w = tower_view.shape[1]
+    line_h = 22
+    panel_h = 10 + len(lines) * line_h
+    panel = np.zeros((panel_h, panel_w, 3), dtype=np.uint8)
+    panel[:] = (36, 36, 36)
+
+    default_color = (220, 220, 220)
+    for i, text in enumerate(lines):
+        colour = default_color
+        if line_colors is not None and i < len(line_colors):
+            colour = line_colors[i]
+        cv2.putText(
+            panel,
+            text,
+            (10, 16 + i * line_h),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.52,
+            colour,
+            1,
+            cv2.LINE_AA,
+        )
+
+    return np.vstack([tower_view, panel])
 
 
 def crop_tower_finder_display(
     tower_disp: np.ndarray,
-    pts: np.ndarray | None,
-    frame_width: int,
-    frame_height: int,
+    roi_xywh: tuple[int, int, int, int],
 ) -> np.ndarray:
     """
-    Crop the tower finder display around the polygon.
-    """
+    Crop overlay and mask panels to search area + SEARCH_AREA_MARGIN.
 
-    if pts is None:
+    Fixed window size (does not shrink/grow with the detected hex polygon).
+    """
+    rx, ry, rw, rh = roi_xywh
+    panel_h, full_w = tower_disp.shape[:2]
+    panel_w = full_w // 2
+
+    mx = int(rw * SEARCH_AREA_MARGIN)
+    my = int(rh * SEARCH_AREA_MARGIN)
+
+    x_min = max(0, rx - mx)
+    y_min = max(0, ry - my)
+    x_max = min(panel_w, rx + rw + mx)
+    y_max = min(panel_h, ry + rh + my)
+
+    if x_max <= x_min or y_max <= y_min:
         return tower_disp
 
-    xs, ys = pts[:, 0], pts[:, 1]
-
-    pad_x = int(
-        max(1, xs.max() - xs.min()) * SEARCH_AREA_MARGIN
-    )
-
-    pad_y = int(
-        max(1, ys.max() - ys.min()) * SEARCH_AREA_MARGIN
-    )
-
-    x_min = max(
-        0,
-        int(xs.min()) - pad_x,
-    )
-
-    x_max = min(
-        frame_width,
-        int(xs.max()) + pad_x,
-    )
-
-    y_min = max(
-        0,
-        int(ys.min()) - pad_y,
-    )
-
-    y_max = min(
-        frame_height,
-        int(ys.max()) + pad_y,
-    )
-
-    left = tower_disp[
-        y_min:y_max,
-        x_min:x_max,
-    ]
-
-    right = tower_disp[
-        y_min:y_max,
-        frame_width + x_min:frame_width + x_max,
-    ]
-
+    left = tower_disp[y_min:y_max, x_min:x_max]
+    right = tower_disp[y_min:y_max, panel_w + x_min : panel_w + x_max]
     return np.hstack([left, right])

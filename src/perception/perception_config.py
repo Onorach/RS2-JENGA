@@ -32,7 +32,7 @@ HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] =
         (( 18,  55, 104), ( 39, 255, 255)),
     ],
     "green": [
-        (( 39,  51,  79), ( 85, 255, 255)),
+        (( 39,  27,  49), ( 85, 255, 255)),
     ],
     "blue": [
         (( 90, 171, 105), (104, 255, 255)),
@@ -61,10 +61,10 @@ COLOUR_BGR: dict[str, tuple[int, int, int]] = {
 # Tower mask
 # ---------------------------------------------------------------------------
 
-TOWER_MASK_SAT_MIN                 = 75   # Min HSV saturation for tower foreground.
-TOWER_MASK_BRIGHTNESS_MIN          = 53    # Min HSV value (brightness) for tower foreground.
-# TOWER_MASK_MORPH_CLOSE_PX        = 8     # Close kernel size — fills small mask holes.
-# TOWER_MASK_MORPH_OPEN_PX         = 10    # Open kernel size — removes noise blobs.
+TOWER_MASK_SAT_MIN                 = 99   # Min HSV saturation for tower foreground.
+TOWER_MASK_BRIGHTNESS_MIN          = 69    # Min HSV value (brightness) for tower foreground.
+TOWER_MASK_MORPH_CLOSE_PX          = 9    # Close kernel size — fills small mask holes. 0 = disabled.
+TOWER_MASK_MORPH_OPEN_PX           = 10    # Open kernel size — removes noise blobs. 0 = disabled.
 
 # ---------------------------------------------------------------------------
 # Edge detection

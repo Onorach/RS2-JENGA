@@ -27,6 +27,8 @@ from grid_generation import (
     build_layer_cells_from_points,
 )
 from tower_mask import (
+    HEX_RECOMPUTE_INTERVAL,
+    append_tower_info_panel,
     compute_hex_region,
     build_display,
     crop_tower_finder_display,
@@ -76,8 +78,8 @@ GRID_POINTS_MAX_INPUT_LINES = 500
 # ---------------------------------------------------------------------------
 
 def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> None:
-    cv2.namedWindow("Live + grid",         cv2.WINDOW_NORMAL)
     if BLOCK_ANALYSIS:
+        cv2.namedWindow("Live + grid",         cv2.WINDOW_NORMAL)
         cv2.namedWindow("Colour mask",         cv2.WINDOW_NORMAL)
         cv2.namedWindow("Canny (colour mask)", cv2.WINDOW_NORMAL)
         cv2.namedWindow("Canny (original)",    cv2.WINDOW_NORMAL)
@@ -99,7 +101,6 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
     _cached_pts:   np.ndarray | None = None
     _hex_frame_n:  int = 0
 
-    HEX_RECOMPUTE_INTERVAL = 60   # Recompute hex detection every N frames.
     ANALYSIS_INTERVAL      = 5    # Re-run heavy analysis every N frames after lock.
     TOWER_PRINT_INTERVAL_S = 3.0
 
@@ -124,17 +125,18 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
         bgr = bgr_full[dy1:dy2, dx1:dx2]
         depth_mm = None if depth_mm_full is None else depth_mm_full[dy1:dy2, dx1:dx2]
 
-        # --- Live view ---
-        live_disp = bgr.copy()
-        cv2.rectangle(live_disp, (roi_x, roi_y), (roi_x + rw, roi_y + rh), (255, 255, 0), 2)
-        if frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES)):
-            for px, py in live_valid_points_crop:
-                if 0 <= px < live_disp.shape[1] and 0 <= py < live_disp.shape[0]:
-                    cv2.circle(live_disp, (int(px), int(py)), 2, (0, 0, 255), -1)
-        cx = (iw // 2) - dx1
-        if 0 <= cx < live_disp.shape[1]:
-            cv2.line(live_disp, (cx, 0), (cx, live_disp.shape[0] - 1), (0, 255, 255), 1, cv2.LINE_AA)
-        cv2.imshow("Live + grid", live_disp)
+        # --- Live view (block analysis only) ---
+        if BLOCK_ANALYSIS:
+            live_disp = bgr.copy()
+            cv2.rectangle(live_disp, (roi_x, roi_y), (roi_x + rw, roi_y + rh), (255, 255, 0), 2)
+            if frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES)):
+                for px, py in live_valid_points_crop:
+                    if 0 <= px < live_disp.shape[1] and 0 <= py < live_disp.shape[0]:
+                        cv2.circle(live_disp, (int(px), int(py)), 2, (0, 0, 255), -1)
+            cx = (iw // 2) - dx1
+            if 0 <= cx < live_disp.shape[1]:
+                cv2.line(live_disp, (cx, 0), (cx, live_disp.shape[0] - 1), (0, 255, 255), 1, cv2.LINE_AA)
+            cv2.imshow("Live + grid", live_disp)
 
         # --- Colour mask + edge detection ---
         colour_img = None
@@ -252,19 +254,15 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
             # Build display
             # -------------------------------------------------
 
-            sat_disp = (
-                build_display(
-                    bgr,
-                    pts,
-                    centroid_x=(
-                        None
-                        if centroid_x is None
-                        else (centroid_x - dx1)
-                    ),
-                    roi_xywh=(roi_x, roi_y, rw, rh),
-                )
-                if pts is not None
-                else None
+            sat_disp = build_display(
+                bgr,
+                pts,
+                centroid_x=(
+                    None
+                    if centroid_x is None
+                    else (centroid_x - dx1)
+                ),
+                roi_xywh=(roi_x, roi_y, rw, rh),
             )
 
         else:
@@ -274,21 +272,24 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
             tower_offset = None
 
         if TOWER_ANALYSIS and sat_disp is not None:
+            info_lines: list[str] = []
+            info_colors: list[tuple[int, int, int]] = []
             if tower_depth is not None:
-                cv2.putText(sat_disp, f"Tower depth ~ {tower_depth['tower_depth_m']:.3f} m",
-                            (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+                info_lines.append(f"Tower depth ~ {tower_depth['tower_depth_m']:.3f} m")
+                info_colors.append((255, 255, 255))
             if tower_offset is not None:
-                off_txt = f"Offset from center: {tower_offset['dx_px']:+.0f}px"
-                cv2.putText(sat_disp, off_txt, (10, 52),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.50, (255, 255, 255), 2, cv2.LINE_AA)
-            tf_parts = []
+                info_lines.append(
+                    f"Offset from center: {tower_offset['dx_px']:+.0f}px"
+                )
+                info_colors.append((255, 255, 255))
+            tf_parts: list[str] = []
             if tower_depth is not None:
                 tf_parts.append(f"@d={tower_depth['depth_mm']:.1f}mm")
             if tower_offset is not None and tower_offset["lateral_mm"] is not None:
                 tf_parts.append(f"@x={tower_offset['lateral_mm']:+.1f}mm")
             if tf_parts:
-                cv2.putText(sat_disp, "  ".join(tf_parts), (10, 78),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.50, (0, 255, 255), 2, cv2.LINE_AA)
+                info_lines.append("  ".join(tf_parts))
+                info_colors.append((0, 255, 255))
                 now = time.monotonic()
                 if now - _last_tower_finder_print >= TOWER_PRINT_INTERVAL_S:
                     cx_str = (
@@ -297,15 +298,18 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
                     )
                     print("Tower finder:  " + "  ".join(tf_parts) + cx_str)
                     _last_tower_finder_print = now
-            cv2.imshow(
-                "Tower finder",
-                crop_tower_finder_display(
-                    sat_disp,
-                    pts,
-                    bgr.shape[1],
-                    bgr.shape[0],
-                ),
+            if tower_offset is not None:
+                info_lines.append(
+                    f"centroid_x={tower_offset['centroid_x_px']:.0f}px"
+                    f"   |   frame centre={iw/2:.0f}px"
+                )
+                info_colors.append((255, 0, 255))
+
+            tower_view = crop_tower_finder_display(sat_disp, (roi_x, roi_y, rw, rh))
+            tower_view = append_tower_info_panel(
+                tower_view, info_lines, line_colors=info_colors,
             )
+            cv2.imshow("Tower finder", tower_view)
 
         # --- Box percentages + layer analysis (active after grid lock) ---
         if BLOCK_ANALYSIS and points_locked:
