@@ -38,9 +38,13 @@ PREFILTER_MEDIAN_PX = 5  # 0 = disabled
 PREFILTER_OPEN_PX   = 5  # 0 = disabled
 
 
-def compute_roi(iw: int, ih: int) -> tuple[int, int, int, int]:
+def compute_roi(
+    iw: int,
+    ih: int,
+    search_area: tuple[float, float, float, float] | None = None,
+) -> tuple[int, int, int, int]:
     """Return (x, y, w, h) of the search ROI in full-frame pixel coordinates."""
-    cx_f, cy_f, w_f, h_f = SEARCH_AREA
+    cx_f, cy_f, w_f, h_f = search_area if search_area is not None else SEARCH_AREA
     cw = int(iw * w_f)
     ch = int(ih * h_f)
     x = max(0, min(int(iw * cx_f) - cw // 2, iw - cw))
@@ -69,13 +73,18 @@ def _remove_small_components(mask: np.ndarray, min_area_px: int) -> np.ndarray:
     return out
 
 
-def classify_hsv(hsv: np.ndarray, colour: str) -> np.ndarray:
+def classify_hsv(
+    hsv: np.ndarray,
+    colour: str,
+    hsv_ranges: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] | None = None,
+) -> np.ndarray:
     """Return a boolean mask (H×W) that is True wherever hsv matches colour."""
     if PREFILTER_MEDIAN_PX > 0:
         hsv = cv2.medianBlur(hsv, _odd(PREFILTER_MEDIAN_PX))
 
+    ranges_map = hsv_ranges if hsv_ranges is not None else HSV_RANGES
     combined = np.zeros(hsv.shape[:2], dtype=np.uint8)
-    for lo, hi in HSV_RANGES[colour]:
+    for lo, hi in ranges_map[colour]:
         combined |= cv2.inRange(hsv, np.array(lo, dtype=np.uint8),
                                      np.array(hi, dtype=np.uint8))
 
@@ -88,16 +97,20 @@ def classify_hsv(hsv: np.ndarray, colour: str) -> np.ndarray:
     return combined.astype(bool)
 
 
-def classify_roi_bgr(roi_bgr: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def classify_roi_bgr(
+    roi_bgr: np.ndarray,
+    hsv_ranges: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
     """Classify every pixel in a pre-cropped ROI BGR image."""
+    ranges_map = hsv_ranges if hsv_ranges is not None else HSV_RANGES
     hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
     rh, rw = roi_bgr.shape[:2]
     colour_img   = np.zeros((rh, rw, 3), dtype=np.uint8)
     label_grid   = np.full((rh, rw), "none", dtype=object)
     unclassified = np.ones((rh, rw), dtype=bool)
 
-    for colour in HSV_RANGES:
-        mask = classify_hsv(hsv, colour) & unclassified
+    for colour in ranges_map:
+        mask = classify_hsv(hsv, colour, hsv_ranges) & unclassified
         colour_img[mask] = COLOUR_BGR[colour]
         label_grid[mask] = colour
         unclassified    &= ~mask

@@ -10,7 +10,7 @@ TOWER_ANALYSIS = False
 BLOCK_ANALYSIS = True
 
 # Search area centre and fraction of the full frame
-SEARCH_AREA = (0.525, 0.53, 0.26, 0.37)
+SEARCH_AREA = (0.503, 0.526, 0.266, 0.467)
 
 # Crop margin around the search area
 SEARCH_AREA_MARGIN     = 0.10
@@ -43,20 +43,20 @@ CONTRAST_BOOST = 1.2
 # HSV ranges for colour identification
 HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
     "red": [
-        ((0,   150, 140), (10,  255, 255)),
-        ((170,  60, 140), (179, 255, 255)),
+        ((  0, 150, 140), ( 10, 255, 255)),
+        ((170, 150, 140), (179, 255, 255)),
     ],
     "yellow": [
-        ((18, 120, 140), (50, 255, 255)),
+        (( 18, 120, 140), ( 39, 255, 255)),
     ],
     "green": [
-        ((45,  80, 100), (85, 255, 255)),
+        (( 39,  51,  79), ( 85, 255, 255)),
     ],
     "blue": [
-        ((90, 160, 130), (102, 255, 255)),
+        (( 90, 171, 105), (110, 255, 255)),
     ],
     "purple": [
-        ((102, 90, 50), (170, 255, 255)),
+        ((109,  34,  47), (140, 255, 255)),
     ],
 }
 
@@ -89,22 +89,22 @@ TOWER_MASK_BRIGHTNESS_MIN          = 60    # Min HSV value (brightness) for towe
 # ---------------------------------------------------------------------------
 
 # Valid-point x-bands (percent of ROI width): outer-left, centre, outer-right.
-POINT_VALID_SIDE_BAND_PCT   = 15.0
+POINT_VALID_SIDE_BAND_PCT   = 10.0
 POINT_VALID_CENTER_BAND_PCT = 15.0
 
 # Canny thresholds used on the colour-mask image.
-CANNY_MASK_LOW   = 40   # Lower = more edges.
-CANNY_MASK_HIGH  = 120  # Higher = fewer, stronger edges only.
+CANNY_MASK_LOW   = 30   # Lower = more edges.
+CANNY_MASK_HIGH  = 90  # Higher = fewer, stronger edges only.
 
 # Canny thresholds used on the original BGR image.
-CANNY_ORIGINAL_LOW  = 40
-CANNY_ORIGINAL_HIGH = 120
+CANNY_ORIGINAL_LOW  = 35
+CANNY_ORIGINAL_HIGH = 115
 
 # Width of the horizontal band (centred on the ROI) where Canny edges are
 # kept, as a percentage of ROI width. Edges outside this strip are zeroed
 # before Hough line detection, so both visualisation and grid-point search
 # are restricted to the middle slice. Set to 100.0 to disable.
-CANNY_CENTRE_BAND_PCT = 12.0
+CANNY_CENTRE_BAND_PCT = 8.0
 
 # Hough settings used for lines extracted from colour-mask edges.
 HOUGH_MASK_THRESHOLD  = 10  # Min Hough votes to accept a line.
