@@ -27,13 +27,14 @@ class MtcArmReadyServer : public rclcpp::Node {
       const rclcpp::NodeOptions& options =
           rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true))
   : rclcpp::Node("mtc_arm_ready_server", options) {
-    action_name_ = declare_parameter("action_name", "jenga_arm_ready");
-    arm_group_name = declare_parameter("arm_group", "ur_onrobot_manipulator");
-    arm_home_state_ = declare_parameter("arm_home_state", "ready_position");
-    plan_max_attempts_ = static_cast<uint32_t>(declare_parameter("plan_max_attempts", 3));
-    vel_scale_ = declare_parameter("max_velocity_scaling_factor", 0.1);
-    acc_scale_ = declare_parameter("max_acceleration_scaling_factor", 0.1);
-    status_topic_ = declare_parameter("status_topic", "mtc_arm_ready_status");
+    action_name_ = mtc_jenga::param<std::string>(this, "action_name", "jenga_arm_ready");
+    arm_group_name = mtc_jenga::param<std::string>(this, "arm_group", "ur_onrobot_manipulator");
+    arm_home_state_ = mtc_jenga::param<std::string>(this, "arm_home_state", "ready_position");
+    plan_max_attempts_ = static_cast<uint32_t>(mtc_jenga::param<int>(this, "plan_max_attempts", 1));
+    plan_time_ = mtc_jenga::param<double>(this, "plan_time", 2.0);
+    vel_scale_ = mtc_jenga::param<double>(this, "max_velocity_scaling_factor", 0.1);
+    acc_scale_ = mtc_jenga::param<double>(this, "max_acceleration_scaling_factor", 0.1);
+    status_topic_ = mtc_jenga::param<std::string>(this, "status_topic", "mtc_arm_ready_status");
 
     pub_status_ = create_publisher<std_msgs::msg::String>(status_topic_, 10);
     sub_estop_ = create_subscription<std_msgs::msg::Bool>(
@@ -86,7 +87,7 @@ class MtcArmReadyServer : public rclcpp::Node {
     auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(node_ptr);
     sampling_planner->setPlannerId("RRTstarPathLengthOptimized");
     sampling_planner->setProperty("goal_joint_tolerance", 1e-4);
-    sampling_planner->setProperty("planning_time", 4.0);
+    sampling_planner->setProperty("planning_time", plan_time_);
     sampling_planner->setProperty("enforce_joint_model_state_space", true);
     sampling_planner->setMaxVelocityScalingFactor(vel_scale_);
     sampling_planner->setMaxAccelerationScalingFactor(acc_scale_);
@@ -95,7 +96,7 @@ class MtcArmReadyServer : public rclcpp::Node {
       auto stage = std::make_unique<mtc::stages::MoveTo>("move to ready", sampling_planner);
       stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
       stage->setGoal(named_state);
-      stage->setTimeout(8.0);
+      stage->setTimeout(plan_time_);
       task.add(std::move(stage));
     }
     return task;

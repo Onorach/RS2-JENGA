@@ -100,20 +100,20 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
     acc_scale_ = mtc_jenga::param<double>(this, "max_acceleration_scaling_factor", 0.1);
     cart_step_ = mtc_jenga::param<double>(this, "cartesian_step", 0.004);
 
-    approach_min_ = declare_parameter("approach_distance_min", 0.005);
-    approach_max_ = declare_parameter("approach_distance_max", 0.03);
-    extract_min_ = declare_parameter("extract_distance_min", 0.06);
-    extract_max_ = declare_parameter("extract_distance_max", 0.10);
-    lift_after_extract_ = declare_parameter("lift_after_extract_z", 0.01);
+    approach_min_ = mtc_jenga::param<double>(this, "approach_distance_min", 0.005);
+    approach_max_ = mtc_jenga::param<double>(this, "approach_distance_max", 0.03);
+    extract_min_ = mtc_jenga::param<double>(this, "extract_distance_min", 0.08);
+    extract_max_ = mtc_jenga::param<double>(this, "extract_distance_max", 0.12);
+    lift_after_extract_ = mtc_jenga::param<double>(this, "lift_after_extract_z", 0.01);
 
-    extract_axis_ = declare_parameter("extract_axis", "x");
-    approach_axis_ = declare_parameter("approach_axis", "-x");
-    grasp_r_ = declare_parameter("grasp_frame_roll", 0.0);
-    grasp_p_ = declare_parameter("grasp_frame_pitch", (11.0 * M_PI) / 12.0);
-    grasp_y_ = declare_parameter("grasp_frame_yaw", 0.0);
-    grasp_angle_delta_ = declare_parameter("grasp_angle_delta", M_PI / 1.0);
-    grasp_offset_m_ = declare_parameter("grasp_offset_m", 0.03);
-    grasp_offset_z_ = declare_parameter("grasp_offset_z", 0.01);
+    extract_axis_ = mtc_jenga::param<std::string>(this, "extract_axis", "x");
+    approach_axis_ = mtc_jenga::param<std::string>(this, "approach_axis", "-x");
+    grasp_r_ = mtc_jenga::param<double>(this, "grasp_frame_roll", 0.0);
+    grasp_p_ = mtc_jenga::param<double>(this, "grasp_frame_pitch", (11.0 * M_PI) / 12.0);
+    grasp_y_ = mtc_jenga::param<double>(this, "grasp_frame_yaw", 0.0);
+    grasp_angle_delta_ = mtc_jenga::param<double>(this, "grasp_angle_delta", M_PI / 1.0);
+    grasp_offset_m_ = mtc_jenga::param<double>(this, "grasp_offset_m", 0.03);
+    grasp_offset_z_ = mtc_jenga::param<double>(this, "grasp_offset_z", 0.01);
 
     wiggle_enable_ = mtc_jenga::param<bool>(this, "wiggle_enable", false);
     wiggle_distance_ = mtc_jenga::param<double>(this, "wiggle_distance", 0.003);

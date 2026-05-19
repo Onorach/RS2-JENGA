@@ -4,11 +4,9 @@ Publish persistent Jenga block collision objects to the MoveIt2 planning scene.
 Optional startup publish via ROS parameter ``initial_layout`` (``none`` default,
 ``stock`` or ``tower`` to spawn all blocks after ``startup_delay_sec``).
 
-- ``set_jenga_blocks_stock_layout`` (Trigger): republish blocks at **stock** poses from YAML.
-- ``set_jenga_blocks_tower_layout`` (Trigger): republish blocks at **assembled tower**
-  poses (planning scene only; does not move Gazebo or hardware).
-- ``set_jenga_blocks_layout`` (SetJengaBlocksLayout): republish selected indices (or all)
-  at either stock or tower layout.
+- ``set_jenga_blocks_layout`` (SetJengaBlocksLayout): republish selected indices (or all
+  when ``block_indices`` is empty) at either stock or tower layout.
+- ``protrude_jenga_block`` (ProtrudeJengaBlock): offset one block along an axis.
 """
 
 from __future__ import annotations
@@ -31,7 +29,6 @@ from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import ColorRGBA, Header
-from std_srvs.srv import Trigger
 
 from jenga_interfaces.srv import ProtrudeJengaBlock
 from jenga_interfaces.srv import SetJengaBlocksLayout
@@ -77,6 +74,7 @@ def _build_block_object(
     dims: _BlockDims,
     grasp_offset_m: float,
     probe_offset_m: float,
+    probe_offset_m: float,
     operation: int,
 ) -> CollisionObject:
     co = CollisionObject()
@@ -94,6 +92,7 @@ def _build_block_object(
     # Subframe naming convention follows MoveIt: usable frames become "<id>/<subframe>".
     half_len = 0.5 * float(dims.x)
     co.subframe_names = ["end_plus", "end_minus", "grasp_plus", "grasp_minus", "probe_plus", "probe_minus"]
+    co.subframe_names = ["end_plus", "end_minus", "grasp_plus", "grasp_minus", "probe_plus", "probe_minus"]
     co.subframe_poses = [
         Pose(position=Point(x=+half_len, y=0.0, z=0.0), orientation=Quaternion(w=1.0)),
         Pose(position=Point(x=-half_len, y=0.0, z=0.0), orientation=Quaternion(w=1.0)),
@@ -103,6 +102,14 @@ def _build_block_object(
         ),
         Pose(
             position=Point(x=-float(grasp_offset_m), y=0.0, z=0.0075),
+            orientation=Quaternion(w=1.0),
+        ),
+        Pose(
+            position=Point(x=+float(probe_offset_m), y=0.0, z=0.00),
+            orientation=Quaternion(w=1.0),
+        ),
+        Pose(
+            position=Point(x=-float(probe_offset_m), y=0.0, z=0.00),
             orientation=Quaternion(w=1.0),
         ),
     ]
@@ -166,6 +173,9 @@ class JengaBlocksSceneNode(Node):
         self._grasp_offset_m = float(
             self.declare_parameter("grasp_offset_m", 0.0325).value
         )
+        self._probe_offset_m = float(
+            self.declare_parameter("probe_offset_m", 0.045).value
+        )
         initial_layout_raw = str(self.declare_parameter("initial_layout", "none").value)
         self._initial_layout = self._parse_initial_layout(initial_layout_raw)
 
@@ -178,12 +188,6 @@ class JengaBlocksSceneNode(Node):
             durability=DurabilityPolicy.TRANSIENT_LOCAL,
         )
         self._pub = self.create_publisher(PlanningScene, "/planning_scene", qos)
-        self._srv_stock_layout = self.create_service(
-            Trigger, "set_jenga_blocks_stock_layout", self._on_set_stock_layout
-        )
-        self._srv_tower_layout = self.create_service(
-            Trigger, "set_jenga_blocks_tower_layout", self._on_set_tower_layout
-        )
         self._srv_set_layout = self.create_service(
             SetJengaBlocksLayout, "set_jenga_blocks_layout", self._on_set_layout
         )
@@ -209,11 +213,34 @@ class JengaBlocksSceneNode(Node):
             self._done = True
         else:
             self._timer = self.create_timer(self._startup_delay_sec, self._publish_once)
+        self._timer = None
+        if self._initial_layout is None:
+            self.get_logger().info(
+                "initial_layout is 'none'; skipping startup planning scene publish."
+            )
+            self._done = True
+        elif self._initial_layout == "__invalid__":
+            self.get_logger().error(
+                f"Unknown initial_layout '{initial_layout_raw}'; "
+                "expected none, stock, or tower. Skipping startup publish."
+            )
+            self._done = True
+        else:
+            self._timer = self.create_timer(self._startup_delay_sec, self._publish_once)
         self._republish_timer = None
         if self._publish_period_sec and self._publish_period_sec > 0.0:
             self._republish_timer = self.create_timer(
                 self._publish_period_sec, self._republish_cached
             )
+
+    @staticmethod
+    def _parse_initial_layout(raw: str) -> str | None:
+        layout = (raw or "").strip().lower()
+        if layout in ("", "none", "off", "skip"):
+            return None
+        if layout in ("stock", "tower"):
+            return layout
+        return "__invalid__"
 
     @staticmethod
     def _parse_initial_layout(raw: str) -> str | None:
@@ -279,6 +306,7 @@ class JengaBlocksSceneNode(Node):
                     dims=self._dims,
                     grasp_offset_m=self._grasp_offset_m,
                     probe_offset_m=self._probe_offset_m,
+                    probe_offset_m=self._probe_offset_m,
                     operation=CollisionObject.ADD,
                 )
             )
@@ -287,8 +315,11 @@ class JengaBlocksSceneNode(Node):
     def _build_initial_objects(self) -> list[CollisionObject]:
         if self._initial_layout is None or self._initial_layout == "__invalid__":
             return []
+        if self._initial_layout is None or self._initial_layout == "__invalid__":
+            return []
         path = self._resolve_layout_path()
         data = _load_yaml(path)
+        poses = self._poses_for_layout(data=data, target_layout=self._initial_layout)
         poses = self._poses_for_layout(data=data, target_layout=self._initial_layout)
         return self._build_objects_at_poses(poses)
 
@@ -314,6 +345,8 @@ class JengaBlocksSceneNode(Node):
         self._done = True
         if self._timer is not None:
             self._timer.cancel()
+        if self._timer is not None:
+            self._timer.cancel()
 
         try:
             self._cached_objects = self._build_initial_objects()
@@ -325,6 +358,8 @@ class JengaBlocksSceneNode(Node):
         if self._cached_objects:
             self._publish_objects(self._cached_objects)
             self.get_logger().info(
+                f"Published {len(self._cached_objects)} Jenga block collision object(s) "
+                f"at {self._initial_layout} layout."
                 f"Published {len(self._cached_objects)} Jenga block collision object(s) "
                 f"at {self._initial_layout} layout."
             )
@@ -362,7 +397,11 @@ class JengaBlocksSceneNode(Node):
             return (True, f"Republished {n} Jenga block collision object(s) at {target_layout} layout.")
 
         if not self._cached_objects:
-            return (False, "no cached objects yet (wait for startup publish)")
+            return (
+                False,
+                "no cached objects yet (call set_jenga_blocks_layout with empty "
+                "block_indices for a full layout first)",
+            )
         if len(self._cached_objects) != n:
             return (
                 False,
@@ -383,30 +422,6 @@ class JengaBlocksSceneNode(Node):
             True,
             f"Republished {len(selected)} Jenga block collision object(s) at {target_layout} layout: indices={uniq}",
         )
-
-    def _on_set_stock_layout(
-        self, request: Trigger.Request, response: Trigger.Response
-    ) -> Trigger.Response:
-        try:
-            ok, msg = self._apply_layout(target_layout="stock", block_indices=None)
-            response.success = bool(ok)
-            response.message = msg
-        except Exception as exc:
-            response.success = False
-            response.message = f"set stock layout failed: {exc}"
-        return response
-
-    def _on_set_tower_layout(
-        self, request: Trigger.Request, response: Trigger.Response
-    ) -> Trigger.Response:
-        try:
-            ok, msg = self._apply_layout(target_layout="tower", block_indices=None)
-            response.success = bool(ok)
-            response.message = msg
-        except Exception as exc:
-            response.success = False
-            response.message = f"set tower layout failed: {exc}"
-        return response
 
     def _on_set_layout(
         self,
@@ -442,6 +457,10 @@ class JengaBlocksSceneNode(Node):
 
         if not self._cached_objects:
             response.success = False
+            response.message = (
+                "no cached objects yet (call set_jenga_blocks_layout with empty "
+                "block_indices for a full layout first)"
+            )
             response.message = (
                 "no cached objects yet (call set_jenga_blocks_layout with empty "
                 "block_indices for a full layout first)"

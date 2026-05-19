@@ -60,7 +60,8 @@ inline void applyBlockBoxAt(const std::string& block_id,
                             const double box_x,
                             const double box_y,
                             const double box_z,
-                            const double grasp_offset_m = 0.035) {
+                            const double grasp_offset_m = 0.035,
+                            const double probe_offset_m = -1.0) {
   moveit::planning_interface::PlanningSceneInterface psi;
   moveit_msgs::msg::CollisionObject co;
   co.id = block_id;

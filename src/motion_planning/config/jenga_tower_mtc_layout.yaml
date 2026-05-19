@@ -11,15 +11,17 @@ parametric:
     tower_yaw_deg: 45.0
     blocks_per_layer: 3
     layers: 6
-    layer_dz: &layer_dz 0.0151
-    slot_dx: &slot_dx 0.0251
+    layer_dz: &layer_dz 0.0153
+    slot_dx: &slot_dx 0.0253
   stock:
     # Two layers stacked in +z at the same x; 9 blocks along y per layer (step = slot_dx).
     # Row order = pick order: list the top layer first so indices 0–8 are upper blocks (no collision from stack above).
     rows:
+      # - {x: 0.2125, dz: *layer_dz}
+      # - {x: 0.2125, dz: 0.0}
       - {x: 0.19, dz: *layer_dz}
       - {x: 0.19, dz: 0.0}
-    y_centre: 0.297
+    y_centre: 0.297 # 0.25375 
     z: 0.0138
     step_along_y: *slot_dx
     blocks_per_row: 9
@@ -32,7 +34,7 @@ parametric:
 #     base: {x: 0.000, y: 0.297, z: 0.0138}
 #     tower_yaw_deg: 45.0
 #     blocks_per_layer: 3
-#     layers: 2
+#     layers: 6
 #     layer_dz: &layer_dz 0.0151
 #     slot_dx: &slot_dx 0.0251
 #   stock:
