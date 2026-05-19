@@ -50,25 +50,28 @@ using ServerGoalHandle = rclcpp_action::ServerGoalHandle<JengaPickPlace>;
 
 class MtcPickPlaceServer : public rclcpp::Node {
  public:
-  explicit MtcPickPlaceServer(const rclcpp::NodeOptions& options = rclcpp::NodeOptions())
+  explicit MtcPickPlaceServer(
+      const rclcpp::NodeOptions& options =
+          rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true))
   : rclcpp::Node("mtc_pick_place_server", options) {
-    mode_ = declare_parameter("mode", "single_pose");
-    arm_group_name = declare_parameter("arm_group", "ur_onrobot_manipulator");
-    hand_group_name = declare_parameter("hand_group", "ur_onrobot_gripper");
-    hand_frame = declare_parameter("gripper_tcp", "gripper_tcp");
-    ee_link_for_move_group_ = declare_parameter("ee_link", "gripper_tcp");
-    object_id_ = declare_parameter("object_id", "object");
-    box_x_ = declare_parameter("object_box_x", 0.075);
-    box_y_ = declare_parameter("object_box_y", 0.025);
-    box_z_ = declare_parameter("object_box_z", 0.015);
-    open_state_ = declare_parameter("gripper_open_state", "open");
-    closed_state_ = declare_parameter("gripper_closed_state", "grip_block_length");
-    plan_max_attempts_ = static_cast<uint32_t>(declare_parameter("plan_max_attempts", 3));
-    status_topic_ = declare_parameter("status_topic", "mtc_status");
-    const std::string goal_topic = declare_parameter("goal_topic", "goal_pose");
-    (void)declare_parameter("action_timeout_sec", 60);
-    vel_scale_ = declare_parameter("max_velocity_scaling_factor", 0.1);
-    acc_scale_ = declare_parameter("max_acceleration_scaling_factor", 0.1);
+    mode_ = mtc_jenga::param<std::string>(this, "mode", "single_pose");
+    arm_group_name = mtc_jenga::param<std::string>(this, "arm_group", "ur_onrobot_manipulator");
+    hand_group_name = mtc_jenga::param<std::string>(this, "hand_group", "ur_onrobot_gripper");
+    hand_frame = mtc_jenga::param<std::string>(this, "gripper_tcp", "gripper_tcp");
+    ee_link_for_move_group_ = mtc_jenga::param<std::string>(this, "ee_link", "gripper_tcp");
+    object_id_ = mtc_jenga::param<std::string>(this, "object_id", "object");
+    box_x_ = mtc_jenga::param<double>(this, "object_box_x", 0.075);
+    box_y_ = mtc_jenga::param<double>(this, "object_box_y", 0.025);
+    box_z_ = mtc_jenga::param<double>(this, "object_box_z", 0.015);
+    open_state_ = mtc_jenga::param<std::string>(this, "gripper_open_state", "open");
+    closed_state_ = mtc_jenga::param<std::string>(this, "gripper_closed_state", "grip_block_length");
+    plan_max_attempts_ = static_cast<uint32_t>(mtc_jenga::param<int>(this, "plan_max_attempts", 1));
+    plan_time_ = mtc_jenga::param<double>(this, "plan_time", 0.5);
+    status_topic_ = mtc_jenga::param<std::string>(this, "status_topic", "mtc_status");
+    const std::string goal_topic = mtc_jenga::param<std::string>(this, "goal_topic", "goal_pose");
+    (void)mtc_jenga::param<int>(this, "action_timeout_sec", 5);
+    vel_scale_ = mtc_jenga::param<double>(this, "max_velocity_scaling_factor", 0.1);
+    acc_scale_ = mtc_jenga::param<double>(this, "max_acceleration_scaling_factor", 0.1);
 
     action_server_ = rclcpp_action::create_server<JengaPickPlace>(
         this, "jenga_pick_place",
@@ -195,7 +198,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
     auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(node_ptr);
     sampling_planner->setPlannerId("RRTstarPathLengthOptimized");
     sampling_planner->setProperty("goal_joint_tolerance", 1e-4);
-    sampling_planner->setProperty("planning_time", 1.0);  // seconds
+    sampling_planner->setProperty("planning_time", plan_time_);  // seconds
     sampling_planner->setProperty("enforce_joint_model_state_space", true);
     sampling_planner->setMaxVelocityScalingFactor(vel_scale_);
     sampling_planner->setMaxAccelerationScalingFactor(acc_scale_);
@@ -217,7 +220,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
     {
       auto stage_mtp = std::make_unique<mtc::stages::Connect>(
           "move to pick", mtc::stages::Connect::GroupPlannerVector{{arm_group_name, sampling_planner}});
-      stage_mtp->setTimeout(2.0);
+      stage_mtp->setTimeout(plan_time_);
       stage_mtp->properties().configureInitFrom(mtc::Stage::PARENT);
       task.add(std::move(stage_mtp));
     }
@@ -298,7 +301,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
     {
       auto c = std::make_unique<mtc::stages::Connect>(
           "move to place", mtc::stages::Connect::GroupPlannerVector{{arm_group_name, sampling_planner}});
-      c->setTimeout(2.0);
+      c->setTimeout(plan_time_);
       c->properties().configureInitFrom(mtc::Stage::PARENT);
       task.add(std::move(c));
     }
@@ -547,6 +550,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
   double vel_scale_{0.1};
   double acc_scale_{0.1};
   uint32_t plan_max_attempts_{5};
+  double plan_time_{0.5};
 
   std::mutex status_mutex_;
   std::atomic<bool> busy_{false};

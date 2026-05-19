@@ -20,12 +20,12 @@ from moveit_msgs.msg import PlanningScene
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
-from std_srvs.srv import Trigger
 from tf2_geometry_msgs import do_transform_pose_stamped
 from tf2_ros import Buffer, TransformException, TransformListener
 
 from jenga_interfaces.action import JengaExtractMiddleBlock
 from jenga_interfaces.srv import ProtrudeJengaBlock
+from jenga_interfaces.srv import SetJengaBlocksLayout
 
 
 def _on_feedback(fb) -> None:  # noqa: ANN001
@@ -164,18 +164,29 @@ def _validate_subframes(
         _assert_close(node, f"{obj.id}/{n}.orientation.w", float(p.orientation.w), 1.0, tol)
 
 
-def _call_trigger(node: Node, name: str, timeout_sec: float = 10.0) -> bool:
-    cli = node.create_client(Trigger, name)
+def _call_set_layout(
+    node: Node,
+    target_layout: str,
+    *,
+    srv_name: str = "set_jenga_blocks_layout",
+    timeout_sec: float = 10.0,
+) -> bool:
+    cli = node.create_client(SetJengaBlocksLayout, srv_name)
     if not cli.wait_for_service(timeout_sec=timeout_sec):
-        node.get_logger().error(f"Service not available: {name}")
+        node.get_logger().error(f"Service not available: {srv_name}")
         return False
-    fut = cli.call_async(Trigger.Request())
+    req = SetJengaBlocksLayout.Request()
+    req.block_indices = []
+    req.target_layout = target_layout
+    fut = cli.call_async(req)
     rclpy.spin_until_future_complete(node, fut, timeout_sec=timeout_sec)
     resp = fut.result()
     if not resp or not resp.success:
-        node.get_logger().error(f"{name} failed: {getattr(resp, 'message', '<no message>')}")
+        node.get_logger().error(
+            f"{srv_name} ({target_layout}) failed: {getattr(resp, 'message', '<no message>')}"
+        )
         return False
-    node.get_logger().info(f"{name}: {resp.message}")
+    node.get_logger().info(f"{srv_name} ({target_layout}): {resp.message}")
     return True
 
 
@@ -236,7 +247,7 @@ def main(args=None) -> int:
     tf_listener = TransformListener(tf_buffer, node, spin_thread=False)
 
     # 1) Put blocks in tower layout in planning scene
-    if not _call_trigger(node, "set_jenga_blocks_tower_layout", timeout_sec=10.0):
+    if not _call_set_layout(node, "tower", timeout_sec=10.0):
         rclpy.shutdown()
         return 10
 

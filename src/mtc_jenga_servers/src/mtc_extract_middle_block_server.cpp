@@ -78,44 +78,47 @@ geometry_msgs::msg::Vector3Stamped axisToDirInFrame(const std::string& axis_loca
 
 class MtcExtractMiddleBlockServer : public rclcpp::Node {
  public:
-  explicit MtcExtractMiddleBlockServer(const rclcpp::NodeOptions& options = rclcpp::NodeOptions())
+  explicit MtcExtractMiddleBlockServer(
+      const rclcpp::NodeOptions& options =
+          rclcpp::NodeOptions().automatically_declare_parameters_from_overrides(true))
   : rclcpp::Node("mtc_extract_middle_block_server", options) {
-    action_name_ = declare_parameter("action_name", "jenga_extract_middle_block");
-    arm_group_name = declare_parameter("arm_group", "ur_onrobot_manipulator");
-    hand_group_name = declare_parameter("hand_group", "ur_onrobot_gripper");
-    hand_frame = declare_parameter("gripper_tcp", "gripper_tcp");
-    open_state_ = declare_parameter("gripper_open_state", "open");
-    closed_state_ = declare_parameter("gripper_closed_state", "grip_block_width");
-    arm_home_state_ = declare_parameter("arm_home_state", "ready_position");
+    action_name_ = mtc_jenga::param<std::string>(this, "action_name", "jenga_extract_middle_block");
+    arm_group_name = mtc_jenga::param<std::string>(this, "arm_group", "ur_onrobot_manipulator");
+    hand_group_name = mtc_jenga::param<std::string>(this, "hand_group", "ur_onrobot_gripper");
+    hand_frame = mtc_jenga::param<std::string>(this, "gripper_tcp", "gripper_tcp");
+    open_state_ = mtc_jenga::param<std::string>(this, "gripper_open_state", "open");
+    closed_state_ = mtc_jenga::param<std::string>(this, "gripper_closed_state", "grip_block_width");
+    arm_home_state_ = mtc_jenga::param<std::string>(this, "arm_home_state", "ready_position");
 
-    box_x_ = declare_parameter("block_box_x", 0.075);
-    box_y_ = declare_parameter("block_box_y", 0.025);
-    box_z_ = declare_parameter("block_box_z", 0.015);
+    box_x_ = mtc_jenga::param<double>(this, "block_box_x", 0.075);
+    box_y_ = mtc_jenga::param<double>(this, "block_box_y", 0.025);
+    box_z_ = mtc_jenga::param<double>(this, "block_box_z", 0.015);
 
-    plan_max_attempts_ = static_cast<uint32_t>(declare_parameter("plan_max_attempts", 3));
-    vel_scale_ = declare_parameter("max_velocity_scaling_factor", 0.1);
-    acc_scale_ = declare_parameter("max_acceleration_scaling_factor", 0.1);
-    cart_step_ = declare_parameter("cartesian_step", 0.004);
+    plan_max_attempts_ = static_cast<uint32_t>(mtc_jenga::param<int>(this, "plan_max_attempts", 1));
+    plan_time_ = mtc_jenga::param<double>(this, "plan_time", 0.5);
+    vel_scale_ = mtc_jenga::param<double>(this, "max_velocity_scaling_factor", 0.1);
+    acc_scale_ = mtc_jenga::param<double>(this, "max_acceleration_scaling_factor", 0.1);
+    cart_step_ = mtc_jenga::param<double>(this, "cartesian_step", 0.004);
 
-    approach_min_ = declare_parameter("approach_distance_min", 0.005);
-    approach_max_ = declare_parameter("approach_distance_max", 0.03);
-    extract_min_ = declare_parameter("extract_distance_min", 0.06);
-    extract_max_ = declare_parameter("extract_distance_max", 0.10);
-    lift_after_extract_ = declare_parameter("lift_after_extract_z", 0.01);
+    approach_min_ = mtc_jenga::param<double>(this, "approach_distance_min", 0.005);
+    approach_max_ = mtc_jenga::param<double>(this, "approach_distance_max", 0.03);
+    extract_min_ = mtc_jenga::param<double>(this, "extract_distance_min", 0.08);
+    extract_max_ = mtc_jenga::param<double>(this, "extract_distance_max", 0.12);
+    lift_after_extract_ = mtc_jenga::param<double>(this, "lift_after_extract_z", 0.01);
 
-    extract_axis_ = declare_parameter("extract_axis", "x");
-    approach_axis_ = declare_parameter("approach_axis", "-x");
-    grasp_r_ = declare_parameter("grasp_frame_roll", 0.0);
-    grasp_p_ = declare_parameter("grasp_frame_pitch", (11.0 * M_PI) / 12.0);
-    grasp_y_ = declare_parameter("grasp_frame_yaw", 0.0);
-    grasp_angle_delta_ = declare_parameter("grasp_angle_delta", M_PI / 1.0);
-    grasp_offset_m_ = declare_parameter("grasp_offset_m", 0.03);
-    grasp_offset_z_ = declare_parameter("grasp_offset_z", 0.01);
+    extract_axis_ = mtc_jenga::param<std::string>(this, "extract_axis", "x");
+    approach_axis_ = mtc_jenga::param<std::string>(this, "approach_axis", "-x");
+    grasp_r_ = mtc_jenga::param<double>(this, "grasp_frame_roll", 0.0);
+    grasp_p_ = mtc_jenga::param<double>(this, "grasp_frame_pitch", (11.0 * M_PI) / 12.0);
+    grasp_y_ = mtc_jenga::param<double>(this, "grasp_frame_yaw", 0.0);
+    grasp_angle_delta_ = mtc_jenga::param<double>(this, "grasp_angle_delta", M_PI / 1.0);
+    grasp_offset_m_ = mtc_jenga::param<double>(this, "grasp_offset_m", 0.03);
+    grasp_offset_z_ = mtc_jenga::param<double>(this, "grasp_offset_z", 0.01);
 
-    wiggle_enable_ = declare_parameter("wiggle_enable", false);
-    wiggle_distance_ = declare_parameter("wiggle_distance", 0.003);
+    wiggle_enable_ = mtc_jenga::param<bool>(this, "wiggle_enable", false);
+    wiggle_distance_ = mtc_jenga::param<double>(this, "wiggle_distance", 0.003);
 
-    status_topic_ = declare_parameter("status_topic", "mtc_extract_middle_status");
+    status_topic_ = mtc_jenga::param<std::string>(this, "status_topic", "mtc_extract_middle_status");
     pub_status_ = create_publisher<std_msgs::msg::String>(status_topic_, 10);
 
     sub_estop_ = create_subscription<std_msgs::msg::Bool>(
@@ -174,7 +177,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
     auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(node_ptr);
     sampling_planner->setPlannerId("RRTstarPathLengthOptimized");
     sampling_planner->setProperty("goal_joint_tolerance", 1e-4);
-    sampling_planner->setProperty("planning_time", 1.0);
+    sampling_planner->setProperty("planning_time", plan_time_);
     sampling_planner->setProperty("enforce_joint_model_state_space", true);
     sampling_planner->setMaxVelocityScalingFactor(vel_scale_);
     sampling_planner->setMaxAccelerationScalingFactor(acc_scale_);
@@ -196,7 +199,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
     {
       auto c = std::make_unique<mtc::stages::Connect>(
           "move to pre-grasp", mtc::stages::Connect::GroupPlannerVector{{arm_group_name, sampling_planner}});
-      c->setTimeout(2.0);
+      c->setTimeout(plan_time_);
       c->properties().configureInitFrom(mtc::Stage::PARENT);
       task.add(std::move(c));
     }
@@ -328,7 +331,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
     {
       auto c = std::make_unique<mtc::stages::Connect>(
           "move to place", mtc::stages::Connect::GroupPlannerVector{{arm_group_name, sampling_planner}});
-      c->setTimeout(2.0);
+      c->setTimeout(plan_time_);
       c->properties().configureInitFrom(mtc::Stage::PARENT);
       task.add(std::move(c));
     }
@@ -605,6 +608,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
 
   double box_x_{0.075}, box_y_{0.025}, box_z_{0.015};
   uint32_t plan_max_attempts_{3};
+  double plan_time_{0.5};
   double vel_scale_{0.20};
   double acc_scale_{0.20};
   double cart_step_{0.004};

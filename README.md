@@ -178,7 +178,7 @@ Tweak `use_fake_hardware`, `robot_ip`, `base_height` / `base_yaw` for the real b
 
 Edit [`motion_planning/config/jenga_tower_mtc_layout.yaml`](src/motion_planning/config/jenga_tower_mtc_layout.yaml) for stock and tower frame positions.
 
-To **instantly** place Jenga block collision objects in the assembled tower layout in MoveIt (no robot motion), call `set_jenga_blocks_tower_layout` on `jenga_blocks_scene` (`std_srvs/Trigger`). Use `set_jenga_blocks_stock_layout` to return them to the stock layout. This only updates the planning scene, not Gazebo or hardware.
+To **instantly** place Jenga block collision objects in the assembled tower or stock layout in MoveIt (no robot motion), call `set_jenga_blocks_layout` on `jenga_blocks_scene` with empty `block_indices` and `target_layout: "tower"` or `"stock"`. Alternatively, launch with `jenga_blocks_startup_layout:=tower` or `:=stock`. This only updates the planning scene, not Gazebo or hardware.
 
 For **all action names**, **CLI smoke tests**, **sequencers**, `mtc_server_mode`, and planning-scene services (`protrude_jenga_block`, etc.), see the MoveIt Task Constructor section in [motion_planning/README.md](src/motion_planning/README.md).
 

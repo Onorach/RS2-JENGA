@@ -267,6 +267,7 @@ def main(args: list[str] | None = None) -> int:
     per_ready_timeout_sec = float(
         node.declare_parameter("per_ready_timeout_sec", per_goal_timeout_sec).value
     )
+    start_block_index = int(node.declare_parameter("start_block_index", 0).value)
     if layout_path_param:
         path = layout_path_param
     else:
@@ -297,9 +298,28 @@ def main(args: list[str] | None = None) -> int:
         rclpy.shutdown()
         return 1
 
+    n_pairs = len(pairs)
+    if start_block_index < 0 or start_block_index > n_pairs:
+        node.get_logger().error(
+            f"Invalid start_block_index={start_block_index} for {n_pairs} step(s); "
+            f"allowed range is 0 .. {n_pairs} inclusive (use {n_pairs} when all steps are already done)."
+        )
+        rclpy.shutdown()
+        return 9
+
     node.get_logger().info(
-        f"Loaded {len(pairs)} MTC pick/place step(s) from {path} (mode={mode})"
+        f"Loaded {n_pairs} MTC pick/place step(s) from {path} (mode={mode})"
     )
+    if start_block_index > 0:
+        node.get_logger().info(
+            f"Resuming: first step to run is index {start_block_index} "
+            f"(1-based step {start_block_index + 1}/{n_pairs}, block_index={start_block_index})."
+        )
+    if start_block_index == n_pairs:
+        node.get_logger().info(
+            "start_block_index equals step count: no pick/place goals will be sent; "
+            "running arm-ready bookends only."
+        )
     if pre_wait_sec > 0.0:
         time.sleep(pre_wait_sec)
 
@@ -324,7 +344,8 @@ def main(args: list[str] | None = None) -> int:
         rclpy.shutdown()
         return rc
 
-    for idx, (pick_pose, place_pose) in enumerate(pairs):
+    for idx in range(start_block_index, n_pairs):
+        pick_pose, place_pose = pairs[idx]
         stamp = node.get_clock().now().to_msg()
         goal = JengaPickPlace.Goal()
         goal.block_index = int(idx)
@@ -339,7 +360,7 @@ def main(args: list[str] | None = None) -> int:
         goal.pick_pose = pick_st
         goal.place_pose = place_st
         node.get_logger().info(
-            f"Step {idx + 1}/{len(pairs)}: pick {pick_pose.position.x:.3f},"
+            f"Step {idx + 1}/{n_pairs} (block_index={idx}): pick {pick_pose.position.x:.3f},"
             f"{pick_pose.position.y:.3f},{pick_pose.position.z:.3f} -> "
             f"place {place_pose.position.x:.3f},"
             f"{place_pose.position.y:.3f},{place_pose.position.z:.3f}"
@@ -368,7 +389,12 @@ def main(args: list[str] | None = None) -> int:
         if step_pause_sec > 0.0:
             time.sleep(step_pause_sec)
 
-    node.get_logger().info("All MTC pick/place steps completed.")
+    if start_block_index >= n_pairs:
+        node.get_logger().info("No MTC pick/place steps were run (empty run).")
+    elif start_block_index > 0:
+        node.get_logger().info("All remaining MTC pick/place steps completed.")
+    else:
+        node.get_logger().info("All MTC pick/place steps completed.")
     rc = _run_arm_ready_action(
         node,
         ready_client,
