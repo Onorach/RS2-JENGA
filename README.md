@@ -1,192 +1,126 @@
-# RS2-JENGA
+# Project JENGA: The Robotic Solver
 
-ROS2 workspace for controlling a UR3e robot in Jenga manipulation tasks. Supports simulation (Gazebo) and real hardware, with motion planning via MoveIt2 or RMRC (Resolved Motion Rate Control).
+## Overview
 
-## Package Structure
+Project JENGA addresses two classic frustrations: finding a worthy Jenga opponent and enduring the tedious rebuild after every game. The solution pairs an Intel RealSense RGB-D camera with a UR3/UR3e collaborative robot to perceive, pick, and place blocks with precision — no human interaction required.
 
-| Package               | Description                                                                 |
-|-----------------------|-----------------------------------------------------------------------------|
-| `ur3e_controller`     | Joint trajectory control, simulation launch files, demo nodes, e-stop      |
-| `motion_planning`     | Pose goals, RMRC, exclusion zones, MoveIt2, **MTC** stack launch and Python clients |
-| `jenga_interfaces`    | ROS 2 actions and services for Jenga / MTC                                   |
-| `mtc_jenga_servers`   | C++ MoveIt Task Constructor action servers (pick/place, extract, probe, arm ready) |
+---
 
-## Requirements
+## Key Features / Subsystems
 
-- ROS2 Humble (Ubuntu 22.04)
-- For simulation: Gazebo Classic, `ur_description`, `ur_moveit_config`
-- For hardware: `ur_robot_driver`, UR3e in external control mode
+| Subsystem | Description |
+|---|---|
+| **Subsystem 1 — Perception and Mapping** | Accurately perceives Jenga block locations and the overall tower structure using a RealSense camera. |
+| **Subsystem 2 — Motion Planning and Control** | Plans safe robot paths to ensure movement does not destabilise or collapse the tower. |
+| **Subsystem 3 — Interaction and Execution** | Provides operator control via a GUI, including robot state monitoring, target block selection, and safety overrides. |
 
-## Build
+---
+
+## Dependencies
+
+### Hardware
+
+- **Robot:** UR3 / UR3e Collaborative Robot
+- **Camera:** Intel RealSense Camera
+- **Gripper:** OnRobot Gripper
+- **Miscellaneous:** Ethernet cable, Jenga game set, and a laptop with an Ethernet port
+
+### Software
+
+- **Operating System:** Linux
+- **Robotic Framework:** ROS2 (Humble)
+- **Version Control:** GitHub
+- **Libraries:** `Tkinter`, `OpenCV`, `CvBridge`, `PIL/Pillow`, `std_srvs`
+
+---
+
+## Installation
+
+### Hardware Setup
+
+1. Mount the Intel RealSense Camera using the bracket to achieve a 3rd-person viewing position overlooking the work area.
+2. Attach the OnRobot Gripper to the end of the UR3/UR3e robot arm.
+3. Connect the robot to the laptop via Ethernet cable.
+
+### Software Setup
 
 ```bash
-cd ~/ros2_ws
-source /opt/ros/humble/setup.bash
-colcon build --packages-select ur3e_controller jenga_interfaces mtc_jenga_servers motion_planning
+# Clone the repository
+git clone https://github.com/Onorach/RS2-JENGA.git
+cd RS2-JENGA
+
+# Install dependencies and build
+rosdep install --from-paths src --ignore-src -r -y
+colcon build --symlink-install
 source install/setup.bash
 ```
 
 ---
 
-## Start the Environment
+## Running the System
 
-Choose **one** option below.
+Each command below must be run in a **separate terminal** after sourcing the workspace (`source install/setup.bash`).
 
-### Option 1: Simulation (Gazebo)
-
-**Using packages in this workspace:**
-
+**Step 1 — Launch the RealSense Camera Node:**
 ```bash
-# Gazebo sim + RViz
-ros2 launch ur3e_controller ur3e_sim_control.launch.py
-
-# Gazebo + MoveIt (planning in RViz)
-ros2 launch ur3e_controller ur3e_sim_moveit.launch.py
+ros2 launch realsense2_camera rs_launch.py \
+  depth_module.depth_profile:=640x480x30 \
+  rgb_camera.color_profile:=640x480x30
 ```
 
-**Or using Universal Robots Gazebo package** (if installed):
-
+**Step 2 — Launch Vision Processing (Perception):**
 ```bash
-ros2 launch ur_simulation_gazebo ur_sim_moveit.launch.py
+python3 src/perception/play_live.py
 ```
 
-*Note: The upstream launch may default to UR5e; configure it for UR3e if needed.*
-
-### Option 2: Real Robot
-
-#### 1. Prepare the robot on the tablet
-
-- Press the red button (power off) on the bottom left; if first time, click "confirm configuration".
-- Press "On", then "Start" when available.
-- Press "Exit".
-- Navigate to **Installation -> Urcaps -> External Control**
-- Input laptop IP.
-- Navigate to **Program → Urcaps**.
-- Press **External Control** once.
-- Play "robot by ace".
-
-#### 2. Launch driver and RViz
-
+**Step 3 — Launch the JENGA Interface (GUI):**
 ```bash
-source /opt/ros/humble/setup.bash
-ros2 launch ur_robot_driver ur_control.launch.py ur_type:=ur3e robot_ip:=192.168.56.101 launch_rviz:=true
+python3 src/interaction_execution/GUI.py
 ```
 
-#### 3. Start external control on the tablet
+### Expected Outcome
 
-- Press the start/pause button (bottom right, left of "Simulation").
-- Press **Play from selection #: Control by Desktop**.
-
-#### 4. Shutdown when finished
-
-- Press the green button (normal mode).
-- Press the red "Off" button.
-- Power off the tablet; choose "do not save" if prompted.
-
-#### 5. Real robot + MoveIt motion planning
-
-After completing steps 1-3 above (driver running, external control active), open a **second terminal** to launch MoveIt and the motion planning stack together:
-
-```bash
-source /opt/ros/humble/setup.bash
-source ~/ros2_ws/install/setup.bash
-ros2 launch ur3e_controller ur3e_hw_moveit.launch.py planner:=moveit
-```
-
-Available planners: `moveit` (OMPL), `moveit_cartesian` (Cartesian straight-line + OMPL fallback), `rmrc` (RMRC, no MoveIt move_group).
-
-Then send a goal pose:
-
-```bash
-ros2 topic pub --once /goal_pose geometry_msgs/msg/PoseStamped \
-  "{header: {frame_id: 'base_link'}, pose: {position: {x: 0.3, y: 0.0, z: 0.4}, orientation: {w: 1.0}}}"
-```
-
-*Note: On real hardware the driver uses `scaled_joint_trajectory_controller` (respects the teach-pendant speed slider). The `ur3e_hw_moveit.launch.py` launch file handles this override automatically.*
+The GUI will launch with a banner titled **"JENGA Tower Interface"**, displaying:
+- A live colour camera feed
+- A robot state string (defaults to `"No Robot State received"`)
+- A sidebar containing **Gripper Overrides**, **Next Goal** selection, and the **ESTOP** button
 
 ---
 
-## Running Demos
+## Subsystem 3: Interaction and Execution
 
-### Joint trajectory demo
+### Purpose
 
-After starting the robot (sim or hardware):
+Acts as the central command hub for the operator to monitor robot status, select the next target block, and trigger emergency stops.
 
-```bash
-source install/setup.bash
-ros2 run ur3e_controller move_ur3e_demo
-# or
-ros2 run ur3e_controller initials_demo
-```
+### Key Topics, Services & Files
 
-### Motion planning — simulation (pose goals)
+| Type | Name | Detail |
+|---|---|---|
+| **Files** | `GUI.py` | Main interface |
+| | `interaction_node` | ROS2 node backing the GUI |
+| **Published Topics** | `/ee_override_array` | `Int8MultiArray` — gripper state overrides |
+| | `/selected_goal` | `String/JSON` — currently selected block target |
+| **Subscribed Topics** | `/camera/camera/color/image_raw` | Live camera feed |
+| | `/robot_state` | Robot status strings |
+| | `/top_layer_state` | Parsed tower JSON data |
+| **Services** | `/estop` | `std_srvs/srv/SetBool` — halts all arm movement |
 
-1. Start the simulation with MoveIt2 (e.g. `ur3e_sim_moveit.launch.py`).
-2. Launch the motion planning stack:
+### Inputs & Outputs
 
-```bash
-ros2 launch motion_planning motion_planning.launch.py
-```
+- **Inputs:** Camera frames, robot status strings, parsed tower JSON data
+- **Outputs:** `/estop` service calls to halt the robot; published arrays for gripper state overrides
 
-3. Send a goal pose:
+### Independent Testing
 
-```bash
-ros2 topic pub --once /goal_pose geometry_msgs/msg/PoseStamped \
-  "{header: {frame_id: 'base_link'}, pose: {position: {x: 0.3, y: 0.0, z: 0.4}, orientation: {w: 1.0}}}"
-```
-
-### Motion planning — real robot
-
-See [Option 2 step 5](#5-real-robot--moveit-motion-planning) above.
-
-### RMRC planning (headless simulation, no MoveIt GUI)
-
-```bash
-ros2 launch ur3e_controller headless_moveit.launch.py planner:=rmrc
-```
-
-Then send goal poses as above, or run:
-
-```bash
-ros2 run motion_planning test_rmrc_pose
-```
+1. **End-Effector Override** — Click `"Override to closed/opened"` and observe the robot end-effector move in simulation or on the physical arm.
+2. **Camera Feed** — Change something in the camera's field of view and confirm the live feed updates inside the GUI.
+3. **Goal Selection** — Click a block button in the **Next Goal** section and verify the goal position description updates on the GUI.
+4. **Software ESTOP** — Click the ESTOP button and confirm the Robot State reflects the stop and that arm movement has paused in simulation or real life.
 
 ---
 
-## UR3e + OnRobot RG2 (ur_onrobot) and MoveIt Task Constructor (MTC)
+## Known Limitations
 
-Build `jenga_interfaces`, `mtc_jenga_servers`, `motion_planning`, and the `ur_onrobot_*` packages, source the workspace, and install `moveit_task_constructor` for your distro if not already available.
-
-**Option A — three terminals (manual order)**
-
-1. Driver + mock or hardware:  
-   `ros2 launch ur_onrobot_control start_robot.launch.py ur_type:=ur3e onrobot_type:=rg2 use_fake_hardware:=true launch_rviz:=false`
-2. MoveIt:  
-   `ros2 launch ur_onrobot_moveit_config ur_onrobot_moveit.launch.py ur_type:=ur3e onrobot_type:=rg2 launch_rviz:=true launch_servo:=false`
-3. Exclusion zones + e-stop + MTC server:  
-   `ros2 launch motion_planning motion_planning.launch.py planner:=mtc mtc_server_mode:=single_pose joint_trajectory_action:=/scaled_joint_trajectory_controller/follow_joint_trajectory publish_world_to_base_tf:=true base_height:=0.0 base_yaw:=0.0`
-
-**Option B — one launch (delayed motion_planning for move_group warm-up)**
-
-`ros2 launch motion_planning ur_onrobot_mtc_bringup.launch.py`
-
-Tweak `use_fake_hardware`, `robot_ip`, `base_height` / `base_yaw` for the real base pose, and `motion_planning_delay_sec` as needed.
-
-**Six-layer Jenga (parametric 18 pick–place steps)** after the stack and action server are up:
-
-`ros2 run motion_planning jenga_tower_mtc_sequencer --ros-args -p pre_wait_sec:=8.0`
-
-Edit [`motion_planning/config/jenga_tower_mtc_layout.yaml`](src/motion_planning/config/jenga_tower_mtc_layout.yaml) for stock and tower frame positions.
-
-To **instantly** place Jenga block collision objects in the assembled tower or stock layout in MoveIt (no robot motion), call `set_jenga_blocks_layout` on `jenga_blocks_scene` with empty `block_indices` and `target_layout: "tower"` or `"stock"`. Alternatively, launch with `jenga_blocks_startup_layout:=tower` or `:=stock`. This only updates the planning scene, not Gazebo or hardware.
-
-For **all action names**, **CLI smoke tests**, **sequencers**, `mtc_server_mode`, and planning-scene services (`protrude_jenga_block`, etc.), see the MoveIt Task Constructor section in [motion_planning/README.md](src/motion_planning/README.md).
-
----
-
-## Documentation
-
-- [ur3e_controller](src/ur3e_controller/README.md) – joint control, launch files, move client API
-- [motion_planning](src/motion_planning/README.md) – pose goals, RMRC, exclusion zones, MoveIt2 integration, **MTC runbook** (actions, tests, sequencers)
-- [jenga_interfaces](src/jenga_interfaces/README.md) – action and service definitions
-- [mtc_jenga_servers](src/mtc_jenga_servers/README.md) – MTC C++ servers and standalone launches
+- **Service Dependency:** The ESTOP button will report `"Service not available"` if the motion control node providing the `/estop` server is not running.
+- **USB 3.0 Requirement:** High-resolution RealSense streams require a USB 3.0 connection to avoid frame drop timeouts.
