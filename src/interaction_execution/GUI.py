@@ -80,16 +80,16 @@ class RealSenseCameraNode(Node):
         try:
             self.top_layer_data = json.loads(msg.data)
         except Exception as e:
-            self.get_logger().error(f"Failed to parse top layer JSON: {e}")
+            self.get_logger().error(f"Failed to parse tower data JSON: {e}")
 
     def publish_override(self, boolean_array):
         msg = Int8MultiArray()
         msg.data = [int(val) for val in boolean_array]
         self.override_pub.publish(msg)
 
-    def publish_goal(self, goal_array):
+    def publish_goal(self, goal_matrix):
         msg = String()
-        msg.data = json.dumps(goal_array)
+        msg.data = json.dumps(goal_matrix)
         self.goal_pub.publish(msg)
 
     def call_estop_service(self, state: bool):
@@ -100,7 +100,6 @@ class RealSenseCameraNode(Node):
         
         request = SetBool.Request()
         request.data = state
-        # call_async prevents the GUI from hanging while waiting for robot response
         self.estop_client.call_async(request)
         self.get_logger().info(f"Service Call Sent: /estop data={state}")
 
@@ -112,11 +111,15 @@ class JengaInterfaceApp:
         self.root.configure(bg=COLOUR_BLACK)
 
         self.ee_override_array = [False, False, True] 
-        self.selected_goal_data = [] 
         self.estop_active = False 
         
+        # Sequence Matrix state machine tracking
+        self.sequence_state = "WAITING_PICK"  # WAITING_PICK, WAITING_PLACE, COMPLETE
+        self.pick_selection = None            # [Block ID, Layer, Position]
+        self.place_selection = None           # [Block ID, Layer, Position]
+        
         self.buttons = {}
-        self.goal_buttons = []
+        self.goal_buttons = {}  # Map keyed by (gui_layer, position_idx) -> Button widget
         self.estop_button = None 
         self.cam_label = None
         self.state_label = None
@@ -152,34 +155,50 @@ class JengaInterfaceApp:
                                     bg=COLOUR_LIGHT_GRAY, fg="blue", font=("Arial", 12, "italic"))
         self.state_label.pack(side=tk.LEFT, padx=5)
 
-        ctrl_container = tk.Frame(main_frame, bg=COLOUR_LIGHT_GRAY, width=280)
+        ctrl_container = tk.Frame(main_frame, bg=COLOUR_LIGHT_GRAY, width=320)
         ctrl_container.pack(side=tk.RIGHT, fill=tk.Y, padx=5, pady=5)
         
         # --- Gripper Override Section ---
-        tk.Label(ctrl_container, text="Gripper Override", bg=COLOUR_LIGHT_GRAY, font=("Arial", 14, "bold")).pack(pady=10)
+        tk.Label(ctrl_container, text="Gripper Override", bg=COLOUR_LIGHT_GRAY, font=("Arial", 14, "bold")).pack(pady=5)
         btns = [("close", "Override to\nclosed", 0), ("open", "Override to\nopened", 1), ("release", "Release\nOverride", 2)]
         for key, txt, idx in btns:
-            b = tk.Button(ctrl_container, text=txt, bg=COLOUR_YELLOW, fg=COLOUR_BLACK, font=("Arial", 11), width=18, height=4, command=lambda i=idx: self.handle_press(i))
-            b.pack(pady=5)
+            b = tk.Button(ctrl_container, text=txt, bg=COLOUR_YELLOW, fg=COLOUR_BLACK, font=("Arial", 10), width=18, height=2, command=lambda i=idx: self.handle_press(i))
+            b.pack(pady=3)
             self.buttons[idx] = b
 
-        # --- Next Goal Section ---
-        tk.Label(ctrl_container, text="Next Goal", bg=COLOUR_LIGHT_GRAY, font=("Arial", 14, "bold")).pack(pady=(25, 5))
+        # --- 6 Layer Tower Selection Grid ---
+        tk.Label(ctrl_container, text="Tower Layers", bg=COLOUR_LIGHT_GRAY, font=("Arial", 14, "bold")).pack(pady=(15, 2))
+        
         goal_btn_frame = tk.Frame(ctrl_container, bg=COLOUR_LIGHT_GRAY)
-        goal_btn_frame.pack(pady=5)
-        for i in range(3):
-            btn = tk.Button(goal_btn_frame, bg=COLOUR_WHITE, width=6, height=5, relief="raised", command=lambda pos=i: self.select_goal(pos))
-            btn.pack(side=tk.LEFT, padx=5)
-            self.goal_buttons.append(btn)
-        self.goal_status_label = tk.Label(ctrl_container, text="Waiting for target selection...", bg=COLOUR_LIGHT_GRAY, fg=COLOUR_BLACK, font=("Arial", 11, "italic"), wraplength=250, justify="center")
+        goal_btn_frame.pack(pady=2)
+
+        # Build grid from top down: GUI Layer 6 down to Layer 1
+        for gui_layer in range(6, 0, -1):
+            row_frame = tk.Frame(goal_btn_frame, bg=COLOUR_LIGHT_GRAY)
+            row_frame.pack(pady=2)
+            
+            # Layer identifier label on the left
+            tk.Label(row_frame, text=f"L{gui_layer}:", bg=COLOUR_LIGHT_GRAY, font=("Arial", 10, "bold"), width=4).pack(side=tk.LEFT)
+            
+            # Position indices: 1 = left, 2 = middle, 3 = right
+            for pos_idx in range(1, 4):
+                btn = tk.Button(row_frame, text="000", bg=COLOUR_WHITE, fg=COLOUR_BLACK, font=("Arial", 9, "bold"),
+                                width=6, height=2, relief="raised", 
+                                command=lambda l=gui_layer, p=pos_idx: self.select_block_sequence(l, p))
+                btn.pack(side=tk.LEFT, padx=3)
+                self.goal_buttons[(gui_layer, pos_idx)] = btn
+
+        self.goal_status_label = tk.Label(ctrl_container, text="Select next block to be picked up", 
+                                          bg=COLOUR_LIGHT_GRAY, fg=COLOUR_BLACK, font=("Arial", 10, "italic"), 
+                                          wraplength=280, justify="center")
         self.goal_status_label.pack(pady=10)
 
         # --- ESTOP Section ---
-        tk.Label(ctrl_container, text="ESTOP", bg=COLOUR_LIGHT_GRAY, font=("Arial", 14, "bold")).pack(pady=(20, 5))
+        tk.Label(ctrl_container, text="ESTOP", bg=COLOUR_LIGHT_GRAY, font=("Arial", 14, "bold")).pack(pady=(10, 2))
         self.estop_button = tk.Button(ctrl_container, text="OFF", bg=COLOUR_BLACK, fg=COLOUR_WHITE, 
-                                      font=("Arial", 12, "bold"), width=18, height=3, 
+                                      font=("Arial", 12, "bold"), width=18, height=2, 
                                       command=self.toggle_estop)
-        self.estop_button.pack(pady=5)
+        self.estop_button.pack(pady=3)
 
     def toggle_estop(self):
         """Toggles the ESTOP state and calls the ROS service"""
@@ -188,8 +207,6 @@ class JengaInterfaceApp:
             self.estop_button.config(text="ON", bg=COLOUR_RED)
         else:
             self.estop_button.config(text="OFF", bg=COLOUR_BLACK)
-        
-        # Calling Service instead of publishing a message
         self.ros_node.call_estop_service(self.estop_active)
 
     def handle_press(self, index):
@@ -205,23 +222,59 @@ class JengaInterfaceApp:
         self.refresh_buttons()
         self.ros_node.publish_override(self.ee_override_array)
 
-    def select_goal(self, pos):
+    def _get_block_id_from_memory(self, gui_layer, pos_idx):
+        """Helper to lookup active block ID string from the node's stored JSON data"""
         if not self.ros_node.top_layer_data:
-            self.goal_status_label.config(text="No tower data received yet.", fg=COLOUR_RED)
-            return
+            return "000"
+        
         data = self.ros_node.top_layer_data
-        layer_idx = data.get("layer", "?")
-        blocks = data.get("blocks", [])
-        pos_names = ["left", "middle", "right"]
-        if pos < len(blocks):
-            block = blocks[pos]
-            if block.get("present", False) and block.get("colour") != "unknown":
-                pos_name = pos_names[pos]
-                self.selected_goal_data = [layer_idx, pos_name]
-                self.goal_status_label.config(text=f"The {pos_name} block in layer {layer_idx} will be the next goal.", fg="blue")
-                self.ros_node.publish_goal(self.selected_goal_data)
-            else:
-                self.goal_status_label.config(text=f"Invalid: No block present at the {pos_names[pos]} position.", fg=COLOUR_RED)
+        # Extract layers list (handle if raw list or wrapped dict)
+        layers_list = data if isinstance(data, list) else data.get("layers", data.get("tower", []))
+        
+        # Perception uses index 0 for the top layer, map GUI Layer (1-6) -> Perception Index (0-5)
+        percep_idx = 6 - gui_layer
+        
+        if 0 <= percep_idx < len(layers_list):
+            layer_data = layers_list[percep_idx]
+            if isinstance(layer_data, dict):
+                blocks = layer_data.get("blocks", [])
+                block_idx = pos_idx - 1  # 1-3 to 0-2
+                if 0 <= block_idx < len(blocks):
+                    b_id = blocks[block_idx].get("id", "000")
+                    return str(b_id) if b_id is not None and b_id != "" else "000"
+        return "000"
+
+    def select_block_sequence(self, gui_layer, pos_idx):
+        """State machine workflow executing sequence configurations"""
+        block_id = self._get_block_id_from_memory(gui_layer, pos_idx)
+        
+        # If sequence was previously complete, clicking resets state machine to Pick Selection
+        if self.sequence_state == "COMPLETE":
+            self.sequence_state = "WAITING_PICK"
+            self.pick_selection = None
+            self.place_selection = None
+
+        if self.sequence_state == "WAITING_PICK":
+            self.pick_selection = [block_id, gui_layer, pos_idx]
+            self.sequence_state = "WAITING_PLACE"
+            self.goal_status_label.config(
+                text=f"Block {pos_idx} on layer {gui_layer} has been selected. Pick placement position", 
+                fg="blue"
+            )
+            
+        elif self.sequence_state == "WAITING_PLACE":
+            self.place_selection = [block_id, gui_layer, pos_idx]
+            self.sequence_state = "COMPLETE"
+            
+            p_id, p_lay, p_pos = self.pick_selection
+            self.goal_status_label.config(
+                text=f"Block {p_pos} on layer {p_lay} will be placed at position {pos_idx} on layer {gui_layer}. Select another block to reset the next sequence", 
+                fg="green"
+            )
+            
+            # Publish full sequence matrix array [[pick], [place]] over /selected_goal
+            full_sequence_matrix = [self.pick_selection, self.place_selection]
+            self.ros_node.publish_goal(full_sequence_matrix)
 
     def refresh_buttons(self):
         for idx, active in enumerate(self.ee_override_array):
@@ -230,6 +283,7 @@ class JengaInterfaceApp:
             self.buttons[idx].config(bg=color, fg=text_color, activebackground=color)
 
     def update_gui_loop(self):
+        # Update Image Frame window
         if self.ros_node.new_image_flag:
             with self.ros_node.image_lock:
                 frame = self.ros_node.cv_image.copy()
@@ -239,18 +293,39 @@ class JengaInterfaceApp:
             img_tk = ImageTk.PhotoImage(image=im_pil)
             self.cam_label.config(image=img_tk)
             self.cam_label.image = img_tk
+            
         if self.ros_node.robot_state_str:
             self.state_label.config(text=self.ros_node.robot_state_str, font=("Arial", 12, "bold"), fg=COLOUR_BLACK)
+            
+        # Update full tower matrix colors and ID text labels dynamically
         if self.ros_node.top_layer_data:
-            blocks = self.ros_node.top_layer_data.get("blocks", [])
-            for i in range(3):
-                target_color = COLOUR_WHITE
-                if i < len(blocks):
-                    block = blocks[i]
-                    if block.get("present", False):
-                        c_name = block.get("colour", "unknown")
-                        target_color = BLOCK_COLOURS.get(c_name, COLOUR_WHITE)
-                self.goal_buttons[i].config(bg=target_color, activebackground=target_color)
+            data = self.ros_node.top_layer_data
+            layers_list = data if isinstance(data, list) else data.get("layers", data.get("tower", []))
+            
+            for gui_layer in range(1, 7):
+                percep_idx = 6 - gui_layer
+                for pos_idx in range(1, 4):
+                    block_idx = pos_idx - 1
+                    target_color = COLOUR_WHITE
+                    block_id_str = "000"
+                    
+                    if 0 <= percep_idx < len(layers_list):
+                        layer_data = layers_list[percep_idx]
+                        if isinstance(layer_data, dict):
+                            blocks = layer_data.get("blocks", [])
+                            if block_idx < len(blocks):
+                                block = blocks[block_idx]
+                                if block.get("present", False):
+                                    c_name = block.get("colour", "unknown")
+                                    target_color = BLOCK_COLOURS.get(c_name, COLOUR_WHITE)
+                                b_id = block.get("id", "000")
+                                if b_id is not None and b_id != "":
+                                    block_id_str = str(b_id)
+                                    
+                    btn = self.goal_buttons.get((gui_layer, pos_idx))
+                    if btn:
+                        btn.config(text=block_id_str, bg=target_color, activebackground=target_color)
+                        
         self.root.after(33, self.update_gui_loop)
 
 def main():

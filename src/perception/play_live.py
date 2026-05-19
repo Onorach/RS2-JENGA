@@ -5,14 +5,15 @@ Live mode for Jenga perception from a RealSense camera via ROS topics.
 
 Usage
 -----
-    python3 play_live.py [--no-ros-nodes]
+    python3 play_live.py [--setup] [--no-ros-nodes]
 """
-import cv2
+import argparse
 
 from play_runtime import run_subscribe
+from search_area_setup import run_search_area_setup_subscribe
 
 COLOR_TOPIC = "/camera/camera/color/image_raw"
-DEPTH_TOPIC_CANDIDATES = [
+DEPTH_TOPIC = [
     "/camera/camera/aligned_depth_to_color/image_raw",
     "/camera/aligned_depth_to_color/image_raw",
     "/camera/camera/depth/image_rect_raw",
@@ -21,8 +22,18 @@ DEPTH_TOPIC_CANDIDATES = [
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Live Jenga perception from ROS camera topics.")
+    parser.add_argument(
+        "--setup",
+        action="store_true",
+        help="Open search-area calibration (live view + sliders, Set/Reset/Cancel).",
+    )
+    args = parser.parse_args()
 
-    run_subscribe(COLOR_TOPIC, DEPTH_TOPIC_CANDIDATES)
+    if args.setup:
+        run_search_area_setup_subscribe(COLOR_TOPIC, DEPTH_TOPIC)
+    else:
+        run_subscribe(COLOR_TOPIC, DEPTH_TOPIC)
 
 
 if __name__ == "__main__":

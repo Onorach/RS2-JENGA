@@ -1,7 +1,7 @@
 """
 box_percentages.py
 ------------------
-Per-cell colour percentages used by the layer analysis pipeline.
+Per-cell colour percentages and single-layer tower analysis.
 
 Standalone use
 --------------
@@ -25,15 +25,31 @@ except ImportError:
     _ROS_AVAILABLE = False
     Node = object
 
-from colour_identification import classify_hsv
-from perception_config import HSV_RANGES, COLOUR_BGR
-
-DOMINANT_PCT      = 55.0   # Above this → side-on face.
-MIN_COLOUR_PCT    = 10.0   # Colour must cover at least this % of the cell to count.
-MIN_COLOUR_PIXELS = 50     # Absolute floor regardless of cell size.
+from colour_identification import classify_frame, classify_hsv, compute_roi
+from perception_config import HSV_RANGES, COLOUR_BGR, DIVIDE_LINE
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Grid cell definitions — full-frame pixel coords [TL, TR, BL, BR]
+# ---------------------------------------------------------------------------
+from perception_config import HSV_RANGES, COLOUR_BGR, DIVIDE_LINE, GRID_CORNERS
+
+LAYER_CELLS: list[list[dict]] = [
+    [
+        {"name": "left_cell",  "corners": [GRID_CORNERS[r][0], GRID_CORNERS[r][1], GRID_CORNERS[r+1][0], GRID_CORNERS[r+1][1]]},
+        {"name": "right_cell", "corners": [GRID_CORNERS[r][1], GRID_CORNERS[r][2], GRID_CORNERS[r+1][1], GRID_CORNERS[r+1][2]]},
+    ]
+    for r in range(len(GRID_CORNERS) - 1)
+    if None not in GRID_CORNERS[r] and None not in GRID_CORNERS[r + 1]
+]
+
+GRID_CELLS: list[dict] = [cell for layer in LAYER_CELLS for cell in layer]
+
+DOMINANT_PCT = 55.0       # above this → side-on face
+MIN_COLOUR_PCT = 10.0     # colour must cover at least this % of the cell to count
+MIN_COLOUR_PIXELS = 50    # absolute floor regardless of cell size
+
+# ---------------------------------------------------------------------------
+# Core helpers
 # ---------------------------------------------------------------------------
 
 def _quad_mask(shape: tuple[int, int], corners: list[tuple[int, int]]) -> np.ndarray:
@@ -45,12 +61,23 @@ def _quad_mask(shape: tuple[int, int], corners: list[tuple[int, int]]) -> np.nda
     return mask.astype(bool)
 
 
+def _divide_x_per_row(ih: int) -> np.ndarray:
+    """Return an (ih,) array of interpolated divide-line x values per image row."""
+    (lx1, ly1), (lx2, ly2) = DIVIDE_LINE
+    t = np.clip((np.arange(ih) - ly1) / (ly2 - ly1), 0.0, 1.0)
+    return (lx1 + t * (lx2 - lx1)).astype(np.float32)
+
+
 # ---------------------------------------------------------------------------
-# Per-cell colour percentages
+# Percentages
 # ---------------------------------------------------------------------------
 
-def compute_percentages(bgr_frame: np.ndarray, cells: list[dict]) -> list[dict]:
-    """Return per-cell colour percentage dicts for each cell."""
+def compute_percentages(bgr_frame: np.ndarray,
+                        cells: list[dict] | None = None) -> list[dict]:
+    """Return per-cell colour percentage dicts for each cell in cells."""
+    if cells is None:
+        cells = GRID_CELLS
+
     ih, iw = bgr_frame.shape[:2]
     hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
 
@@ -81,8 +108,27 @@ def compute_percentages(bgr_frame: np.ndarray, cells: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# Per-cell colour statistics used by layer_analysis
+# Layer analysis
 # ---------------------------------------------------------------------------
+
+def _colour_centroids(bgr_frame: np.ndarray, cell: dict) -> dict[str, float]:
+    ih, iw = bgr_frame.shape[:2]
+    hsv      = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
+    quad     = _quad_mask((ih, iw), cell["corners"])
+    divide_x = _divide_x_per_row(ih)
+    total    = int(quad.sum())
+
+    centroids: dict[str, float] = {}
+    for colour in HSV_RANGES:
+        mask = quad & classify_hsv(hsv, colour)
+        ys, xs = np.where(mask)
+        if len(xs) == 0:
+            continue
+        if len(xs) / total * 100 < MIN_COLOUR_PCT:
+            continue
+        centroids[colour] = float(np.mean(xs)) - float(divide_x[int(np.mean(ys))])
+    return centroids
+
 
 def colour_mean_x_in_cell(
     bgr_frame: np.ndarray,
@@ -92,19 +138,35 @@ def colour_mean_x_in_cell(
     depth_tolerance_mm: float = 40.0,
 ) -> dict[str, float]:
     """
-    Mean image-space x-coordinate per colour inside cell.
+    Mean image-space x-coordinate per colour inside ``cell``.
 
-    Only colours covering at least MIN_COLOUR_PCT (or MIN_COLOUR_PIXELS) are
-    returned.  Used to assign blocks to lanes left-to-right on the end-on face.
+    Only colours covering at least MIN_COLOUR_PCT of the cell (or MIN_COLOUR_PIXELS
+    absolute) are returned.  Used to assign blocks to lanes left-to-right on the
+    end-on face.
 
-    Optional depth gating
-    ---------------------
-    When depth_frame and target_depth_mm are supplied, each colour's pixel set
-    is filtered to pixels within target_depth_mm ± depth_tolerance_mm.  This
-    removes side-face pixels from adjacent layers that share the same colour
-    but sit at a different depth, which would otherwise bias mean-x outward.
-    The percentage threshold is evaluated on the un-gated mask so partially-
-    visible back blocks are not inadvertently rejected.
+    Depth gating (optional)
+    -----------------------
+    When ``depth_frame`` and ``target_depth_mm`` are both supplied, each colour's
+    pixel set is further filtered to pixels whose depth lies within
+    ``target_depth_mm ± depth_tolerance_mm``.  This removes side-face pixels from
+    adjacent layers that share the same colour but sit at a different depth,
+    which would otherwise bias the mean-x toward the outer edge of the cell.
+
+    The percentage threshold is evaluated on the *un-gated* mask so that genuine
+    but partially-occluded back blocks are not inadvertently rejected.
+
+    Parameters
+    ----------
+    bgr_frame         : full-resolution BGR image
+    cell              : cell dict with "corners" key ([TL, TR, BL, BR] pixel coords)
+    depth_frame       : aligned depth image in mm (same shape as bgr_frame), or None
+    target_depth_mm   : expected depth of this layer's blocks in mm, or None
+    depth_tolerance_mm: half-width of the depth acceptance window (default 40 mm,
+                        which spans ±2× the 17.7 mm block step at 45°)
+
+    Returns
+    -------
+    {colour: mean_x_pixels, ...}  — only colours that pass the threshold
     """
     ih, iw = bgr_frame.shape[:2]
     hsv    = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
@@ -113,6 +175,7 @@ def colour_mean_x_in_cell(
     if total == 0:
         return {}
 
+    # Build depth-gate mask once (avoid recomputing per colour)
     if depth_frame is not None and target_depth_mm is not None:
         df = depth_frame.astype(np.float32)
         depth_gate: np.ndarray | None = (
@@ -129,18 +192,24 @@ def colour_mean_x_in_cell(
         colour_mask = quad & classify_hsv(hsv, colour)
 
         n_colour = int(colour_mask.sum())
+        if n_colour == 0:
+            continue
+
+        # Threshold on un-gated mask so partially-visible back blocks aren't lost
         if n_colour < MIN_COLOUR_PIXELS:
             continue
         if n_colour / total * 100.0 < MIN_COLOUR_PCT:
             continue
 
+        # Apply depth gate for mean-x only (doesn't affect presence detection)
         if depth_gate is not None:
             gated = colour_mask & depth_gate
             _, gated_xs = np.where(gated)
             if len(gated_xs) >= MIN_COLOUR_PIXELS:
                 out[colour] = float(np.mean(gated_xs))
                 continue
-            # Depth gate removed too many pixels — fall back to un-gated mean.
+            # Depth gate removed too many pixels (invalid depth region) — fall back
+            # to un-gated mean so the block is still localised, just less accurately
 
         _, xs = np.where(colour_mask)
         out[colour] = float(np.mean(xs))
@@ -153,9 +222,9 @@ def colour_mean_depth_in_cell(
     depth_frame: np.ndarray,
     cell: dict,
 ) -> dict[str, float]:
-    """Median depth (mm) per colour inside a cell.  Uses eroded masks for stability."""
-    if depth_frame is None:
-        return {}
+    """
+    Median depth (mm) per colour inside a cell.  Uses eroded masks for stability.
+    """
     ih, iw = bgr_frame.shape[:2]
     hsv    = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
     quad   = _quad_mask((ih, iw), cell["corners"])
@@ -184,23 +253,58 @@ def colour_mean_depth_in_cell(
     return out
 
 
+def analyse_layer(bgr_frame: np.ndarray,
+                  left_result: dict, right_result: dict,
+                  left_cell: dict,  right_cell: dict) -> dict:
+    """
+    Determine orientation and block positions for one layer.
+    """
+    def _max_pct(result: dict) -> float:
+        pcts = [i["pct"] for c, i in result["colours"].items() if c != "none"]
+        return max(pcts, default=0.0)
+
+    left_dom  = _max_pct(left_result)  >= DOMINANT_PCT
+    right_dom = _max_pct(right_result) >= DOMINANT_PCT
+
+    if right_dom and not left_dom:
+        orientation, endon_cell = "left",  left_cell
+    elif left_dom and not right_dom:
+        orientation, endon_cell = "right", right_cell
+    else:
+        if _max_pct(left_result) <= _max_pct(right_result):
+            orientation, endon_cell = "left",  left_cell
+        else:
+            orientation, endon_cell = "right", right_cell
+
+    centroids = _colour_centroids(bgr_frame, endon_cell)
+    blocks = sorted(
+        [{"colour": c, "position": dist, "present": True}
+         for c, dist in centroids.items()],
+        key=lambda b: abs(b["position"])
+    )
+    return {"orientation": orientation, "blocks": blocks}
+
+
 # ---------------------------------------------------------------------------
 # Debug visualisation
 # ---------------------------------------------------------------------------
 
 def build_debug_image(bgr_frame: np.ndarray, results: list[dict],
-                      cells: list[dict]) -> np.ndarray:
-    ih, iw = bgr_frame.shape[:2]
-    hsv    = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
+                      cells: list[dict] | None = None) -> np.ndarray:
+    if cells is None:
+        cells = GRID_CELLS
+
+    ih, iw   = bgr_frame.shape[:2]
+    hsv      = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
 
     all_corners = [c for cell in cells for c in cell["corners"]]
-    margin = 40
+    margin  = 40
     min_x = max(0,  min(c[0] for c in all_corners) - margin)
     min_y = max(0,  min(c[1] for c in all_corners) - margin)
     max_x = min(iw, max(c[0] for c in all_corners) + margin)
     max_y = min(ih, max(c[1] for c in all_corners) + margin)
-    cw, ch = max_x - min_x, max_y - min_y
-    canvas = np.full((ch, cw, 3), 255, dtype=np.uint8)
+    cw, ch  = max_x - min_x, max_y - min_y
+    canvas  = np.full((ch, cw, 3), 255, dtype=np.uint8)
 
     for cell in cells:
         quad         = _quad_mask((ih, iw), cell["corners"])
@@ -217,7 +321,8 @@ def build_debug_image(bgr_frame: np.ndarray, results: list[dict],
         poly = np.array([(x - min_x, y - min_y) for x, y in [tl, tr, br, bl]], dtype=np.int32)
         cv2.polylines(canvas, [poly], True, (180, 180, 180), 1)
         for ox, oy in cell["corners"]:
-            cv2.circle(canvas, (ox - min_x, oy - min_y), 4, (30, 30, 30), -1)
+            lx, ly = ox - min_x, oy - min_y
+            cv2.circle(canvas, (lx, ly), 4, (30, 30, 30), -1)
 
     for i, (name, bgr) in enumerate(COLOUR_BGR.items()):
         ly = ch - (len(COLOUR_BGR) - i) * 16
@@ -249,3 +354,17 @@ class BoxPercentagesNode(Node):
         self._pub_pct.publish(pct_msg)
         self._pub_img.publish(
             self._bridge.cv2_to_imgmsg(build_debug_image(bgr, results), encoding="bgr8"))
+
+
+# ---------------------------------------------------------------------------
+# Entry points
+# ---------------------------------------------------------------------------
+
+def main_ros():
+    rclpy.init()
+    node = BoxPercentagesNode()
+    try:
+        rclpy.spin(node)
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
