@@ -10,7 +10,7 @@ TOWER_ANALYSIS = False
 BLOCK_ANALYSIS = True
 
 # Search area centre and fraction of the full frame
-SEARCH_AREA = (0.503, 0.526, 0.266, 0.467)
+SEARCH_AREA = (0.492, 0.553, 0.259, 0.388)
 
 # Crop margin around the search area
 SEARCH_AREA_MARGIN     = 0.10
@@ -43,8 +43,8 @@ CONTRAST_BOOST = 1.2
 # HSV ranges for colour identification
 HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
     "red": [
-        ((  0, 150, 140), ( 10, 255, 255)),
-        ((170, 150, 140), (179, 255, 255)),
+        ((  0, 150, 118), ( 10, 255, 255)),
+        ((170, 150, 118), (179, 255, 255)),
     ],
     "yellow": [
         (( 18, 120, 140), ( 39, 255, 255)),
@@ -56,7 +56,7 @@ HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] =
         (( 90, 171, 105), (110, 255, 255)),
     ],
     "purple": [
-        ((109,  34,  47), (140, 255, 255)),
+        ((109,  56,  37), (140, 255, 255)),
     ],
 }
 
@@ -93,12 +93,12 @@ POINT_VALID_SIDE_BAND_PCT   = 10.0
 POINT_VALID_CENTER_BAND_PCT = 15.0
 
 # Canny thresholds used on the colour-mask image.
-CANNY_MASK_LOW   = 30   # Lower = more edges.
-CANNY_MASK_HIGH  = 90  # Higher = fewer, stronger edges only.
+CANNY_MASK_LOW   = 5   # Lower = more edges.
+CANNY_MASK_HIGH  = 15  # Higher = fewer, stronger edges only.
 
 # Canny thresholds used on the original BGR image.
-CANNY_ORIGINAL_LOW  = 35
-CANNY_ORIGINAL_HIGH = 115
+CANNY_ORIGINAL_LOW  = 40
+CANNY_ORIGINAL_HIGH = 120
 
 # Width of the horizontal band (centred on the ROI) where Canny edges are
 # kept, as a percentage of ROI width. Edges outside this strip are zeroed
@@ -113,8 +113,8 @@ HOUGH_MASK_MAX_GAP    = 20  # Max gap for joining broken line segments.
 
 # Hough settings used for lines extracted from original-image edges.
 HOUGH_ORIGINAL_THRESHOLD  = 20
-HOUGH_ORIGINAL_MIN_LENGTH = 35
-HOUGH_ORIGINAL_MAX_GAP    = 8
+HOUGH_ORIGINAL_MIN_LENGTH = 40
+HOUGH_ORIGINAL_MAX_GAP    = 5
 
 MAX_HORIZ_DEG    = 30.0  # Max angle from horizontal to classify as horizontal.
 MAX_VERT_DEG     = 5.0   # Max deviation from 90° to classify as vertical.

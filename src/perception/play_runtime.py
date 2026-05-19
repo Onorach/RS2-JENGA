@@ -100,7 +100,7 @@ def _apply_boost(bgr: np.ndarray) -> np.ndarray:
 
 # Runtime-only history and timing controls for the live grid pipeline.
 EDGE_HISTORY_FRAMES         = 30
-POINTS_OVERLAY_PAUSE_FRAMES = 30
+POINTS_OVERLAY_PAUSE_FRAMES = 60
 GRID_POINTS_MAX_INPUT_LINES = 500
 
 # ---------------------------------------------------------------------------
