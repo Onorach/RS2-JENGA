@@ -317,6 +317,15 @@ def generate_launch_description():
         default_value="world",
         description="TF frame_id used for Jenga block collision objects (default: world).",
     )
+    jenga_blocks_startup_layout_arg = DeclareLaunchArgument(
+        "jenga_blocks_startup_layout",
+        default_value="none",
+        description=(
+            "If 'stock' or 'tower', jenga_blocks_scene publishes all block collision "
+            "objects at that layout after startup_delay_sec. If 'none' (default), "
+            "leave the planning scene unchanged on startup."
+        ),
+    )
     joint_secondary_pref_clip_arg = DeclareLaunchArgument(
         "joint_secondary_pref_clip",
         default_value="0.45",
@@ -436,6 +445,26 @@ def generate_launch_description():
     }
     ompl_pipeline_config["ompl"].update(_ompl_yaml)
 
+    # MTC servers call task.loadRobotModel(node_ptr) when a goal arrives, which uses
+    # RobotModelLoader to find the SRDF.  In this MoveIt2 build the QoS of move_group's
+    # /robot_description_semantic publisher does not match the RobotModelLoader subscriber,
+    # so the 10-second topic wait always times out and the server crashes.  Supplying the
+    # SRDF as an explicit node parameter avoids the topic entirely.
+    robot_description_semantic_content = Command(
+        [
+            PathJoinSubstitution([FindExecutable(name="xacro")]),
+            " ",
+            PathJoinSubstitution(
+                [FindPackageShare("ur_onrobot_moveit_config"), "srdf", "ur_onrobot.srdf.xacro"]
+            ),
+            " ",
+            "name:=ur_onrobot",
+            " ",
+            'prefix:=""',
+        ]
+    )
+    robot_description_semantic = {"robot_description_semantic": robot_description_semantic_content}
+
     pose_goal_node = Node(
         package=pkg_planning,
         executable="pose_goal_node",
@@ -538,14 +567,17 @@ def generate_launch_description():
     )
 
     # Common parameters shared by every MTC server (mtc_jenga_servers): velocity-scaling
-    # YAML + CLI overrides, IK kinematics, and the OMPL pipeline definition (required —
+    # YAML + CLI overrides, IK kinematics, the OMPL pipeline definition (required —
     # without it MTC's PipelinePlanner alphabetically falls back to CHOMP and breaks all
-    # Connect stages).
+    # Connect stages), and the SRDF (required — RobotModelLoader topic delivery is
+    # unreliable in this MoveIt2 build; passing it as a parameter avoids the 10-second
+    # timeout that otherwise crashes every server on its first goal).
     mtc_common_parameters = [
         mtc_velocity_scaling_yaml,
         mtc_velocity_scaling_ros_parameters(),
         robot_description_kinematics,
         ompl_pipeline_config,
+        robot_description_semantic,
     ]
 
     mtc_pick_place_server_node = Node(
@@ -613,6 +645,7 @@ def generate_launch_description():
             {
                 "layout_path": LaunchConfiguration("jenga_blocks_layout_path"),
                 "frame_id": LaunchConfiguration("jenga_blocks_frame_id"),
+                "initial_layout": LaunchConfiguration("jenga_blocks_startup_layout"),
             }
         ],
     )
@@ -681,6 +714,7 @@ def generate_launch_description():
         mtc_server_mode_arg,
         jenga_blocks_layout_path_arg,
         jenga_blocks_frame_id_arg,
+        jenga_blocks_startup_layout_arg,
         max_step_arg,
         jump_threshold_arg,
         cartesian_fraction_threshold_arg,

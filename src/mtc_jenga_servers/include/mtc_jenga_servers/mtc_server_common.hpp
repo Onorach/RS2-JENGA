@@ -13,10 +13,23 @@
 #include <moveit/trajectory_processing/time_optimal_trajectory_generation.h>
 #include <moveit_msgs/msg/collision_object.hpp>
 #include <rclcpp/logger.hpp>
+#include <rclcpp/node.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <shape_msgs/msg/solid_primitive.hpp>
 
 namespace mtc_jenga {
+
+/// Declare a parameter if not already declared, then return its current value.
+/// Use this instead of bare declare_parameter() when the node was constructed
+/// with automatically_declare_parameters_from_overrides(true), which may have
+/// pre-declared some parameters from params-file overrides.
+template<typename T>
+inline T param(rclcpp::Node* node, const std::string& name, const T& default_value) {
+  if (!node->has_parameter(name)) {
+    node->declare_parameter<T>(name, default_value);
+  }
+  return node->get_parameter(name).get_value<T>();
+}
 
 /// Terminal outcome for e-stop (and similar server-side stops). Uses `canceled()` only when the
 /// client requested cancel (`is_canceling()`); otherwise `abort()`, which matches ROS 2 action FSM
@@ -47,7 +60,8 @@ inline void applyBlockBoxAt(const std::string& block_id,
                             const double box_x,
                             const double box_y,
                             const double box_z,
-                            const double grasp_offset_m = 0.035) {
+                            const double grasp_offset_m = 0.035,
+                            const double probe_offset_m = -1.0) {
   moveit::planning_interface::PlanningSceneInterface psi;
   moveit_msgs::msg::CollisionObject co;
   co.id = block_id;
@@ -60,6 +74,7 @@ inline void applyBlockBoxAt(const std::string& block_id,
   // Define standard subframes in object-local coordinates.
   // Subframe naming convention follows MoveIt: usable frames become "<id>/<subframe>".
   const double half_len = 0.5 * box_x;
+  const double eff_probe = (probe_offset_m < 0.0) ? half_len : probe_offset_m;
 
   auto make_subframe_pose = [](const double dx, const double dy = 0.0, const double dz = 0.0) {
     geometry_msgs::msg::Pose p;
@@ -70,11 +85,14 @@ inline void applyBlockBoxAt(const std::string& block_id,
     return p;
   };
 
-  co.subframe_names = {"end_plus", "end_minus", "grasp_plus", "grasp_minus"};
+  co.subframe_names = {"end_plus", "end_minus", "grasp_plus", "grasp_minus",
+                       "probe_plus", "probe_minus"};
   co.subframe_poses = {make_subframe_pose(+half_len),
                        make_subframe_pose(-half_len),
                        make_subframe_pose(+grasp_offset_m),
-                       make_subframe_pose(-grasp_offset_m)};
+                       make_subframe_pose(-grasp_offset_m),
+                       make_subframe_pose(+eff_probe),
+                       make_subframe_pose(-eff_probe)};
 
   // ADD acts as "add or replace", which is robust for updating poses.
   co.operation = moveit_msgs::msg::CollisionObject::ADD;
