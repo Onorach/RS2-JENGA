@@ -93,7 +93,7 @@ class MtcExtractSideBlockServer : public rclcpp::Node {
     box_z_ = mtc_jenga::param<double>(this, "block_box_z", 0.015);
 
     plan_max_attempts_ = static_cast<uint32_t>(mtc_jenga::param<int>(this, "plan_max_attempts", 1));
-    plan_time_ = mtc_jenga::param<double>(this, "plan_time", 0.5);
+    plan_time_ = mtc_jenga::param<double>(this, "plan_time", 1.0);
     vel_scale_ = mtc_jenga::param<double>(this, "max_velocity_scaling_factor", 0.1);
     acc_scale_ = mtc_jenga::param<double>(this, "max_acceleration_scaling_factor", 0.1);
     cart_step_ = mtc_jenga::param<double>(this, "cartesian_step", 0.005);
@@ -440,8 +440,8 @@ class MtcExtractSideBlockServer : public rclcpp::Node {
   std::string status_topic_;
 
   double box_x_{0.075}, box_y_{0.025}, box_z_{0.015};
-  uint32_t plan_max_attempts_{3};
-  double plan_time_{0.5};
+  uint32_t plan_max_attempts_{1};
+  double plan_time_{1.0};
   double vel_scale_{0.25};
   double acc_scale_{0.25};
   double cart_step_{0.005};

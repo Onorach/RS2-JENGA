@@ -17,6 +17,7 @@ def generate_launch_description() -> LaunchDescription:
     )
     arm_group_arg = DeclareLaunchArgument("arm_group", default_value="ur_onrobot_manipulator")
     gripper_tcp_arg = DeclareLaunchArgument("gripper_tcp", default_value="gripper_tcp")
+    probe_frame_arg = DeclareLaunchArgument("probe_frame", default_value="probe_tip")
     max_vel_arg = DeclareLaunchArgument(
         "max_velocity_scaling_factor",
         default_value="0.1",
@@ -42,9 +43,12 @@ def generate_launch_description() -> LaunchDescription:
                 ),
                 "arm_group": LaunchConfiguration("arm_group"),
                 "gripper_tcp": LaunchConfiguration("gripper_tcp"),
+                "probe_frame": LaunchConfiguration("probe_frame"),
             },
         ],
     )
 
-    return LaunchDescription([arm_group_arg, gripper_tcp_arg, max_vel_arg, max_acc_arg, node])
+    return LaunchDescription(
+        [arm_group_arg, gripper_tcp_arg, probe_frame_arg, max_vel_arg, max_acc_arg, node]
+    )
 

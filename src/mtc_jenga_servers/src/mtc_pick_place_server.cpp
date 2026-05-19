@@ -66,7 +66,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
     open_state_ = mtc_jenga::param<std::string>(this, "gripper_open_state", "open");
     closed_state_ = mtc_jenga::param<std::string>(this, "gripper_closed_state", "grip_block_length");
     plan_max_attempts_ = static_cast<uint32_t>(mtc_jenga::param<int>(this, "plan_max_attempts", 1));
-    plan_time_ = mtc_jenga::param<double>(this, "plan_time", 0.5);
+    plan_time_ = mtc_jenga::param<double>(this, "plan_time", 1.0);
     status_topic_ = mtc_jenga::param<std::string>(this, "status_topic", "mtc_status");
     const std::string goal_topic = mtc_jenga::param<std::string>(this, "goal_topic", "goal_pose");
     (void)mtc_jenga::param<int>(this, "action_timeout_sec", 5);
@@ -257,8 +257,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
         // angle_delta and IK selects the wrist angle that keeps tips parallel to the
         // 2.5×1.5 cm block end faces.
         Eigen::Isometry3d gft = Eigen::Isometry3d::Identity();
-        gft = gft * Eigen::AngleAxisd(M_PI, Eigen::Vector3d::UnitY()) 
-                  * Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d::UnitZ());
+        gft = gft * Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d::UnitX());
         auto w = std::make_unique<mtc::stages::ComputeIK>("grasp pose IK", std::move(stage));
         w->setMaxIKSolutions(4);
         w->setMinSolutionDistance(0.5);
@@ -549,8 +548,8 @@ class MtcPickPlaceServer : public rclcpp::Node {
   double box_x_, box_y_, box_z_;
   double vel_scale_{0.1};
   double acc_scale_{0.1};
-  uint32_t plan_max_attempts_{5};
-  double plan_time_{0.5};
+  uint32_t plan_max_attempts_{1};
+  double plan_time_{1.0};
 
   std::mutex status_mutex_;
   std::atomic<bool> busy_{false};
