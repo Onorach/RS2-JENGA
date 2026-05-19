@@ -12,6 +12,11 @@ from cv_bridge import CvBridge
 import tkinter as tk
 from PIL import Image as PILImage, ImageTk
 
+try:
+    _PIL_RESAMPLE = PILImage.Resampling.LANCZOS
+except AttributeError:
+    _PIL_RESAMPLE = PILImage.LANCZOS  # Pillow < 9.1
+
 # --- Color Definitions ---
 COLOUR_YELLOW = "#ffff00"  
 COLOUR_BLACK = "#000000"   
@@ -25,10 +30,29 @@ BLOCK_COLOURS = {
     "blue": "#0000FF",
     "yellow": "#FFFF00",
     "black": "#000000",
-    "natural": "#DEB887", 
+    "natural": "#DEB887",
     "purple": "#800080",
-    "unknown": "#FFFFFF" 
+    "none": "#FFFFFF",
+    "unknown": "#FFFFFF",
 }
+
+
+def _layers_from_tower_message(data) -> list:
+    """Normalise /top_layer_state JSON into a bottom-first list (L0 / GUI L1 at index 0)."""
+    if isinstance(data, list):
+        layers = data
+    elif isinstance(data, dict):
+        if "layers" in data or "tower" in data:
+            layers = data.get("layers", data.get("tower", []))
+        elif "blocks" in data:
+            layers = [data]
+        else:
+            layers = []
+    else:
+        layers = []
+    if not layers:
+        return []
+    return sorted(layers, key=lambda layer: layer.get("layer", 0))
 
 class RealSenseCameraNode(Node):
     def __init__(self):
@@ -119,7 +143,7 @@ class JengaInterfaceApp:
         self.place_selection = None           # [Block ID, Layer, Position]
         
         self.buttons = {}
-        self.goal_buttons = {}  # Map keyed by (gui_layer, position_idx) -> Button widget
+        self.goal_buttons = {}  # (layer 0–5, position 1–3) -> Button widget; L0 = bottom
         self.estop_button = None 
         self.cam_label = None
         self.state_label = None
@@ -172,21 +196,20 @@ class JengaInterfaceApp:
         goal_btn_frame = tk.Frame(ctrl_container, bg=COLOUR_LIGHT_GRAY)
         goal_btn_frame.pack(pady=2)
 
-        # Build grid from top down: GUI Layer 6 down to Layer 1
-        for gui_layer in range(6, 0, -1):
+        # Build grid top-down on screen: L5 at top … L0 at bottom (matches perception).
+        for layer in range(5, -1, -1):
             row_frame = tk.Frame(goal_btn_frame, bg=COLOUR_LIGHT_GRAY)
             row_frame.pack(pady=2)
-            
-            # Layer identifier label on the left
-            tk.Label(row_frame, text=f"L{gui_layer}:", bg=COLOUR_LIGHT_GRAY, font=("Arial", 10, "bold"), width=4).pack(side=tk.LEFT)
-            
+
+            tk.Label(row_frame, text=f"L{layer}:", bg=COLOUR_LIGHT_GRAY, font=("Arial", 10, "bold"), width=4).pack(side=tk.LEFT)
+
             # Position indices: 1 = left, 2 = middle, 3 = right
             for pos_idx in range(1, 4):
                 btn = tk.Button(row_frame, text="000", bg=COLOUR_WHITE, fg=COLOUR_BLACK, font=("Arial", 9, "bold"),
-                                width=6, height=2, relief="raised", 
-                                command=lambda l=gui_layer, p=pos_idx: self.select_block_sequence(l, p))
+                                width=6, height=2, relief="raised",
+                                command=lambda l=layer, p=pos_idx: self.select_block_sequence(l, p))
                 btn.pack(side=tk.LEFT, padx=3)
-                self.goal_buttons[(gui_layer, pos_idx)] = btn
+                self.goal_buttons[(layer, pos_idx)] = btn
 
         self.goal_status_label = tk.Label(ctrl_container, text="Select next block to be picked up", 
                                           bg=COLOUR_LIGHT_GRAY, fg=COLOUR_BLACK, font=("Arial", 10, "italic"), 
@@ -222,20 +245,15 @@ class JengaInterfaceApp:
         self.refresh_buttons()
         self.ros_node.publish_override(self.ee_override_array)
 
-    def _get_block_id_from_memory(self, gui_layer, pos_idx):
-        """Helper to lookup active block ID string from the node's stored JSON data"""
+    def _get_block_id_from_memory(self, layer, pos_idx):
+        """Helper to lookup active block ID string from the node's stored JSON data."""
         if not self.ros_node.top_layer_data:
             return "000"
-        
-        data = self.ros_node.top_layer_data
-        # Extract layers list (handle if raw list or wrapped dict)
-        layers_list = data if isinstance(data, list) else data.get("layers", data.get("tower", []))
-        
-        # Perception uses index 0 for the top layer, map GUI Layer (1-6) -> Perception Index (0-5)
-        percep_idx = 6 - gui_layer
-        
-        if 0 <= percep_idx < len(layers_list):
-            layer_data = layers_list[percep_idx]
+
+        layers_list = _layers_from_tower_message(self.ros_node.top_layer_data)
+
+        if 0 <= layer < len(layers_list):
+            layer_data = layers_list[layer]
             if isinstance(layer_data, dict):
                 blocks = layer_data.get("blocks", [])
                 block_idx = pos_idx - 1  # 1-3 to 0-2
@@ -244,9 +262,9 @@ class JengaInterfaceApp:
                     return str(b_id) if b_id is not None and b_id != "" else "000"
         return "000"
 
-    def select_block_sequence(self, gui_layer, pos_idx):
-        """State machine workflow executing sequence configurations"""
-        block_id = self._get_block_id_from_memory(gui_layer, pos_idx)
+    def select_block_sequence(self, layer, pos_idx):
+        """State machine workflow executing sequence configurations (layer 0 = bottom)."""
+        block_id = self._get_block_id_from_memory(layer, pos_idx)
         
         # If sequence was previously complete, clicking resets state machine to Pick Selection
         if self.sequence_state == "COMPLETE":
@@ -255,20 +273,20 @@ class JengaInterfaceApp:
             self.place_selection = None
 
         if self.sequence_state == "WAITING_PICK":
-            self.pick_selection = [block_id, gui_layer, pos_idx]
+            self.pick_selection = [block_id, layer, pos_idx]
             self.sequence_state = "WAITING_PLACE"
             self.goal_status_label.config(
-                text=f"Block {pos_idx} on layer {gui_layer} has been selected. Pick placement position", 
+                text=f"Block {pos_idx} on layer L{layer} has been selected. Pick placement position",
                 fg="blue"
             )
-            
+
         elif self.sequence_state == "WAITING_PLACE":
-            self.place_selection = [block_id, gui_layer, pos_idx]
+            self.place_selection = [block_id, layer, pos_idx]
             self.sequence_state = "COMPLETE"
-            
+
             p_id, p_lay, p_pos = self.pick_selection
             self.goal_status_label.config(
-                text=f"Block {p_pos} on layer {p_lay} will be placed at position {pos_idx} on layer {gui_layer}. Select another block to reset the next sequence", 
+                text=f"Block {p_pos} on layer L{p_lay} will be placed at position {pos_idx} on layer L{layer}. Select another block to reset the next sequence", 
                 fg="green"
             )
             
@@ -289,7 +307,7 @@ class JengaInterfaceApp:
                 frame = self.ros_node.cv_image.copy()
                 self.ros_node.new_image_flag = False
             im_pil = PILImage.fromarray(frame)
-            im_pil.thumbnail((800, 600), PILImage.Resampling.LANCZOS)
+            im_pil.thumbnail((800, 600), _PIL_RESAMPLE)
             img_tk = ImageTk.PhotoImage(image=im_pil)
             self.cam_label.config(image=img_tk)
             self.cam_label.image = img_tk
@@ -299,18 +317,16 @@ class JengaInterfaceApp:
             
         # Update full tower matrix colors and ID text labels dynamically
         if self.ros_node.top_layer_data:
-            data = self.ros_node.top_layer_data
-            layers_list = data if isinstance(data, list) else data.get("layers", data.get("tower", []))
+            layers_list = _layers_from_tower_message(self.ros_node.top_layer_data)
             
-            for gui_layer in range(1, 7):
-                percep_idx = 6 - gui_layer
+            for layer in range(6):
                 for pos_idx in range(1, 4):
                     block_idx = pos_idx - 1
                     target_color = COLOUR_WHITE
                     block_id_str = "000"
-                    
-                    if 0 <= percep_idx < len(layers_list):
-                        layer_data = layers_list[percep_idx]
+
+                    if layer < len(layers_list):
+                        layer_data = layers_list[layer]
                         if isinstance(layer_data, dict):
                             blocks = layer_data.get("blocks", [])
                             if block_idx < len(blocks):
@@ -322,7 +338,7 @@ class JengaInterfaceApp:
                                 if b_id is not None and b_id != "":
                                     block_id_str = str(b_id)
                                     
-                    btn = self.goal_buttons.get((gui_layer, pos_idx))
+                    btn = self.goal_buttons.get((layer, pos_idx))
                     if btn:
                         btn.config(text=block_id_str, bg=target_color, activebackground=target_color)
                         

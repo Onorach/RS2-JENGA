@@ -20,7 +20,7 @@ CENTROID_OFFSET_MM = 26.52   # Distance from visible block face to block centroi
 DEPTH_STEP_MM      = 17.68   # Depth step between neighbouring block centroids (mm).
 
 SINGLE_DOMINANT_PCT   = 55.0   # One colour dominates → side-on face.
-BLOCK_PRESENT_MIN_PCT = 20.0   # Minimum % for a block to be considered present.
+BLOCK_PRESENT_MIN_PCT = 15.0   # Minimum % for a block to be considered present.
 
 PRINT_INTERVAL_S = 3.0
 _last_print_time: float = 0.0
@@ -234,6 +234,13 @@ def analyse_tower(
         # row_cells[0] is the topmost band in the image; L0 is the bottom of the tower.
         layer["layer"] = (n_layers - 1) - row_idx
         tower.append(layer)
+
+    # L0 = bottom; block IDs 000–002 at bottom, then 003–005, … (motion-planning block_XX).
+    tower.sort(key=lambda item: item["layer"])
+    for list_idx, layer in enumerate(tower):
+        for pos, block in enumerate(layer["blocks"]):
+            if block.get("present"):
+                block["id"] = f"{list_idx * 3 + pos:03d}"
 
     now = time.monotonic()
     if now - _last_print_time >= PRINT_INTERVAL_S:

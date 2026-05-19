@@ -324,8 +324,10 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
                 )
                 tower = analyse_tower(bgr, depth_for_layers, row_cells)
                 _last_tower_img = build_tower_image(tower)
-                if depth_mm is not None and tower and publish_top_layer:
-                    publish_top_layer(max(tower, key=lambda layer: layer["layer"]))
+                if tower and publish_top_layer:
+                    # Bottom-first (L0 at index 0) so GUI L1 = bottom, L6 = top.
+                    tower_bottom_up = sorted(tower, key=lambda layer: layer["layer"])
+                    publish_top_layer(tower_bottom_up)
             if _last_pct_results:
                 active_cells = [cell for layer in locked_layer_cells for cell in layer]
                 _ensure_window_open("Box percentages")
@@ -357,9 +359,10 @@ class _ImageBridge(Node):
         self.get_logger().info(f"Colour topic: {color_topic}")
         self.get_logger().info(f"Depth topic:  {depth_topic}")
 
-    def publish_top_layer(self, layer_data) -> None:
+    def publish_top_layer(self, tower_data) -> None:
+        """Publish full tower state (list of layer dicts) on /top_layer_state."""
         msg      = String()
-        msg.data = json.dumps(layer_data)
+        msg.data = json.dumps(tower_data)
         self.top_layer_pub.publish(msg)
 
     def _cb(self, msg: Image) -> None:
