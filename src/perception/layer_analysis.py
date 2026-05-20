@@ -14,7 +14,12 @@ from box_percentages import (
     colour_mean_depth_in_cell,
     compute_percentages,
 )
-from perception_config import COLOUR_BGR, CAMERA_HFOV_DEG
+from perception_config import (
+    COLOUR_BGR,
+    CAMERA_HFOV_DEG,
+    CAMERA_GLOBAL_POSITION_MM,
+    BLOCK_YAW_DEG_ASSUMED,
+)
 
 CENTROID_OFFSET_MM = 26.52   # Distance from visible block face to block centroid (mm).
 DEPTH_STEP_MM      = 17.68   # Depth step between neighbouring block centroids (mm).
@@ -24,6 +29,7 @@ BLOCK_PRESENT_MIN_PCT = 15.0   # Minimum % for a block to be considered present.
 
 PRINT_INTERVAL_S = 3.0
 _last_print_time: float = 0.0
+DEPTH_PATCH_RADIUS_PX = 2  # 5x5 local depth sampling window.
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +195,7 @@ def _centroid_face_depth_mm(
     depth_frame: np.ndarray,
     mean_x_px: float,
     mean_y_px: float,
-    window_radius_px: int = 1,
+    window_radius_px: int = DEPTH_PATCH_RADIUS_PX,
 ) -> float | None:
     """
     Estimate face depth at the detected block centroid from a local depth patch.
@@ -211,59 +217,46 @@ def _centroid_face_depth_mm(
     return float(np.median(valid))
 
 
+def _display_lateral_mm(block: dict, orientation: str) -> float | None:
+    """Return the orientation-adjusted lateral offset used in terminal output."""
+    lateral_mm = block.get("lateral_mm")
+    if lateral_mm is None:
+        return None
+    x_offset = 26.5 if orientation == "left" else -26.5
+    return float(lateral_mm + x_offset)
+
+
+def _assumed_orientation_xyzw() -> dict[str, float]:
+    """Quaternion for a fixed yaw-only orientation assumption."""
+    half_yaw_rad = np.deg2rad(BLOCK_YAW_DEG_ASSUMED) / 2.0
+    return {
+        "x": 0.0,
+        "y": 0.0,
+        "z": float(np.sin(half_yaw_rad)),
+        "w": float(np.cos(half_yaw_rad)),
+    }
+
+
 def _print_tower(tower: list[dict]) -> None:
-    print("── Layer Analysis (L0 = bottom, blocks: front → mid → back) ────")
-    max_layer_idx = max((layer["layer"] for layer in tower), default=-1)
-    top_two_layers = {idx for idx in (max_layer_idx, max_layer_idx - 1) if idx >= 0}
-    tan_half_hfov = np.tan(np.deg2rad(CAMERA_HFOV_DEG) / 2.0)
+    print("─── Layer Analysis ───")
     for layer in sorted(tower, key=lambda item: item["layer"]):
         idx         = layer["layer"]
         orientation = layer["orientation"]
         arrow       = "<-" if orientation == "left" else "->"
-        frame_cx    = layer.get("frame_centre_x")
         labels      = ["front", " mid ", " back"]
-        parts, px_debug = [], []
+        parts = []
 
         for label, block in zip(labels, layer["blocks"]):
             if block["present"]:
                 depth_mm = block.get("depth_mm")
-                lx = block.get("lateral_mm")
-                mx = block.get("mean_x_px")
+                y_mm = _display_lateral_mm(block, orientation)
                 d_str = f" @d={depth_mm:.1f}mm" if depth_mm is not None else ""
-                x_offset = 26.5 if orientation == "left" else -26.5
-                x_str = f" @x={lx + x_offset:+.1f}mm" if lx is not None else ""
+                x_str = f" @x={y_mm:+.1f}mm" if y_mm is not None else ""
                 parts.append(f"{label}: {block['colour']}{d_str}{x_str}")
-                if mx is not None:
-                    px_debug.append(f"{label.strip()}={mx:.0f}px")
             else:
                 parts.append(f"{label}: missing")
 
         print(f"  L{idx} {arrow}  " + "  |  ".join(parts))
-        centre_str = f"  centre={frame_cx:.0f}px" if frame_cx is not None else ""
-        if px_debug:
-            print(f"    [px debug]{centre_str}  " + "  ".join(px_debug))
-        frame_width = layer.get("frame_width_px")
-        if idx in top_two_layers and frame_cx is not None and frame_width is not None and frame_width > 0:
-            x_offset = 26.5 if orientation == "left" else -26.5
-            print("    [offset math]")
-            for label, block in zip(labels, layer["blocks"]):
-                if not block.get("present"):
-                    continue
-                mx = block.get("mean_x_px")
-                fd = block.get("face_depth_mm")
-                if mx is None or fd is None or fd <= 0:
-                    continue
-                dx_px = float(mx) - float(frame_cx)
-                mm_per_px = 2.0 * float(fd) * tan_half_hfov / frame_width
-                lateral_raw = dx_px * mm_per_px
-                lateral_display = lateral_raw + x_offset
-                print(
-                    "      "
-                    f"{label.strip()}: dx={dx_px:+.1f}px, "
-                    f"mm_per_px={mm_per_px:.4f}, "
-                    f"raw={lateral_raw:+.1f}mm, "
-                    f"display=raw{ x_offset:+.1f}={lateral_display:+.1f}mm"
-                )
     print()
 
 
@@ -299,6 +292,36 @@ def analyse_tower(
         for pos, block in enumerate(layer["blocks"]):
             if block.get("present"):
                 block["id"] = f"{list_idx * 3 + pos:03d}"
+                block["block_index"] = int(list_idx * 3 + pos)
+                depth_mm = block.get("depth_mm")
+                lateral_display_mm = _display_lateral_mm(block, layer["orientation"])
+                if depth_mm is None or lateral_display_mm is None:
+                    continue
+
+                # Assumed camera-local frame:
+                #   +x away from camera, +y left of camera.
+                # Keep z as requested from layer only (mm).
+                z_local_mm = 15.0 * (float(layer["layer"]) + 1.0) - 7.5
+                x_local_mm = float(depth_mm)
+                y_local_mm = float(lateral_display_mm)
+                orientation_xyzw = _assumed_orientation_xyzw()
+
+                block["pose_camera_mm"] = {
+                    "position": {
+                        "x": x_local_mm,
+                        "y": y_local_mm,
+                        "z": z_local_mm,
+                    },
+                    "orientation": orientation_xyzw,
+                }
+                block["pose_global_mm"] = {
+                    "position": {
+                        "x": x_local_mm + float(CAMERA_GLOBAL_POSITION_MM[0]),
+                        "y": y_local_mm + float(CAMERA_GLOBAL_POSITION_MM[1]),
+                        "z": z_local_mm + float(CAMERA_GLOBAL_POSITION_MM[2]),
+                    },
+                    "orientation": orientation_xyzw,
+                }
 
     now = time.monotonic()
     if now - _last_print_time >= PRINT_INTERVAL_S:

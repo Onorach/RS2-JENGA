@@ -14,6 +14,8 @@ from collections import deque
 import cv2
 import numpy as np
 from std_msgs.msg import String
+from geometry_msgs.msg import Pose
+from jenga_interfaces.msg import JengaBlockState, JengaBlockStates
 
 from colour_identification import classify_roi_bgr, compute_roi
 from box_percentages import compute_percentages, build_debug_image
@@ -42,6 +44,7 @@ from perception_config import (
     TOWER_ANALYSIS,
     BLOCK_ANALYSIS,
     SEARCH_AREA_MARGIN,
+    BLOCK_POSE_WORLD_FRAME,
 )
 
 import rclpy
@@ -292,11 +295,7 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
                 info_colors.append((0, 255, 255))
                 now = time.monotonic()
                 if now - _last_tower_finder_print >= TOWER_PRINT_INTERVAL_S:
-                    cx_str = (
-                        f"  [px debug] centroid={tower_offset['centroid_x_px']:.0f}px"
-                        f"  frame_centre={iw/2:.0f}px"
-                    )
-                    print("Tower finder:  " + "  ".join(tf_parts) + cx_str)
+                    print("Tower finder:  " + "  ".join(tf_parts))
                     _last_tower_finder_print = now
             if tower_offset is not None:
                 info_lines.append(
@@ -373,6 +372,9 @@ class _ImageBridge(Node):
         self.create_subscription(Image, color_topic, self._cb, 10)
         self.create_subscription(Image, depth_topic, self._depth_cb, 10)
         self.top_layer_pub = self.create_publisher(String, "/top_layer_state", 10)
+        self.block_states_pub = self.create_publisher(
+            JengaBlockStates, "/jenga/block_states", 10
+        )
         self.get_logger().info(f"Colour topic: {color_topic}")
         self.get_logger().info(f"Depth topic:  {depth_topic}")
 
@@ -381,6 +383,48 @@ class _ImageBridge(Node):
         msg      = String()
         msg.data = json.dumps(tower_data)
         self.top_layer_pub.publish(msg)
+        self.block_states_pub.publish(self._build_block_states_msg(tower_data))
+
+    def _build_block_states_msg(self, tower_data) -> JengaBlockStates:
+        """Build typed block-state message from tower JSON-like layer dicts."""
+        out = JengaBlockStates()
+        out.header.stamp = self.get_clock().now().to_msg()
+        out.header.frame_id = BLOCK_POSE_WORLD_FRAME
+
+        blocks: list[JengaBlockState] = []
+        for layer in tower_data:
+            layer_idx = int(layer.get("layer", -1))
+            for pos_idx, block in enumerate(layer.get("blocks", [])):
+                if not block.get("present"):
+                    continue
+                pose_global_mm = block.get("pose_global_mm")
+                if not pose_global_mm:
+                    continue
+                pos = pose_global_mm.get("position", {})
+                ori = pose_global_mm.get("orientation", {})
+
+                b = JengaBlockState()
+                b.block_id = int(block.get("block_index", -1))
+                b.colour = str(block.get("colour", "unknown"))
+                b.layer = max(layer_idx, 0)
+                # Per-layer slot: front=1, mid=2, back=3.
+                b.layer_position = max(1, min(3, int(pos_idx) + 1))
+
+                pose = Pose()
+                # geometry_msgs/Pose uses SI units (metres).
+                pose.position.x = float(pos.get("x", 0.0)) / 1000.0
+                pose.position.y = float(pos.get("y", 0.0)) / 1000.0
+                pose.position.z = float(pos.get("z", 0.0)) / 1000.0
+                pose.orientation.x = float(ori.get("x", 0.0))
+                pose.orientation.y = float(ori.get("y", 0.0))
+                pose.orientation.z = float(ori.get("z", 0.0))
+                pose.orientation.w = float(ori.get("w", 1.0))
+                b.pose = pose
+                blocks.append(b)
+
+        blocks.sort(key=lambda item: item.block_id)
+        out.blocks = blocks
+        return out
 
     def _cb(self, msg: Image) -> None:
         enc = (msg.encoding or "").lower()
@@ -430,6 +474,61 @@ class _ImageBridge(Node):
             bgr      = None if self._bgr      is None else self._bgr.copy()
             depth_mm = None if self._depth_mm is None else self._depth_mm.copy()
             return bgr, depth_mm
+
+
+class _TowerStatePublisher(Node):
+    """ROS publisher node used when running from bag/pipeline mode."""
+
+    def __init__(self) -> None:
+        super().__init__("play_bag_state_publisher")
+        self.top_layer_pub = self.create_publisher(String, "/top_layer_state", 10)
+        self.block_states_pub = self.create_publisher(
+            JengaBlockStates, "/jenga/block_states", 10
+        )
+
+    def publish_top_layer(self, tower_data) -> None:
+        msg = String()
+        msg.data = json.dumps(tower_data)
+        self.top_layer_pub.publish(msg)
+        self.block_states_pub.publish(self._build_block_states_msg(tower_data))
+
+    def _build_block_states_msg(self, tower_data) -> JengaBlockStates:
+        out = JengaBlockStates()
+        out.header.stamp = self.get_clock().now().to_msg()
+        out.header.frame_id = BLOCK_POSE_WORLD_FRAME
+
+        blocks: list[JengaBlockState] = []
+        for layer in tower_data:
+            layer_idx = int(layer.get("layer", -1))
+            for pos_idx, block in enumerate(layer.get("blocks", [])):
+                if not block.get("present"):
+                    continue
+                pose_global_mm = block.get("pose_global_mm")
+                if not pose_global_mm:
+                    continue
+                pos = pose_global_mm.get("position", {})
+                ori = pose_global_mm.get("orientation", {})
+
+                b = JengaBlockState()
+                b.block_id = int(block.get("block_index", -1))
+                b.colour = str(block.get("colour", "unknown"))
+                b.layer = max(layer_idx, 0)
+                b.layer_position = max(1, min(3, int(pos_idx) + 1))
+
+                pose = Pose()
+                pose.position.x = float(pos.get("x", 0.0)) / 1000.0
+                pose.position.y = float(pos.get("y", 0.0)) / 1000.0
+                pose.position.z = float(pos.get("z", 0.0)) / 1000.0
+                pose.orientation.x = float(ori.get("x", 0.0))
+                pose.orientation.y = float(ori.get("y", 0.0))
+                pose.orientation.z = float(ori.get("z", 0.0))
+                pose.orientation.w = float(ori.get("w", 1.0))
+                b.pose = pose
+                blocks.append(b)
+
+        blocks.sort(key=lambda item: item.block_id)
+        out.blocks = blocks
+        return out
 
 
 # ---------------------------------------------------------------------------
@@ -486,7 +585,14 @@ def run_with_pipeline(pipeline) -> None:
 
         return bgr, depth_mm
 
-    _run_loop(get_frame_pair)
+    rclpy.init()
+    state_pub = _TowerStatePublisher()
+    nodes: list = [state_pub]
+    executor = _start_executor(nodes)
+    try:
+        _run_loop(get_frame_pair, publish_top_layer=state_pub.publish_top_layer)
+    finally:
+        _shutdown_executor(executor, nodes)
 
 
 def run_subscribe(color_topic: str, depth_topic: str) -> None:

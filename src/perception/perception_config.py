@@ -18,6 +18,16 @@ SEARCH_AREA_MARGIN     = 0.10
 # Camera horizontal field of view — used for px → mm lateral conversion.
 CAMERA_HFOV_DEG = 69.0
 
+# Camera origin in the global/world frame (mm).
+# Block global positions are computed as:
+#   block_global = block_camera_local + CAMERA_GLOBAL_POSITION_MM
+CAMERA_GLOBAL_POSITION_MM = (0.0, 0.0, 0.0)
+BLOCK_POSE_WORLD_FRAME = "world"
+
+# Current temporary assumption: each block is rotated 45 degrees about +Z
+# relative to the camera frame.
+BLOCK_YAW_DEG_ASSUMED = 45.0
+
 # ---------------------------------------------------------------------------
 # Colour Settings
 # ---------------------------------------------------------------------------
