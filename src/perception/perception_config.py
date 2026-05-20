@@ -29,6 +29,25 @@ BLOCK_POSE_WORLD_FRAME = "world"
 BLOCK_YAW_DEG_ASSUMED = 45.0
 
 # ---------------------------------------------------------------------------
+# Probe / topple-response detection
+# ---------------------------------------------------------------------------
+#
+# Placeholder input until a real topic/service is connected:
+# set to an integer block_id (e.g. 4) to start monitoring that block probe.
+# Use None to disable.
+PROBE_TARGET_BLOCK_ID_PLACEHOLDER: int | None = None
+
+# Minimum increase in the probed middle-block colour percentage to count as
+# meaningful movement response.
+PROBE_TARGET_GAIN_MIN_PCT = 3.0
+
+# "Everything else remains similar" tolerance.
+PROBE_STABLE_DELTA_MAX_PCT = 3.0
+
+# Increase threshold on above-layer front/mid colours indicating tower shift.
+PROBE_ABOVE_LAYER_GAIN_MIN_PCT = 3.0
+
+# ---------------------------------------------------------------------------
 # Colour Settings
 # ---------------------------------------------------------------------------
 

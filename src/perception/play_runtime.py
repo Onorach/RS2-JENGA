@@ -46,6 +46,7 @@ from perception_config import (
     SEARCH_AREA_MARGIN,
     BLOCK_POSE_WORLD_FRAME,
 )
+from probe_response import ProbeResponseMonitor
 
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
@@ -102,6 +103,7 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
     _last_tower_img:   np.ndarray | None = None
     _last_tower_state: list[dict] = []
     _last_tower_finder_print: float = 0.0
+    probe_monitor = ProbeResponseMonitor()
     _cached_pts:   np.ndarray | None = None
     _hex_frame_n:  int = 0
 
@@ -334,6 +336,9 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
                     # Bottom-first (L0 at index 0) so GUI L1 = bottom, L6 = top.
                     tower_bottom_up = sorted(tower, key=lambda layer: layer["layer"])
                     publish_top_layer(tower_bottom_up)
+
+            probe_monitor.update(_last_tower_state, _last_pct_results, row_cells)
+
             if _last_pct_results:
                 active_cells = [cell for layer in locked_layer_cells for cell in layer]
                 _ensure_window_open("Box percentages")
