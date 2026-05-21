@@ -487,7 +487,7 @@ def main(args: list[str] | None = None) -> int:
 
     # Handoff pose relative to tower base (defaults copied from extract-middle protruded test).
     handoff_dx = float(node.declare_parameter("handoff_dx", -0.15).value)
-    handoff_dy = float(node.declare_parameter("handoff_dy", -0.12).value)
+    handoff_dy = float(node.declare_parameter("handoff_dy", -0.08).value)
     handoff_dz = float(node.declare_parameter("handoff_dz", 0.0).value)
 
     scene_cache = _PlanningSceneCache(node, topic=planning_scene_topic)
