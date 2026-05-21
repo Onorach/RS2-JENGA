@@ -291,6 +291,13 @@ def _print_tower(tower: list[dict]) -> None:
     print()
 
 
+def print_tower_state(tower: list[dict]) -> None:
+    """Print an already-computed tower state without recomputing analysis."""
+    if not tower:
+        return
+    _print_tower(tower)
+
+
 def analyse_tower(
     bgr_frame: np.ndarray,
     depth_frame: np.ndarray,

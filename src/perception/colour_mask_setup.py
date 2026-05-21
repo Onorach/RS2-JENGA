@@ -101,7 +101,7 @@ def _action_button_at(panel_x: int, panel_y: int, panel_w: int) -> str | None:
     if not (_BTN_Y0 <= panel_y < _BTN_Y0 + _BTN_H):
         return None
     bx0 = _btn_x0(panel_w)
-    for i, name in enumerate(("Set", "Reset", "Cancel")):
+    for i, name in enumerate(("Back", "Next", "Finish")):
         x1 = bx0 + i * (_BTN_W + _BTN_GAP)
         if x1 <= panel_x < x1 + _BTN_W:
             return name
@@ -129,7 +129,7 @@ def _draw_control_strip(
     )
     cv2.putText(
         panel,
-        "Live colour mask preview  |  s=Set  r=Reset  q=Cancel",
+        "Live colour mask preview  |  b=Back  n=Next  f=Finish",
         (12, 44),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.42,
@@ -139,7 +139,7 @@ def _draw_control_strip(
     )
     bx0 = _btn_x0(panel.shape[1])
     for i, (label, colour) in enumerate(
-        (("Set", (80, 180, 80)), ("Reset", (80, 140, 200)), ("Cancel", (80, 80, 200)))
+        (("Back", (80, 140, 200)), ("Next", (80, 180, 80)), ("Finish", (80, 180, 80)))
     ):
         x1 = bx0 + i * (_BTN_W + _BTN_GAP)
         y1, y2 = _BTN_Y0, _BTN_Y0 + _BTN_H
@@ -169,17 +169,20 @@ def _center_image_width(img: np.ndarray, width: int) -> np.ndarray:
 def run_colour_mask_setup(
     get_frame_pair: Callable[[], tuple[np.ndarray | None, object]],
     search_area: tuple[float, float, float, float] | None = None,
-) -> bool:
-    """Colour mask smoothing UI. Returns True if Set was pressed (config saved)."""
+    initial_values: tuple[int, int, int, int] | None = None,
+) -> tuple[str, tuple[int, int, int, int]]:
+    """Colour mask smoothing UI. Returns action and current values."""
     active_search_area = (
         search_area if search_area is not None else load_search_area_from_config()
     )
     hsv_ranges = load_hsv_ranges_from_config()
-    orig_med, orig_close, orig_open, orig_blob = load_colour_mask_from_config()
+    orig_med, orig_close, orig_open, orig_blob = (
+        initial_values if initial_values is not None else load_colour_mask_from_config()
+    )
     current = [orig_med, orig_close, orig_open, orig_blob]
     trackbars_ready = False
     done = False
-    save_on_exit = False
+    action = "cancel"
     _updating_trackbars = False
 
     def _read_trackbars() -> tuple[int, int, int, int]:
@@ -220,7 +223,7 @@ def run_colour_mask_setup(
         _sync_trackbars()
 
     def _on_mouse(event: int, x: int, y: int, _flags: int, userdata) -> None:
-        nonlocal done, save_on_exit
+        nonlocal done, action
         if event != cv2.EVENT_LBUTTONUP or userdata is None:
             return
         view_h, panel_w = userdata
@@ -228,18 +231,19 @@ def run_colour_mask_setup(
         if panel_y < 0:
             return
         btn = _action_button_at(x, panel_y, panel_w)
-        if btn == "Set":
-            save_on_exit = True
+        if btn == "Back":
+            action = "back"
             done = True
-        elif btn == "Reset":
-            current[:] = [orig_med, orig_close, orig_open, orig_blob]
-            _sync_trackbars()
-        elif btn == "Cancel":
+        elif btn == "Next":
+            action = "next"
+            done = True
+        elif btn == "Finish":
+            action = "finish"
             done = True
 
     print(
         "Colour mask setup: tune median blur, fill gaps, reduce noise, min blob area, "
-        "then Set / Reset / Cancel (or s / r / q)."
+        "then Back / Next / Finish (b / n / f)."
     )
 
     _init_opencv_gui()
@@ -280,13 +284,17 @@ def run_colour_mask_setup(
 
         key = cv2.waitKey(1) & 0xFF
         if key in (ord("q"), 27):
+            action = "cancel"
             done = True
-        elif key == ord("s"):
-            save_on_exit = True
+        elif key == ord("b"):
+            action = "back"
             done = True
-        elif key == ord("r"):
-            current[:] = [orig_med, orig_close, orig_open, orig_blob]
-            _sync_trackbars()
+        elif key == ord("n"):
+            action = "next"
+            done = True
+        elif key == ord("f"):
+            action = "finish"
+            done = True
 
     try:
         current[:] = list(_read_trackbars())
@@ -298,14 +306,12 @@ def run_colour_mask_setup(
         pass
     cv2.waitKey(1)
 
-    if save_on_exit:
-        save_colour_mask_to_config(current[0], current[1], current[2], current[3])
-        print(
-            f"Saved colour mask: MEDIAN={current[0]}, CLOSE={current[1]}, "
-            f"OPEN={current[2]}, MIN_BLOB={current[3]} to {_CONFIG_PATH}"
-        )
-        from setup.original_canny_setup import run_original_canny_setup
-
-        return run_original_canny_setup(get_frame_pair, search_area=active_search_area)
-    print("Colour mask setup cancelled — colour mask settings unchanged.")
-    return False
+    if action == "back":
+        print("Colour mask setup: moving to previous step.")
+    elif action == "next":
+        print("Colour mask setup: moving to next step.")
+    elif action == "finish":
+        print("Colour mask setup: finishing setup.")
+    else:
+        print("Colour mask setup cancelled — colour mask settings unchanged.")
+    return action, (current[0], current[1], current[2], current[3])

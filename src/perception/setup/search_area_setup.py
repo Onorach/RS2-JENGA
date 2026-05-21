@@ -16,7 +16,32 @@ import cv2
 import numpy as np
 
 from colour_identification import compute_roi
-from setup.colour_setup import run_colour_setup
+from colour_mask_setup import (
+    load_colour_mask_from_config,
+    run_colour_mask_setup,
+    save_colour_mask_to_config,
+)
+from setup.colour_setup import (
+    load_hsv_ranges_from_config,
+    run_colour_setup,
+    save_hsv_ranges_to_config,
+)
+from setup.depth_confirm_setup import run_depth_confirm_setup
+from setup.mask_canny_setup import (
+    load_mask_canny_from_config,
+    run_mask_canny_setup,
+    save_mask_canny_to_config,
+)
+from setup.original_canny_setup import (
+    load_original_canny_from_config,
+    run_original_canny_setup,
+    save_original_canny_to_config,
+)
+from setup.tower_setup import (
+    load_tower_mask_from_config,
+    run_tower_setup,
+    save_tower_mask_to_config,
+)
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "perception_config.py"
 _WINDOW = "Search area setup"
@@ -118,7 +143,7 @@ def _draw_control_strip(
 
     bx0 = _btn_x0(pw)
     for i, (label, colour) in enumerate(
-        (("Set", (80, 180, 80)), ("Reset", (80, 140, 200)), ("Cancel", (80, 80, 200)))
+        (("Back", (80, 140, 200)), ("Next", (80, 180, 80)), ("Finish", (80, 180, 80)))
     ):
         x1 = bx0 + i * (_BTN_W + _BTN_GAP)
         y1, y2 = _BTN_Y0, _BTN_Y0 + _BTN_H
@@ -138,23 +163,26 @@ def _button_at(panel_x: int, panel_y: int, panel_w: int) -> str | None:
     if not (_BTN_Y0 <= panel_y < _BTN_Y0 + _BTN_H):
         return None
     bx0 = _btn_x0(panel_w)
-    for i, name in enumerate(("Set", "Reset", "Cancel")):
+    for i, name in enumerate(("Back", "Next", "Finish")):
         x1 = bx0 + i * (_BTN_W + _BTN_GAP)
         if x1 <= panel_x < x1 + _BTN_W:
             return name
     return None
 
 
-def run_search_area_setup(get_frame_pair: Callable[[], tuple[np.ndarray | None, object]]) -> bool:
-    """Run setup UIs. Returns True if search area, colour, and tower mask were saved."""
-    original_frac = load_search_area_from_config()
+def _run_search_area_step(
+    get_frame_pair: Callable[[], tuple[np.ndarray | None, object]],
+    initial_frac: tuple[float, float, float, float],
+) -> tuple[str, tuple[float, float, float, float]]:
+    """Search-area setup step. Returns action and current search-area fraction."""
+    original_frac = initial_frac
     original_px: list[int] = [0, 0, 1, 1]
     current_px: list[int] = [0, 0, 1, 1]
     frame_size: tuple[int, int] = (0, 0)
     trackbar_size: tuple[int, int] = (0, 0)
     trackbars_ready = False
     done = False
-    save_on_exit = False
+    action = "cancel"
 
     def _clamp_to_frame() -> None:
         iw, ih = frame_size
@@ -187,7 +215,7 @@ def run_search_area_setup(get_frame_pair: Callable[[], tuple[np.ndarray | None, 
         current_px[3] = max(1, pos)
 
     def _on_mouse(event: int, x: int, y: int, _flags: int, userdata) -> None:
-        nonlocal done, save_on_exit
+        nonlocal done, action
         if event != cv2.EVENT_LBUTTONUP or userdata is None:
             return
         image_h, panel_w = userdata
@@ -195,13 +223,14 @@ def run_search_area_setup(get_frame_pair: Callable[[], tuple[np.ndarray | None, 
         if panel_y < 0:
             return
         btn = _button_at(x, panel_y, panel_w)
-        if btn == "Set":
-            save_on_exit = True
+        if btn == "Back":
+            action = "back"
             done = True
-        elif btn == "Reset":
-            current_px[:] = original_px
-            _sync_trackbars()
-        elif btn == "Cancel":
+        elif btn == "Next":
+            action = "next"
+            done = True
+        elif btn == "Finish":
+            action = "finish"
             done = True
 
     def _create_trackbars(iw: int, ih: int) -> None:
@@ -216,7 +245,7 @@ def run_search_area_setup(get_frame_pair: Callable[[], tuple[np.ndarray | None, 
         trackbars_ready = True
         _sync_trackbars()
 
-    print("Search area setup: adjust sliders (pixels), then Set / Reset / Cancel (or q / Esc).")
+    print("Search area setup: adjust sliders (pixels), then Back / Next / Finish (b / n / f).")
 
     while not done:
         bgr_full, _ = get_frame_pair()
@@ -258,33 +287,115 @@ def run_search_area_setup(get_frame_pair: Callable[[], tuple[np.ndarray | None, 
 
         key = cv2.waitKey(1) & 0xFF
         if key in (ord("q"), 27):
+            action = "cancel"
             done = True
-        elif key == ord("s"):
-            save_on_exit = True
+        elif key == ord("b"):
+            action = "back"
             done = True
-        elif key == ord("r"):
-            current_px[:] = original_px
-            _sync_trackbars()
+        elif key == ord("n"):
+            action = "next"
+            done = True
+        elif key == ord("f"):
+            action = "finish"
+            done = True
 
     cv2.destroyWindow(_WINDOW)
 
     iw, ih = frame_size
-    if save_on_exit and iw > 0 and ih > 0:
+    if iw > 0 and ih > 0:
         _clamp_to_frame()
         values = _px_to_frac(*current_px, iw, ih)
-        save_search_area_to_config(values)
-        cx_px, cy_px, rw_px, rh_px = current_px
-        print(
-            f"Saved SEARCH_AREA = {values} "
-            f"(centre {cx_px},{cy_px}px, size {rw_px}x{rh_px}px) to {_CONFIG_PATH}"
-        )
-        return run_colour_setup(get_frame_pair, search_area=values)
-    if save_on_exit:
-        print("Could not save — no camera frame received.")
-    else:
-        print("Setup cancelled — SEARCH_AREA unchanged.")
+        return action, values
+    print("Could not continue setup — no camera frame received.")
     cv2.destroyAllWindows()
-    return False
+    return "cancel", original_frac
+
+
+def _save_all_setup_values(
+    search_area: tuple[float, float, float, float],
+    hsv_ranges: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]],
+    colour_mask: tuple[int, int, int, int],
+    original_canny: tuple[int, int, float],
+    mask_canny: tuple[int, int],
+    tower_mask: tuple[int, int, int, int],
+) -> None:
+    save_search_area_to_config(search_area)
+    save_hsv_ranges_to_config(hsv_ranges)
+    save_colour_mask_to_config(*colour_mask)
+    save_original_canny_to_config(*original_canny)
+    save_mask_canny_to_config(*mask_canny)
+    save_tower_mask_to_config(*tower_mask)
+
+
+def run_search_area_setup(get_frame_pair: Callable[[], tuple[np.ndarray | None, object]]) -> bool:
+    """Run full setup wizard. Returns True only when Finish saves all config values."""
+    staged_search_area = load_search_area_from_config()
+    staged_hsv = load_hsv_ranges_from_config()
+    staged_colour_mask = load_colour_mask_from_config()
+    staged_original_canny = load_original_canny_from_config()
+    staged_mask_canny = load_mask_canny_from_config()
+    staged_tower_mask = load_tower_mask_from_config()
+
+    step_idx = 0
+    max_idx = 6
+    while True:
+        if step_idx == 0:
+            action, staged_search_area = _run_search_area_step(get_frame_pair, staged_search_area)
+        elif step_idx == 1:
+            action, staged_hsv = run_colour_setup(
+                get_frame_pair,
+                search_area=staged_search_area,
+                initial_ranges=staged_hsv,
+            )
+        elif step_idx == 2:
+            action, staged_colour_mask = run_colour_mask_setup(
+                get_frame_pair,
+                search_area=staged_search_area,
+                initial_values=staged_colour_mask,
+            )
+        elif step_idx == 3:
+            action, staged_original_canny = run_original_canny_setup(
+                get_frame_pair,
+                search_area=staged_search_area,
+                initial_values=staged_original_canny,
+            )
+        elif step_idx == 4:
+            action, staged_mask_canny = run_mask_canny_setup(
+                get_frame_pair,
+                search_area=staged_search_area,
+                initial_values=staged_mask_canny,
+            )
+        elif step_idx == 5:
+            action, staged_tower_mask = run_tower_setup(
+                get_frame_pair,
+                search_area=staged_search_area,
+                initial_values=staged_tower_mask,
+            )
+        else:
+            action = run_depth_confirm_setup(get_frame_pair)
+
+        if action == "back":
+            step_idx = max(0, step_idx - 1)
+            continue
+        if action == "next":
+            if step_idx < max_idx:
+                step_idx += 1
+                continue
+            action = "finish"
+        if action == "finish":
+            _save_all_setup_values(
+                staged_search_area,
+                staged_hsv,
+                staged_colour_mask,
+                staged_original_canny,
+                staged_mask_canny,
+                staged_tower_mask,
+            )
+            print(f"Saved setup config to {_CONFIG_PATH}")
+            return True
+        print("Setup cancelled — configuration unchanged.")
+        cv2.destroyAllWindows()
+        return False
 
 
 def run_search_area_setup_subscribe(color_topic: str, depth_topic: str) -> None:

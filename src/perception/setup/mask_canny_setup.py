@@ -70,7 +70,7 @@ def _action_button_at(panel_x: int, panel_y: int, panel_w: int) -> str | None:
     if not (_BTN_Y0 <= panel_y < _BTN_Y0 + _BTN_H):
         return None
     bx0 = _btn_x0(panel_w)
-    for i, name in enumerate(("Set", "Reset", "Cancel")):
+    for i, name in enumerate(("Back", "Next", "Finish")):
         x1 = bx0 + i * (_BTN_W + _BTN_GAP)
         if x1 <= panel_x < x1 + _BTN_W:
             return name
@@ -91,7 +91,7 @@ def _draw_control_strip(panel: np.ndarray, canny_low: int, canny_high: int) -> N
     )
     cv2.putText(
         panel,
-        "Canny on colour mask image  |  s=Set  r=Reset  q=Cancel",
+        "Canny on colour mask image  |  b=Back  n=Next  f=Finish",
         (12, 44),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.4,
@@ -101,7 +101,7 @@ def _draw_control_strip(panel: np.ndarray, canny_low: int, canny_high: int) -> N
     )
     bx0 = _btn_x0(panel.shape[1])
     for i, (label, colour) in enumerate(
-        (("Set", (80, 180, 80)), ("Reset", (80, 140, 200)), ("Cancel", (80, 80, 200)))
+        (("Back", (80, 140, 200)), ("Next", (80, 180, 80)), ("Finish", (80, 180, 80)))
     ):
         x1 = bx0 + i * (_BTN_W + _BTN_GAP)
         y1, y2 = _BTN_Y0, _BTN_Y0 + _BTN_H
@@ -141,17 +141,18 @@ def _build_preview(colour_img: np.ndarray, canny_low: int, canny_high: int) -> n
 def run_mask_canny_setup(
     get_frame_pair: Callable[[], tuple[np.ndarray | None, object]],
     search_area: tuple[float, float, float, float] | None = None,
-) -> bool:
-    """Colour-mask Canny calibration UI. Returns True if Set was pressed."""
+    initial_values: tuple[int, int] | None = None,
+) -> tuple[str, tuple[int, int]]:
+    """Colour-mask Canny calibration UI. Returns action and values."""
     active_search_area = (
         search_area if search_area is not None else load_search_area_from_config()
     )
     hsv_ranges = load_hsv_ranges_from_config()
-    orig_low, orig_high = load_mask_canny_from_config()
+    orig_low, orig_high = initial_values if initial_values is not None else load_mask_canny_from_config()
     current = [orig_low, orig_high]
     trackbars_ready = False
     done = False
-    save_on_exit = False
+    action = "cancel"
     _updating_trackbars = False
 
     def _read_trackbars() -> tuple[int, int]:
@@ -188,7 +189,7 @@ def run_mask_canny_setup(
         _sync_trackbars()
 
     def _on_mouse(event: int, x: int, y: int, _flags: int, userdata) -> None:
-        nonlocal done, save_on_exit
+        nonlocal done, action
         if event != cv2.EVENT_LBUTTONUP or userdata is None:
             return
         view_h, panel_w = userdata
@@ -196,18 +197,19 @@ def run_mask_canny_setup(
         if panel_y < 0:
             return
         btn = _action_button_at(x, panel_y, panel_w)
-        if btn == "Set":
-            save_on_exit = True
+        if btn == "Back":
+            action = "back"
             done = True
-        elif btn == "Reset":
-            current[:] = [orig_low, orig_high]
-            _sync_trackbars()
-        elif btn == "Cancel":
+        elif btn == "Next":
+            action = "next"
+            done = True
+        elif btn == "Finish":
+            action = "finish"
             done = True
 
     print(
         "Mask Canny setup: tune Canny low/high on the colour mask, "
-        "then Set / Reset / Cancel (or s / r / q)."
+        "then Back / Next / Finish (b / n / f)."
     )
     _init_opencv_gui()
     _warn_if_no_display()
@@ -239,13 +241,17 @@ def run_mask_canny_setup(
 
         key = cv2.waitKey(1) & 0xFF
         if key in (ord("q"), 27):
+            action = "cancel"
             done = True
-        elif key == ord("s"):
-            save_on_exit = True
+        elif key == ord("b"):
+            action = "back"
             done = True
-        elif key == ord("r"):
-            current[:] = [orig_low, orig_high]
-            _sync_trackbars()
+        elif key == ord("n"):
+            action = "next"
+            done = True
+        elif key == ord("f"):
+            action = "finish"
+            done = True
 
     try:
         current[:] = list(_read_trackbars())
@@ -258,14 +264,12 @@ def run_mask_canny_setup(
         pass
     cv2.waitKey(1)
 
-    if save_on_exit:
-        save_mask_canny_to_config(current[0], current[1])
-        print(
-            f"Saved mask Canny: CANNY_MASK_LOW={current[0]}, "
-            f"CANNY_MASK_HIGH={current[1]} to {_CONFIG_PATH}"
-        )
-        from setup.tower_setup import run_tower_setup
-
-        return bool(run_tower_setup(get_frame_pair, search_area=active_search_area))
-    print("Mask Canny setup cancelled — settings unchanged.")
-    return False
+    if action == "back":
+        print("Mask Canny setup: moving to previous step.")
+    elif action == "next":
+        print("Mask Canny setup: moving to next step.")
+    elif action == "finish":
+        print("Mask Canny setup: finishing setup.")
+    else:
+        print("Mask Canny setup cancelled — settings unchanged.")
+    return action, (current[0], current[1])

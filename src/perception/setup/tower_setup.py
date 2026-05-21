@@ -102,7 +102,7 @@ def _action_button_at(panel_x: int, panel_y: int, panel_w: int) -> str | None:
     if not (_BTN_Y0 <= panel_y < _BTN_Y0 + _BTN_H):
         return None
     bx0 = _btn_x0(panel_w)
-    for i, name in enumerate(("Set", "Reset", "Cancel")):
+    for i, name in enumerate(("Back", "Next", "Finish")):
         x1 = bx0 + i * (_BTN_W + _BTN_GAP)
         if x1 <= panel_x < x1 + _BTN_W:
             return name
@@ -130,7 +130,7 @@ def _draw_control_strip(
     )
     cv2.putText(
         panel,
-        "Left: tower overlay   Right: B&W mask (Tower finder)  |  s=Set  r=Reset  q=Cancel",
+        "Left: tower overlay   Right: B&W mask (Tower finder)  |  b=Back  n=Next  f=Finish",
         (12, 44),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.42,
@@ -140,7 +140,7 @@ def _draw_control_strip(
     )
     bx0 = _btn_x0(panel.shape[1])
     for i, (label, colour) in enumerate(
-        (("Set", (80, 180, 80)), ("Reset", (80, 140, 200)), ("Cancel", (80, 80, 200)))
+        (("Back", (80, 140, 200)), ("Next", (80, 180, 80)), ("Finish", (80, 180, 80)))
     ):
         x1 = bx0 + i * (_BTN_W + _BTN_GAP)
         y1, y2 = _BTN_Y0, _BTN_Y0 + _BTN_H
@@ -183,18 +183,21 @@ def _crop_for_tower(
 def run_tower_setup(
     get_frame_pair: Callable[[], tuple[np.ndarray | None, object]],
     search_area: tuple[float, float, float, float] | None = None,
-) -> bool:
-    """Tower mask calibration UI. Returns True if Set was pressed (config saved)."""
+    initial_values: tuple[int, int, int, int] | None = None,
+) -> tuple[str, tuple[int, int, int, int]]:
+    """Tower mask calibration UI. Returns action and values."""
     from setup.colour_setup import load_search_area_from_config
 
     active_search_area = (
         search_area if search_area is not None else load_search_area_from_config()
     )
-    orig_sat, orig_bri, orig_fill, orig_noise = load_tower_mask_from_config()
+    orig_sat, orig_bri, orig_fill, orig_noise = (
+        initial_values if initial_values is not None else load_tower_mask_from_config()
+    )
     current = [orig_sat, orig_bri, orig_fill, orig_noise]
     trackbars_ready = False
     done = False
-    save_on_exit = False
+    action = "cancel"
     _updating_trackbars = False
 
     def _read_trackbars() -> tuple[int, int, int, int]:
@@ -235,7 +238,7 @@ def run_tower_setup(
         _sync_trackbars()
 
     def _on_mouse(event: int, x: int, y: int, _flags: int, userdata) -> None:
-        nonlocal done, save_on_exit
+        nonlocal done, action
         if event != cv2.EVENT_LBUTTONUP or userdata is None:
             return
         view_h, panel_w = userdata
@@ -243,18 +246,19 @@ def run_tower_setup(
         if panel_y < 0:
             return
         btn = _action_button_at(x, panel_y, panel_w)
-        if btn == "Set":
-            save_on_exit = True
+        if btn == "Back":
+            action = "back"
             done = True
-        elif btn == "Reset":
-            current[:] = [orig_sat, orig_bri, orig_fill, orig_noise]
-            _sync_trackbars()
-        elif btn == "Cancel":
+        elif btn == "Next":
+            action = "next"
+            done = True
+        elif btn == "Finish":
+            action = "finish"
             done = True
 
     print(
         "Tower setup: tune sliders (saturation, brightness, fill gaps, reduce noise), "
-        "then Set / Reset / Cancel (or s / r / q)."
+        "then Back / Next / Finish (b / n / f)."
     )
 
     _create_trackbars()
@@ -305,13 +309,17 @@ def run_tower_setup(
 
         key = cv2.waitKey(1) & 0xFF
         if key in (ord("q"), 27):
+            action = "cancel"
             done = True
-        elif key == ord("s"):
-            save_on_exit = True
+        elif key == ord("b"):
+            action = "back"
             done = True
-        elif key == ord("r"):
-            current[:] = [orig_sat, orig_bri, orig_fill, orig_noise]
-            _sync_trackbars()
+        elif key == ord("n"):
+            action = "next"
+            done = True
+        elif key == ord("f"):
+            action = "finish"
+            done = True
 
     try:
         current[:] = list(_read_trackbars())
@@ -323,17 +331,15 @@ def run_tower_setup(
         pass
     cv2.waitKey(1)
 
-    if save_on_exit:
-        save_tower_mask_to_config(current[0], current[1], current[2], current[3])
-        print(
-            f"Saved tower mask: SAT_MIN={current[0]}, BRIGHTNESS_MIN={current[1]}, "
-            f"MORPH_CLOSE={current[2]}, MORPH_OPEN={current[3]} to {_CONFIG_PATH}"
-        )
-        from setup.depth_confirm_setup import run_depth_confirm_setup
-
-        return run_depth_confirm_setup(get_frame_pair)
-    print("Tower setup cancelled — tower mask settings unchanged.")
-    return False
+    if action == "back":
+        print("Tower setup: moving to previous step.")
+    elif action == "next":
+        print("Tower setup: moving to next step.")
+    elif action == "finish":
+        print("Tower setup: finishing setup.")
+    else:
+        print("Tower setup cancelled — tower mask settings unchanged.")
+    return action, (current[0], current[1], current[2], current[3])
 
 
 def run_tower_setup_subscribe(color_topic: str, depth_topic: str) -> None:

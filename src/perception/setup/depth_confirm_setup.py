@@ -23,14 +23,14 @@ _BTN_GAP = 24
 
 
 def _btn_x0(panel_w: int) -> int:
-    return (panel_w - (2 * _BTN_W + _BTN_GAP)) // 2
+    return (panel_w - (3 * _BTN_W + 2 * _BTN_GAP)) // 2
 
 
 def _action_button_at(panel_x: int, panel_y: int, panel_w: int) -> str | None:
     if not (_BTN_Y0 <= panel_y < _BTN_Y0 + _BTN_H):
         return None
     bx0 = _btn_x0(panel_w)
-    for i, name in enumerate(("Confirm", "Cancel")):
+    for i, name in enumerate(("Back", "Next", "Finish")):
         x1 = bx0 + i * (_BTN_W + _BTN_GAP)
         if x1 <= panel_x < x1 + _BTN_W:
             return name
@@ -103,7 +103,7 @@ def _draw_panel(panel: np.ndarray, info_line: str, aligned: bool) -> None:
     )
     cv2.putText(
         panel,
-        f"Depth is {align_txt}.  Confirm if the image looks correct (s / Enter).",
+        f"Depth is {align_txt}.  Back/Next navigate, Finish saves all setup values.",
         (12, 42),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.42,
@@ -113,7 +113,7 @@ def _draw_panel(panel: np.ndarray, info_line: str, aligned: bool) -> None:
     )
     bx0 = _btn_x0(panel.shape[1])
     for i, (label, colour) in enumerate(
-        (("Confirm", (80, 180, 80)), ("Cancel", (80, 80, 200)))
+        (("Back", (80, 140, 200)), ("Next", (80, 180, 80)), ("Finish", (80, 180, 80)))
     ):
         x1 = bx0 + i * (_BTN_W + _BTN_GAP)
         y1, y2 = _BTN_Y0, _BTN_Y0 + _BTN_H
@@ -131,20 +131,20 @@ def _draw_panel(panel: np.ndarray, info_line: str, aligned: bool) -> None:
 
 def run_depth_confirm_setup(
     get_frame_pair: Callable[[], tuple[np.ndarray | None, object]],
-) -> bool:
+) -> str:
     """
-    Show live aligned depth. Returns True if the user confirms, False on cancel.
+    Show live aligned depth. Returns one of: "back", "next", "finish", "cancel".
     """
-    print("Depth confirm: check the depth image, then Confirm or Cancel (s / q).")
+    print("Depth confirm: check depth image, then use Back / Next / Finish (b / n / f).")
 
     cv2.namedWindow(_WINDOW, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(_WINDOW, _MIN_WIDTH, 520)
 
     done = False
-    confirmed = False
+    action = "cancel"
 
     def _on_mouse(event: int, x: int, y: int, _flags: int, userdata) -> None:
-        nonlocal done, confirmed
+        nonlocal done, action
         if event != cv2.EVENT_LBUTTONUP or userdata is None:
             return
         view_h, panel_w = userdata
@@ -152,10 +152,14 @@ def run_depth_confirm_setup(
         if panel_y < 0:
             return
         btn = _action_button_at(x, panel_y, panel_w)
-        if btn == "Confirm":
-            confirmed = True
+        if btn == "Back":
+            action = "back"
             done = True
-        elif btn == "Cancel":
+        elif btn == "Next":
+            action = "next"
+            done = True
+        elif btn == "Finish":
+            action = "finish"
             done = True
 
     while not done:
@@ -188,9 +192,16 @@ def run_depth_confirm_setup(
 
         key = cv2.waitKey(1) & 0xFF
         if key in (ord("q"), 27):
+            action = "cancel"
             done = True
-        elif key in (ord("s"), ord("\r"), 10):
-            confirmed = True
+        elif key == ord("b"):
+            action = "back"
+            done = True
+        elif key in (ord("n"), ord("\r"), 10):
+            action = "next"
+            done = True
+        elif key == ord("f"):
+            action = "finish"
             done = True
 
     try:
@@ -199,8 +210,12 @@ def run_depth_confirm_setup(
         pass
     cv2.waitKey(1)
 
-    if confirmed:
-        print("Depth image confirmed — setup complete.")
+    if action == "back":
+        print("Depth confirm: moving to previous step.")
+    elif action == "next":
+        print("Depth confirm: moving to next step.")
+    elif action == "finish":
+        print("Depth confirm: finishing setup.")
     else:
         print("Depth confirm cancelled.")
-    return confirmed
+    return action

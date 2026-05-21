@@ -182,7 +182,7 @@ def _action_button_at(panel_x: int, panel_y: int, panel_w: int) -> str | None:
     if not (_BTN_Y0 <= panel_y < _BTN_Y0 + _BTN_H):
         return None
     bx0 = _btn_x0(panel_w)
-    for i, name in enumerate(("Set", "Reset", "Cancel")):
+    for i, name in enumerate(("Back", "Next", "Finish")):
         x1 = bx0 + i * (_BTN_W + _BTN_GAP)
         if x1 <= panel_x < x1 + _BTN_W:
             return name
@@ -213,7 +213,7 @@ def _draw_control_strip(panel: np.ndarray, info_line: str) -> None:
     )
     cv2.putText(
         panel,
-        "Set saves all masks  |  Reset restores all masks",
+        "Back/Next navigate setup  |  Finish saves all setup configs",
         (12, 44),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.42,
@@ -223,7 +223,7 @@ def _draw_control_strip(panel: np.ndarray, info_line: str) -> None:
     )
     bx0 = _btn_x0(panel.shape[1])
     for i, (label, colour) in enumerate(
-        (("Set", (80, 180, 80)), ("Reset", (80, 140, 200)), ("Cancel", (80, 80, 200)))
+        (("Back", (80, 140, 200)), ("Next", (80, 180, 80)), ("Finish", (80, 180, 80)))
     ):
         x1 = bx0 + i * (_BTN_W + _BTN_GAP)
         y1, y2 = _BTN_Y0, _BTN_Y0 + _BTN_H
@@ -262,17 +262,20 @@ def _ordered_lo_hi(h_lo: int, h_hi: int, s_lo: int, s_hi: int, v_lo: int, v_hi: 
 def run_colour_setup(
     get_frame_pair: Callable[[], tuple[np.ndarray | None, object]],
     search_area: tuple[float, float, float, float] | None = None,
-) -> bool:
-    """HSV mask calibration UI. Returns True if Set was pressed (config saved)."""
+    initial_ranges: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] | None = None,
+) -> tuple[str, dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]]]:
+    """HSV mask calibration UI. Returns action and current HSV ranges."""
     active_search_area = search_area if search_area is not None else load_search_area_from_config()
 
-    original_ranges = load_hsv_ranges_from_config()
+    original_ranges = (
+        _deep_copy_ranges(initial_ranges) if initial_ranges is not None else load_hsv_ranges_from_config()
+    )
     _ensure_red_two_bands(original_ranges)
     current_ranges = _deep_copy_ranges(original_ranges)
     mask_index = [0]
     trackbars_ready = False
     done = False
-    save_on_exit = False
+    action = "cancel"
     _updating_trackbars = False
 
     def _active_colour() -> str:
@@ -366,7 +369,7 @@ def run_colour_setup(
         _sync_trackbars_from_active()
 
     def _on_mouse(event: int, x: int, y: int, _flags: int, userdata) -> None:
-        nonlocal done, save_on_exit
+        nonlocal done, action
         if event != cv2.EVENT_LBUTTONUP or userdata is None:
             return
         header_h, colour_h, panel_w = userdata
@@ -381,20 +384,19 @@ def run_colour_setup(
         if panel_y < 0:
             return
         btn = _action_button_at(x, panel_y, panel_w)
-        if btn == "Set":
-            save_on_exit = True
+        if btn == "Back":
+            action = "back"
             done = True
-        elif btn == "Reset":
-            current_ranges.clear()
-            current_ranges.update(_deep_copy_ranges(original_ranges))
-            _ensure_red_two_bands(current_ranges)
-            _sync_trackbars_from_active()
-        elif btn == "Cancel":
+        elif btn == "Next":
+            action = "next"
+            done = True
+        elif btn == "Finish":
+            action = "finish"
             done = True
 
     print(
         "Colour setup: use < > arrows (or , . keys) to change mask, "
-        "tune H/S/V sliders, Set saves all masks, Reset restores all."
+        "tune H/S/V sliders, then Back / Next / Finish (b / n / f)."
     )
 
     _create_trackbars()
@@ -425,15 +427,17 @@ def run_colour_setup(
 
         key = cv2.waitKey(1) & 0xFF
         if key in (ord("q"), 27):
+            action = "cancel"
             done = True
-        elif key == ord("s"):
-            save_on_exit = True
+        elif key == ord("b"):
+            action = "back"
             done = True
-        elif key == ord("r"):
-            current_ranges.clear()
-            current_ranges.update(_deep_copy_ranges(original_ranges))
-            _ensure_red_two_bands(current_ranges)
-            _sync_trackbars_from_active()
+        elif key == ord("n"):
+            action = "next"
+            done = True
+        elif key == ord("f"):
+            action = "finish"
+            done = True
         elif key == ord(",") or key == 81:
             _cycle_mask(-1)
         elif key == ord(".") or key == 83:
@@ -451,11 +455,13 @@ def run_colour_setup(
         pass
     cv2.waitKey(1)
 
-    if save_on_exit:
-        save_hsv_ranges_to_config(current_ranges)
-        print(f"Saved all HSV_RANGES to {_CONFIG_PATH}")
-        from colour_mask_setup import run_colour_mask_setup
-
-        return run_colour_mask_setup(get_frame_pair, search_area=active_search_area)
-    print("Colour setup cancelled — HSV_RANGES unchanged.")
-    return False
+    _ensure_red_two_bands(current_ranges)
+    if action == "back":
+        print("Colour setup: moving to previous step.")
+    elif action == "next":
+        print("Colour setup: moving to next step.")
+    elif action == "finish":
+        print("Colour setup: finishing setup.")
+    else:
+        print("Colour setup cancelled — HSV_RANGES unchanged.")
+    return action, current_ranges

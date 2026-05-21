@@ -23,6 +23,7 @@ from layer_analysis import (
     analyse_tower,
     build_tower_image,
     block_id_from_tower_image_point,
+    print_tower_state,
 )
 from grid_generation import (
     build_edge_display,
@@ -117,8 +118,7 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
     _hex_frame_n:  int = 0
 
     TOWER_PRINT_INTERVAL_S = 8.0
-    ANALYSIS_INTERVAL_S = 5.0
-    _last_analysis_time_s: float = 0.0
+    _last_layer_print_time_s: float = 0.0
 
     def _on_layer_analysis_mouse(event: int, x: int, y: int, _flags: int, _userdata) -> None:
         nonlocal _selected_probe_block_id
@@ -167,6 +167,20 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
         if BLOCK_ANALYSIS:
             live_disp = bgr.copy()
             cv2.rectangle(live_disp, (roi_x, roi_y), (roi_x + rw, roi_y + rh), (255, 255, 0), 2)
+            # Overlay layer-analysis face centroids (when available) on live view.
+            for layer in _last_tower_state:
+                for block in layer.get("blocks", []):
+                    if not block.get("present"):
+                        continue
+                    mx = block.get("mean_x_px")
+                    my = block.get("mean_y_px")
+                    if mx is None or my is None:
+                        continue
+                    cx = int(round(float(mx)))
+                    cy = int(round(float(my)))
+                    if 0 <= cx < live_disp.shape[1] and 0 <= cy < live_disp.shape[0]:
+                        cv2.circle(live_disp, (cx, cy), 5, (255, 255, 255), -1)
+                        cv2.circle(live_disp, (cx, cy), 2, (0, 0, 0), -1)
             if frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES)):
                 for px, py in live_valid_points_crop:
                     if 0 <= px < live_disp.shape[1] and 0 <= py < live_disp.shape[0]:
@@ -355,7 +369,6 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
             if (
                 _last_tower_img is None
                 or probe_active
-                or (time.monotonic() - _last_analysis_time_s) >= ANALYSIS_INTERVAL_S
             ):
                 active_cells = [cell for layer in locked_layer_cells for cell in layer]
                 _last_pct_results = compute_percentages(bgr, cells=active_cells)
@@ -370,7 +383,7 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
                     row_cells,
                     frame_centre_x_px=camera_centre_x_crop,
                     frame_width_px=float(iw),
-                    print_enabled=not probe_active,
+                    print_enabled=False,
                 )
                 identity_tracker.apply(tower)
                 _last_tower_state = tower
@@ -378,12 +391,18 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
                     # Bottom-first (L0 at index 0) so GUI L1 = bottom, L6 = top.
                     tower_bottom_up = sorted(tower, key=lambda layer: layer["layer"])
                     publish_top_layer(tower_bottom_up)
-                _last_analysis_time_s = time.monotonic()
 
             probe_monitor.update(
                 _last_tower_state,
                 frame_shape=bgr.shape[:2],
             )
+            if (
+                not probe_active
+                and _last_tower_state
+                and (time.monotonic() - _last_layer_print_time_s) >= TOWER_PRINT_INTERVAL_S
+            ):
+                print_tower_state(_last_tower_state)
+                _last_layer_print_time_s = time.monotonic()
             if not probe_monitor.is_active():
                 _selected_probe_block_id = None
             if _last_tower_state:

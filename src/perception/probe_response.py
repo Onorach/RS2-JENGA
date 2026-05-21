@@ -13,7 +13,7 @@ import time
 
 from perception_config import PROBE_TARGET_BLOCK_ID_PLACEHOLDER
 
-CENTROID_ABORT_SHIFT_PCT = 5.0
+CENTROID_ABORT_SHIFT_PCT = 40.0
 PROBE_PRINT_INTERVAL_S = 0.2
 
 def _to_int_or_none(value) -> int | None:
@@ -61,8 +61,12 @@ def _build_probe_snapshot(
 
     all_centroids_px: dict[int, tuple[float, float]] = {}
     block_layer_by_id: dict[int, int] = {}
+    layer_orientation_by_idx: dict[int, str] = {}
     for layer in tower:
         layer_idx = int(layer.get("layer", -1))
+        orientation = str(layer.get("orientation", ""))
+        if orientation in ("left", "right"):
+            layer_orientation_by_idx[layer_idx] = orientation
         for block in layer.get("blocks", []):
             if not block.get("present"):
                 continue
@@ -73,6 +77,31 @@ def _build_probe_snapshot(
                 continue
             all_centroids_px[bid] = (float(mx), float(my))
             block_layer_by_id[bid] = layer_idx
+
+    # Per-layer outside-edge x (for centroid anchoring).
+    layer_edge_x_by_layer: dict[int, float] = {}
+    for layer_idx, orientation in layer_orientation_by_idx.items():
+        layer_xs = [
+            xy[0]
+            for bid, xy in all_centroids_px.items()
+            if block_layer_by_id.get(bid) == layer_idx
+        ]
+        if not layer_xs:
+            continue
+        layer_edge_x_by_layer[layer_idx] = (
+            min(layer_xs) if orientation == "left" else max(layer_xs)
+        )
+
+    # Baseline outside-edge offset per block: block_x - layer_outside_edge_x.
+    block_edge_offset_x: dict[int, float] = {}
+    for bid, xy in all_centroids_px.items():
+        layer_idx = block_layer_by_id.get(bid)
+        if layer_idx is None:
+            continue
+        edge_x = layer_edge_x_by_layer.get(layer_idx)
+        if edge_x is None:
+            continue
+        block_edge_offset_x[bid] = float(xy[0] - edge_x)
 
     excluded_centroid_ids = set([int(block_id)] + behind_block_ids)
     monitor_centroid_ids = sorted(
@@ -98,6 +127,19 @@ def _build_probe_snapshot(
             (target_centroid[0] - monitor_centroid_centre[0]) ** 2
             + (target_centroid[1] - monitor_centroid_centre[1]) ** 2
         ) ** 0.5
+
+    # Outside-edge reference proxy for target layer:
+    # use the outermost layer x-centroid on the visible end-on side.
+    target_layer_xs = [
+        all_centroids_px[bid][0]
+        for bid, lyr in block_layer_by_id.items()
+        if lyr == int(target_layer) and bid in all_centroids_px
+    ]
+    target_layer_outside_edge_x = None
+    if target_layer_xs:
+        target_layer_outside_edge_x = (
+            min(target_layer_xs) if target_orientation == "left" else max(target_layer_xs)
+        )
 
     # Normalize centroid shifts by in-image block width (px), not frame size.
     target_layer_centroids = []
@@ -130,8 +172,11 @@ def _build_probe_snapshot(
         "behind_block_ids": behind_block_ids,
         "all_centroids_px": all_centroids_px,
         "block_layer_by_id": block_layer_by_id,
+        "layer_edge_x_by_layer": layer_edge_x_by_layer,
+        "block_edge_offset_x": block_edge_offset_x,
         "monitor_centroid_ids": monitor_centroid_ids,
         "target_dist_px": target_dist_px,
+        "target_layer_outside_edge_x": target_layer_outside_edge_x,
         "block_width_px": block_width_px,
     }
 
@@ -149,7 +194,20 @@ def _assess_probe_response(baseline: dict, current: dict) -> dict:
         cxy = current.get("all_centroids_px", {}).get(bid)
         if bxy is None or cxy is None:
             continue
-        shift_px = float(((cxy[0] - bxy[0]) ** 2 + (cxy[1] - bxy[1]) ** 2) ** 0.5)
+
+        # Stabilize all monitored centroids using baseline edge-anchor offset.
+        layer_idx = baseline.get("block_layer_by_id", {}).get(bid)
+        offset_x = baseline.get("block_edge_offset_x", {}).get(bid)
+        current_edge_x = (
+            None
+            if layer_idx is None
+            else current.get("layer_edge_x_by_layer", {}).get(layer_idx)
+        )
+        if offset_x is not None and current_edge_x is not None:
+            stabilized_cx = float(current_edge_x) + float(offset_x)
+        else:
+            stabilized_cx = float(cxy[0])
+        shift_px = float(((stabilized_cx - float(bxy[0])) ** 2 + (float(cxy[1]) - float(bxy[1])) ** 2) ** 0.5)
         centroid_shift_pcts.append((shift_px / norm_px) * 100.0)
     avg_other_centroid_shift_pct = (
         float(sum(centroid_shift_pcts) / len(centroid_shift_pcts))
@@ -162,7 +220,19 @@ def _assess_probe_response(baseline: dict, current: dict) -> dict:
     target_dx_px = None
     target_dy_px = None
     if base_target_xy is not None and now_target_xy is not None:
-        target_dx_px = float(now_target_xy[0]) - float(base_target_xy[0])
+        layer_idx = baseline.get("block_layer_by_id", {}).get(target_id)
+        offset_x = baseline.get("block_edge_offset_x", {}).get(target_id)
+        now_edge_x = (
+            None
+            if layer_idx is None
+            else current.get("layer_edge_x_by_layer", {}).get(layer_idx)
+        )
+        if offset_x is not None and now_edge_x is not None:
+            # Keep selected-block centroid at a fixed offset from the outside edge.
+            stabilized_now_x = float(now_edge_x) + float(offset_x)
+        else:
+            stabilized_now_x = float(now_target_xy[0])
+        target_dx_px = stabilized_now_x - float(base_target_xy[0])
         target_dy_px = float(now_target_xy[1]) - float(base_target_xy[1])
 
     target_shift_pct = None
