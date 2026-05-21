@@ -412,8 +412,8 @@ class _ImageBridge(Node):
                 b.block_id = int(block.get("block_index", -1))
                 b.colour = str(block.get("colour", "unknown"))
                 b.layer = max(layer_idx, 0)
-                # Per-layer slot: front=1, mid=2, back=3.
-                b.layer_position = max(1, min(3, int(pos_idx) + 1))
+                # Per-layer slot: front=0, mid=1, back=2.
+                b.layer_position = max(0, min(2, int(pos_idx)))
 
                 pose = Pose()
                 # geometry_msgs/Pose uses SI units (metres).
@@ -518,7 +518,7 @@ class _TowerStatePublisher(Node):
                 b.block_id = int(block.get("block_index", -1))
                 b.colour = str(block.get("colour", "unknown"))
                 b.layer = max(layer_idx, 0)
-                b.layer_position = max(1, min(3, int(pos_idx) + 1))
+                b.layer_position = max(0, min(2, int(pos_idx)))
 
                 pose = Pose()
                 pose.position.x = float(pos.get("x", 0.0)) / 1000.0

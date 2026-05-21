@@ -18,6 +18,7 @@ from perception_config import (
     COLOUR_BGR,
     CAMERA_HFOV_DEG,
     CAMERA_GLOBAL_POSITION_MM,
+    BLOCK_POSE_WORLD_FRAME,
     BLOCK_YAW_DEG_ASSUMED,
 )
 
@@ -218,12 +219,26 @@ def _centroid_face_depth_mm(
 
 
 def _display_lateral_mm(block: dict, orientation: str) -> float | None:
-    """Return the orientation-adjusted lateral offset used in terminal output."""
+    """Return the orientation-adjusted lateral offset used for pose_camera_mm y."""
     lateral_mm = block.get("lateral_mm")
     if lateral_mm is None:
         return None
     x_offset = 26.5 if orientation == "left" else -26.5
     return float(lateral_mm + x_offset)
+
+
+def _format_global_pose_xy(block: dict) -> str:
+    """Format global-frame position (mm) from pose_global_mm (same frame as JengaBlockState)."""
+    pose = block.get("pose_global_mm")
+    if not pose:
+        return ""
+    pos = pose.get("position", {})
+    try:
+        x_mm = float(pos["x"])
+        y_mm = float(pos["y"])
+    except (KeyError, TypeError, ValueError):
+        return ""
+    return f" @x={x_mm:+.1f}mm @y={y_mm:+.1f}mm"
 
 
 def _assumed_orientation_xyzw() -> dict[str, float]:
@@ -238,7 +253,10 @@ def _assumed_orientation_xyzw() -> dict[str, float]:
 
 
 def _print_tower(tower: list[dict]) -> None:
-    print("─── Layer Analysis ───")
+    print(
+        f"── Layer Analysis (L0 = bottom, blocks: front → mid → back, "
+        f"{BLOCK_POSE_WORLD_FRAME} x/y mm) ────"
+    )
     for layer in sorted(tower, key=lambda item: item["layer"]):
         idx         = layer["layer"]
         orientation = layer["orientation"]
@@ -248,11 +266,8 @@ def _print_tower(tower: list[dict]) -> None:
 
         for label, block in zip(labels, layer["blocks"]):
             if block["present"]:
-                depth_mm = block.get("depth_mm")
-                y_mm = _display_lateral_mm(block, orientation)
-                d_str = f" @d={depth_mm:.1f}mm" if depth_mm is not None else ""
-                x_str = f" @x={y_mm:+.1f}mm" if y_mm is not None else ""
-                parts.append(f"{label}: {block['colour']}{d_str}{x_str}")
+                xy_str = _format_global_pose_xy(block)
+                parts.append(f"{label}: {block['colour']}{xy_str}")
             else:
                 parts.append(f"{label}: missing")
 

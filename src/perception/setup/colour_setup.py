@@ -331,14 +331,18 @@ def run_colour_setup(
         _updating_trackbars = False
 
     def _on_hsv_change(_pos: int) -> None:
-        if _updating_trackbars:
+        if _updating_trackbars or not trackbars_ready:
             return
-        _write_active_range_from_trackbars()
+        try:
+            _write_active_range_from_trackbars()
+        except cv2.error:
+            return
 
     def _create_trackbars() -> None:
-        nonlocal trackbars_ready
+        nonlocal trackbars_ready, _updating_trackbars
         if trackbars_ready:
             return
+        _updating_trackbars = True
         cv2.namedWindow(_WINDOW, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(_WINDOW, _MIN_WIDTH, 720)
         if _is_red():
@@ -352,6 +356,7 @@ def run_colour_setup(
         cv2.createTrackbar("S max", _WINDOW, hi[1], _SV_MAX, _on_hsv_change)
         cv2.createTrackbar("V min", _WINDOW, lo[2], _SV_MAX, _on_hsv_change)
         cv2.createTrackbar("V max", _WINDOW, hi[2], _SV_MAX, _on_hsv_change)
+        _updating_trackbars = False
         trackbars_ready = True
         _sync_trackbars_from_active()
 
@@ -434,14 +439,23 @@ def run_colour_setup(
         elif key == ord(".") or key == 83:
             _cycle_mask(1)
 
-    _write_active_range_from_trackbars()
-    cv2.destroyAllWindows()
+    if trackbars_ready:
+        try:
+            _write_active_range_from_trackbars()
+        except cv2.error:
+            pass
+    trackbars_ready = False
+    try:
+        cv2.destroyWindow(_WINDOW)
+    except cv2.error:
+        pass
+    cv2.waitKey(1)
 
     if save_on_exit:
         save_hsv_ranges_to_config(current_ranges)
         print(f"Saved all HSV_RANGES to {_CONFIG_PATH}")
-        from setup.tower_setup import run_tower_setup
+        from colour_mask_setup import run_colour_mask_setup
 
-        return run_tower_setup(get_frame_pair, search_area=active_search_area)
+        return run_colour_mask_setup(get_frame_pair, search_area=active_search_area)
     print("Colour setup cancelled — HSV_RANGES unchanged.")
     return False

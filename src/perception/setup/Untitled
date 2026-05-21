@@ -1,0 +1,2 @@
+ls install/setup.bash                    # should exist after build
+python3 -c "from jenga_interfaces.msg import JengaBlockState; print('ok')"

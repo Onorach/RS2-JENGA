@@ -57,30 +57,57 @@ def clean_colour_mask(colour_img: np.ndarray) -> np.ndarray:
 # Edge and line detection
 # ---------------------------------------------------------------------------
 
-def apply_centre_band_mask(img: np.ndarray) -> np.ndarray:
+def apply_centre_band_mask(
+    img: np.ndarray,
+    centre_band_pct: float | None = None,
+) -> np.ndarray:
     """Zero pixels outside the centred horizontal band (CANNY_CENTRE_BAND_PCT)."""
-    pct = float(CANNY_CENTRE_BAND_PCT)
+    pct = float(CANNY_CENTRE_BAND_PCT if centre_band_pct is None else centre_band_pct)
     if pct >= 100.0 or pct <= 0.0:
         return img
     h, w = img.shape[:2]
-    band_w = max(1, int(round(w * pct / 100.0)))
-    x_lo   = max(0, (w - band_w) // 2)
-    x_hi   = min(w, x_lo + band_w)
+    x_lo, x_hi = centre_band_x_bounds(w, pct)
     masked = np.zeros_like(img)
     masked[:, x_lo:x_hi] = img[:, x_lo:x_hi]
     return masked
 
 
-def compute_edges(colour_img: np.ndarray) -> np.ndarray:
+def compute_edges(
+    colour_img: np.ndarray,
+    *,
+    canny_low: int | None = None,
+    canny_high: int | None = None,
+) -> np.ndarray:
     """Compute Canny edges from the colour-mask image."""
     cleaned = clean_colour_mask(colour_img)
     grey = cv2.cvtColor(cleaned, cv2.COLOR_BGR2GRAY)
-    return cv2.Canny(grey, CANNY_MASK_LOW, CANNY_MASK_HIGH)
+    low = int(CANNY_MASK_LOW if canny_low is None else canny_low)
+    high = int(CANNY_MASK_HIGH if canny_high is None else canny_high)
+    return cv2.Canny(grey, low, high)
+
+
+def preview_mask_canny(colour_img: np.ndarray, *, canny_low: int | None = None, canny_high: int | None = None) -> np.ndarray:
+    """BGR preview of Canny edges from the colour-classification image."""
+    edges = compute_edges(colour_img, canny_low=canny_low, canny_high=canny_high)
+    return cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+
+
+def centre_band_x_bounds(width: int, centre_band_pct: float) -> tuple[int, int]:
+    """Return (x_lo, x_hi) for the centred horizontal band in pixel coordinates."""
+    pct = float(centre_band_pct)
+    if pct >= 100.0 or pct <= 0.0:
+        return 0, width
+    band_w = max(1, int(round(width * pct / 100.0)))
+    x_lo = max(0, (width - band_w) // 2)
+    return x_lo, min(width, x_lo + band_w)
 
 
 def compute_original_edges(
     original_bgr_img: np.ndarray,
     target_shape: tuple[int, int],
+    *,
+    canny_low: int | None = None,
+    canny_high: int | None = None,
 ) -> np.ndarray:
     """
     Canny edges from the original image in ROI space.
@@ -100,11 +127,27 @@ def compute_original_edges(
         original_roi = cv2.resize(
             original_roi, (int(tw), int(th)), interpolation=cv2.INTER_LINEAR,
         )
-    return cv2.Canny(
-        cv2.cvtColor(original_roi, cv2.COLOR_BGR2GRAY),
-        CANNY_ORIGINAL_LOW,
-        CANNY_ORIGINAL_HIGH,
+    low = int(CANNY_ORIGINAL_LOW if canny_low is None else canny_low)
+    high = int(CANNY_ORIGINAL_HIGH if canny_high is None else canny_high)
+    return cv2.Canny(cv2.cvtColor(original_roi, cv2.COLOR_BGR2GRAY), low, high)
+
+
+def preview_original_canny_views(
+    roi_bgr: np.ndarray,
+    *,
+    canny_low: int | None = None,
+    canny_high: int | None = None,
+    centre_band_pct: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return BGR previews: full Canny on ROI, then centre-band masked edges."""
+    th, tw = roi_bgr.shape[:2]
+    edges = compute_original_edges(
+        roi_bgr, (th, tw), canny_low=canny_low, canny_high=canny_high,
     )
+    banded = apply_centre_band_mask(edges, centre_band_pct=centre_band_pct)
+    full_bgr = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
+    band_bgr = cv2.cvtColor(banded, cv2.COLOR_GRAY2BGR)
+    return full_bgr, band_bgr
 
 
 def compute_combined_edges(

@@ -61,11 +61,12 @@ source install/setup.bash
 
 Each command below must be run in a **separate terminal** after sourcing the workspace (`source install/setup.bash`).
 
-**Step 1 — Launch the RealSense Camera Node:**
+**Step 1 — Launch the RealSense Camera Node** (run from the repo root `RS2-JENGA/`):
 ```bash
 ros2 launch realsense2_camera rs_launch.py \
-  depth_module.depth_profile:=640x480x30 \
-  rgb_camera.color_profile:=640x480x30
+  camera_name:=camera camera_namespace:=camera align_depth.enable:=true \
+  depth_module.depth_profile:=640x480x30 rgb_camera.color_profile:=640x480x30 \
+  json_file_path:="$(realpath src/perception/camera_files/Settings/Low_Contrast.json)"
 ```
 
 **Step 2 — Launch Vision Processing (Perception):**

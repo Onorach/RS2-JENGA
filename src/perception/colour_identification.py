@@ -19,6 +19,9 @@ from perception_config import (
     COLOUR_BGR,
     SEARCH_AREA,
     COLOUR_MIN_BLOB_AREA_PX,
+    COLOUR_MASK_MEDIAN_PX,
+    COLOUR_MASK_MORPH_CLOSE_PX,
+    COLOUR_MASK_MORPH_OPEN_PX,
 )
 
 try:
@@ -31,12 +34,6 @@ try:
 except ImportError:
     _ROS_AVAILABLE = False
     Node = object
-
-# Spatial pre-filters applied before HSV classification.
-# Median blur smooths fringe pixels; morphological open removes specks.
-PREFILTER_MEDIAN_PX = 5  # 0 = disabled
-PREFILTER_OPEN_PX   = 5  # 0 = disabled
-
 
 def compute_roi(
     iw: int,
@@ -77,22 +74,36 @@ def classify_hsv(
     hsv: np.ndarray,
     colour: str,
     hsv_ranges: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] | None = None,
+    *,
+    median_px: int | None = None,
+    morph_close_px: int | None = None,
+    morph_open_px: int | None = None,
+    min_blob_area_px: int | None = None,
 ) -> np.ndarray:
     """Return a boolean mask (H×W) that is True wherever hsv matches colour."""
-    if PREFILTER_MEDIAN_PX > 0:
-        hsv = cv2.medianBlur(hsv, _odd(PREFILTER_MEDIAN_PX))
+    med = int(COLOUR_MASK_MEDIAN_PX if median_px is None else median_px)
+    close_px = int(COLOUR_MASK_MORPH_CLOSE_PX if morph_close_px is None else morph_close_px)
+    open_px = int(COLOUR_MASK_MORPH_OPEN_PX if morph_open_px is None else morph_open_px)
+    min_blob = int(COLOUR_MIN_BLOB_AREA_PX if min_blob_area_px is None else min_blob_area_px)
+
+    work = hsv
+    if med > 0:
+        work = cv2.medianBlur(work, _odd(med))
 
     ranges_map = hsv_ranges if hsv_ranges is not None else HSV_RANGES
-    combined = np.zeros(hsv.shape[:2], dtype=np.uint8)
+    combined = np.zeros(work.shape[:2], dtype=np.uint8)
     for lo, hi in ranges_map[colour]:
-        combined |= cv2.inRange(hsv, np.array(lo, dtype=np.uint8),
-                                     np.array(hi, dtype=np.uint8))
+        combined |= cv2.inRange(work, np.array(lo, dtype=np.uint8),
+                                    np.array(hi, dtype=np.uint8))
 
-    if PREFILTER_OPEN_PX > 0:
-        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_odd(PREFILTER_OPEN_PX),) * 2)
+    if close_px > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_odd(close_px),) * 2)
+        combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, k)
+    if open_px > 0:
+        k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (_odd(open_px),) * 2)
         combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, k)
 
-    combined = _remove_small_components(combined, int(COLOUR_MIN_BLOB_AREA_PX))
+    combined = _remove_small_components(combined, min_blob)
 
     return combined.astype(bool)
 
@@ -100,6 +111,11 @@ def classify_hsv(
 def classify_roi_bgr(
     roi_bgr: np.ndarray,
     hsv_ranges: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] | None = None,
+    *,
+    median_px: int | None = None,
+    morph_close_px: int | None = None,
+    morph_open_px: int | None = None,
+    min_blob_area_px: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Classify every pixel in a pre-cropped ROI BGR image."""
     ranges_map = hsv_ranges if hsv_ranges is not None else HSV_RANGES
@@ -110,7 +126,15 @@ def classify_roi_bgr(
     unclassified = np.ones((rh, rw), dtype=bool)
 
     for colour in ranges_map:
-        mask = classify_hsv(hsv, colour, hsv_ranges) & unclassified
+        mask = classify_hsv(
+            hsv,
+            colour,
+            hsv_ranges,
+            median_px=median_px,
+            morph_close_px=morph_close_px,
+            morph_open_px=morph_open_px,
+            min_blob_area_px=min_blob_area_px,
+        ) & unclassified
         colour_img[mask] = COLOUR_BGR[colour]
         label_grid[mask] = colour
         unclassified    &= ~mask
