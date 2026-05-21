@@ -167,7 +167,8 @@ def analyse_layer(
 
     for block in endon_blocks:
         if block["present"] and "mean_x_px" in block:
-            lateral_px = block["mean_x_px"] - frame_centre_x
+            # Image x increases to the right; camera +Y is defined as left.
+            lateral_px = frame_centre_x - block["mean_x_px"]
             mx = block.get("mean_x_px")
             my = block.get("mean_y_px")
             if mx is not None and my is not None:
@@ -178,6 +179,8 @@ def analyse_layer(
                     block["face_depth_mm"] = round(centroid_face, 1)
                     block["depth_mm"] = round(centroid_face + CENTROID_OFFSET_MM, 1)
                     mm_per_px = 2.0 * centroid_face * tan_half_hfov / frame_width
+                    block["lateral_px"] = float(lateral_px)
+                    block["mm_per_px"] = float(mm_per_px)
                     block["lateral_mm"] = lateral_px * mm_per_px
 
     return {
@@ -223,11 +226,11 @@ def _display_lateral_mm(block: dict, orientation: str) -> float | None:
     lateral_mm = block.get("lateral_mm")
     if lateral_mm is None:
         return None
-    x_offset = 26.5 if orientation == "left" else -26.5
+    x_offset = -26.5 if orientation == "left" else 26.5
     return float(lateral_mm + x_offset)
 
 
-def _format_global_pose_xy(block: dict) -> str:
+def _format_global_pose_xyz(block: dict) -> str:
     """Format global-frame position (mm) from pose_global_mm (same frame as JengaBlockState)."""
     pose = block.get("pose_global_mm")
     if not pose:
@@ -236,9 +239,10 @@ def _format_global_pose_xy(block: dict) -> str:
     try:
         x_mm = float(pos["x"])
         y_mm = float(pos["y"])
+        z_mm = float(pos["z"])
     except (KeyError, TypeError, ValueError):
         return ""
-    return f" @x={x_mm:+.1f}mm @y={y_mm:+.1f}mm"
+    return f" @x={x_mm:+.1f}mm @y={y_mm:+.1f}mm @z={z_mm:+.1f}mm"
 
 
 def _assumed_orientation_xyzw() -> dict[str, float]:
@@ -252,10 +256,22 @@ def _assumed_orientation_xyzw() -> dict[str, float]:
     }
 
 
+def _block_abs_global_y(block: dict) -> float:
+    """Sort key: smaller absolute global Y means closer to y=0."""
+    pose = block.get("pose_global_mm")
+    if not pose:
+        return float("inf")
+    pos = pose.get("position", {})
+    try:
+        return abs(float(pos["y"]))
+    except (KeyError, TypeError, ValueError):
+        return float("inf")
+
+
 def _print_tower(tower: list[dict]) -> None:
     print(
         f"── Layer Analysis (L0 = bottom, blocks: front → mid → back, "
-        f"{BLOCK_POSE_WORLD_FRAME} x/y mm) ────"
+        f"{BLOCK_POSE_WORLD_FRAME} x/y/z mm) ────"
     )
     for layer in sorted(tower, key=lambda item: item["layer"]):
         idx         = layer["layer"]
@@ -266,8 +282,8 @@ def _print_tower(tower: list[dict]) -> None:
 
         for label, block in zip(labels, layer["blocks"]):
             if block["present"]:
-                xy_str = _format_global_pose_xy(block)
-                parts.append(f"{label}: {block['colour']}{xy_str}")
+                xyz_str = _format_global_pose_xyz(block)
+                parts.append(f"{label}: {block['colour']}{xyz_str}")
             else:
                 parts.append(f"{label}: missing")
 
@@ -281,6 +297,7 @@ def analyse_tower(
     row_cells: list[tuple[dict, dict]],
     frame_centre_x_px: float | None = None,
     frame_width_px: float | None = None,
+    print_enabled: bool = True,
 ) -> list[dict]:
     global _last_print_time
     tower = []
@@ -305,41 +322,51 @@ def analyse_tower(
     tower.sort(key=lambda item: item["layer"])
     for list_idx, layer in enumerate(tower):
         for pos, block in enumerate(layer["blocks"]):
-            if block.get("present"):
-                block["id"] = f"{list_idx * 3 + pos:03d}"
-                block["block_index"] = int(list_idx * 3 + pos)
-                depth_mm = block.get("depth_mm")
-                lateral_display_mm = _display_lateral_mm(block, layer["orientation"])
-                if depth_mm is None or lateral_display_mm is None:
-                    continue
+            if not block.get("present"):
+                continue
+            depth_mm = block.get("depth_mm")
+            lateral_display_mm = _display_lateral_mm(block, layer["orientation"])
+            if depth_mm is None or lateral_display_mm is None:
+                continue
 
-                # Assumed camera-local frame:
-                #   +x away from camera, +y left of camera.
-                # Keep z as requested from layer only (mm).
-                z_local_mm = 15.0 * (float(layer["layer"]) + 1.0) - 7.5
-                x_local_mm = float(depth_mm)
-                y_local_mm = float(lateral_display_mm)
-                orientation_xyzw = _assumed_orientation_xyzw()
+            # Assumed camera-local frame:
+            #   +x away from camera, +y left of camera.
+            # Keep z as requested from layer only (mm).
+            z_local_mm = 15.0 * (float(layer["layer"]) + 1.0) - 7.5
+            x_local_mm = float(depth_mm)
+            y_local_mm = float(lateral_display_mm)
+            orientation_xyzw = _assumed_orientation_xyzw()
 
-                block["pose_camera_mm"] = {
-                    "position": {
-                        "x": x_local_mm,
-                        "y": y_local_mm,
-                        "z": z_local_mm,
-                    },
-                    "orientation": orientation_xyzw,
-                }
-                block["pose_global_mm"] = {
-                    "position": {
-                        "x": x_local_mm + float(CAMERA_GLOBAL_POSITION_MM[0]),
-                        "y": y_local_mm + float(CAMERA_GLOBAL_POSITION_MM[1]),
-                        "z": z_local_mm + float(CAMERA_GLOBAL_POSITION_MM[2]),
-                    },
-                    "orientation": orientation_xyzw,
-                }
+            block["pose_camera_mm"] = {
+                "position": {
+                    "x": x_local_mm,
+                    "y": y_local_mm,
+                    "z": z_local_mm,
+                },
+                "orientation": orientation_xyzw,
+            }
+            block["pose_global_mm"] = {
+                "position": {
+                    "x": x_local_mm + float(CAMERA_GLOBAL_POSITION_MM[0]),
+                    "y": y_local_mm + float(CAMERA_GLOBAL_POSITION_MM[1]),
+                    "z": z_local_mm + float(CAMERA_GLOBAL_POSITION_MM[2]),
+                },
+                "orientation": orientation_xyzw,
+            }
+
+        # Per-layer indexing rule: lowest index is block closest to y=0.
+        sorted_block_positions = sorted(
+            range(len(layer["blocks"])),
+            key=lambda idx: (_block_abs_global_y(layer["blocks"][idx]), idx),
+        )
+        for local_rank, pos_idx in enumerate(sorted_block_positions):
+            block = layer["blocks"][pos_idx]
+            block_index = int(list_idx * 3 + local_rank)
+            block["block_index"] = block_index
+            block["id"] = f"{block_index:03d}"
 
     now = time.monotonic()
-    if now - _last_print_time >= PRINT_INTERVAL_S:
+    if print_enabled and now - _last_print_time >= PRINT_INTERVAL_S:
         _print_tower(tower)
         _last_print_time = now
 
@@ -350,14 +377,69 @@ def analyse_tower(
 # Tower visualisation
 # ---------------------------------------------------------------------------
 
-def build_tower_image(tower: list[dict]) -> np.ndarray:
-    block_w, block_h, block_gap = 80, 28, 4
+TOWER_BLOCK_W = 80
+TOWER_BLOCK_H = 28
+TOWER_BLOCK_GAP = 4
+TOWER_MARGIN = 40
+TOWER_LABEL_W = 60
+
+
+def _tower_block_rects(tower: list[dict]) -> list[tuple[int, int, int, int, dict]]:
+    """Return image-space rectangles (x0, y0, x1, y1, block) for each tower slot."""
+    layer_h = TOWER_BLOCK_H + TOWER_BLOCK_GAP
+    n_layers = len(tower)
+    rects: list[tuple[int, int, int, int, dict]] = []
+    for layer_data in tower:
+        layer_idx = int(layer_data["layer"])
+        blocks = layer_data["blocks"]
+        y0 = TOWER_MARGIN + (n_layers - 1 - layer_idx) * layer_h
+        y1 = y0 + TOWER_BLOCK_H
+        x_start = TOWER_MARGIN + TOWER_LABEL_W
+        for pos, block in enumerate(blocks):
+            x0 = x_start + pos * (TOWER_BLOCK_W + TOWER_BLOCK_GAP)
+            x1 = x0 + TOWER_BLOCK_W
+            rects.append((x0, y0, x1, y1, block))
+    return rects
+
+
+def block_id_from_tower_image_point(tower: list[dict], x: int, y: int) -> int | None:
+    """Return block_index for the clicked slot in the Layer Analysis image."""
+    for x0, y0, x1, y1, block in _tower_block_rects(tower):
+        if x0 <= x <= x1 and y0 <= y <= y1:
+            block_id = block.get("block_index")
+            if block_id is None:
+                return None
+            try:
+                return int(block_id)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+def build_tower_image(
+    tower: list[dict],
+    selected_block_id: int | None = None,
+    probe_status_text: str | None = None,
+) -> np.ndarray:
+    block_w, block_h, block_gap = TOWER_BLOCK_W, TOWER_BLOCK_H, TOWER_BLOCK_GAP
     layer_h = block_h + block_gap
-    margin, label_w = 40, 60
+    margin, label_w = TOWER_MARGIN, TOWER_LABEL_W
     n_layers, n_blocks = len(tower), 3
     img_w = margin * 2 + label_w + n_blocks * block_w + (n_blocks - 1) * block_gap
     img_h = margin * 2 + n_layers * layer_h
     canvas = np.full((img_h, img_w, 3), 30, dtype=np.uint8)
+
+    if probe_status_text:
+        cv2.putText(
+            canvas,
+            probe_status_text,
+            (margin, margin - 16),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.42,
+            (230, 230, 230),
+            1,
+            cv2.LINE_AA,
+        )
 
     for layer_data in tower:
         layer_idx   = layer_data["layer"]
@@ -376,10 +458,24 @@ def build_tower_image(tower: list[dict]) -> np.ndarray:
             x0  = x_start + pos * (block_w + block_gap)
             x1  = x0 + block_w
             bgr = COLOUR_BGR.get(block["colour"], (60, 60, 60))
+            block_id = block.get("block_index")
             if block["present"]:
                 cv2.rectangle(canvas, (x0, y0), (x1, y1), bgr, -1)
                 cv2.rectangle(canvas, (x0, y0), (x1, y1), (200, 200, 200), 1)
             else:
                 cv2.rectangle(canvas, (x0, y0), (x1, y1), (80, 80, 80), 1)
+            if block_id is not None:
+                cv2.putText(
+                    canvas,
+                    str(int(block_id)),
+                    (x0 + 4, y1 - 8),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.34,
+                    (255, 255, 255),
+                    1,
+                    cv2.LINE_AA,
+                )
+            if selected_block_id is not None and block_id is not None and int(block_id) == int(selected_block_id):
+                cv2.rectangle(canvas, (x0, y0), (x1, y1), (0, 255, 255), 2)
 
     return canvas

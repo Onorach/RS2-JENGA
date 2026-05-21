@@ -19,11 +19,16 @@ from jenga_interfaces.msg import JengaBlockState, JengaBlockStates
 
 from colour_identification import classify_roi_bgr, compute_roi
 from box_percentages import compute_percentages, build_debug_image
-from layer_analysis import analyse_tower, build_tower_image
+from layer_analysis import (
+    analyse_tower,
+    build_tower_image,
+    block_id_from_tower_image_point,
+)
 from grid_generation import (
     build_edge_display,
     classify_lines,
     draw_classified_lines,
+    cluster_points,
     find_hv_intersections_from_classified,
     filter_points_by_x_bands,
     build_layer_cells_from_points,
@@ -47,6 +52,7 @@ from perception_config import (
     BLOCK_POSE_WORLD_FRAME,
 )
 from probe_response import ProbeResponseMonitor
+from block_identity_tracker import BlockIdentityTracker
 
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
@@ -99,16 +105,41 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
     points_locked    = False
     locked_layer_cells: list[list[dict]] = []
     live_valid_points_crop: list[tuple[int, int]] = []
+    accumulated_grid_points: list[tuple[int, int]] = []
     _last_pct_results: list[dict] = []
     _last_tower_img:   np.ndarray | None = None
     _last_tower_state: list[dict] = []
+    _selected_probe_block_id: int | None = None
+    identity_tracker = BlockIdentityTracker()
     _last_tower_finder_print: float = 0.0
     probe_monitor = ProbeResponseMonitor()
     _cached_pts:   np.ndarray | None = None
     _hex_frame_n:  int = 0
 
-    ANALYSIS_INTERVAL      = 5    # Re-run heavy analysis every N frames after lock.
-    TOWER_PRINT_INTERVAL_S = 3.0
+    TOWER_PRINT_INTERVAL_S = 8.0
+    ANALYSIS_INTERVAL_S = 5.0
+    _last_analysis_time_s: float = 0.0
+
+    def _on_layer_analysis_mouse(event: int, x: int, y: int, _flags: int, _userdata) -> None:
+        nonlocal _selected_probe_block_id
+        if event != cv2.EVENT_LBUTTONUP:
+            return
+        if not _last_tower_state:
+            return
+        clicked_block_id = block_id_from_tower_image_point(_last_tower_state, int(x), int(y))
+        if clicked_block_id is None:
+            return
+        if _selected_probe_block_id == clicked_block_id:
+            print(f"[probe] deselected block {clicked_block_id}")
+            _selected_probe_block_id = None
+            probe_monitor.set_target_block_id(None)
+            return
+        _selected_probe_block_id = int(clicked_block_id)
+        probe_monitor.set_target_block_id(_selected_probe_block_id)
+        print(f"[probe] selected block {_selected_probe_block_id} for probing")
+
+    if BLOCK_ANALYSIS:
+        cv2.setMouseCallback("Layer Analysis", _on_layer_analysis_mouse)
 
     while True:
         bgr_full, depth_mm_full = get_frame_pair()
@@ -174,11 +205,15 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
                 horiz_hist, vert_hist, history_disp.shape,
             )
             last_grid_points = filter_points_by_x_bands(last_grid_points, rw)
+            accumulated_grid_points.extend(last_grid_points)
+
+            # Use accumulated points from frame 0 up to lock time.
+            points_for_lock = cluster_points(accumulated_grid_points)
             if frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES)):
                 live_valid_points_crop = [
-                    (int(ix + roi_x), int(iy + roi_y)) for ix, iy in last_grid_points
+                    (int(ix + roi_x), int(iy + roi_y)) for ix, iy in points_for_lock
                 ]
-            for ix, iy in last_grid_points:
+            for ix, iy in points_for_lock:
                 cv2.circle(history_disp, (ix, iy), 3, (0, 0, 255), -1)
             cv2.imshow("Edges", history_disp)
 
@@ -187,10 +222,11 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
             frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES))
             and BLOCK_ANALYSIS
             and not points_locked
-            and last_grid_points
+            and accumulated_grid_points
         ):
+            points_for_lock = cluster_points(accumulated_grid_points)
             locked_layer_cells = build_layer_cells_from_points(
-                last_grid_points, (roi_x, roi_y, rw, rh),
+                points_for_lock, (roi_x, roi_y, rw, rh),
             )
             if locked_layer_cells:
                 points_locked = True
@@ -315,7 +351,12 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
         # --- Box percentages + layer analysis (active after grid lock) ---
         if BLOCK_ANALYSIS and points_locked:
             row_cells = [(layer[0], layer[1]) for layer in locked_layer_cells]
-            if frame_n % ANALYSIS_INTERVAL == 0 or _last_tower_img is None:
+            probe_active = probe_monitor.is_active()
+            if (
+                _last_tower_img is None
+                or probe_active
+                or (time.monotonic() - _last_analysis_time_s) >= ANALYSIS_INTERVAL_S
+            ):
                 active_cells = [cell for layer in locked_layer_cells for cell in layer]
                 _last_pct_results = compute_percentages(bgr, cells=active_cells)
                 depth_for_layers = (
@@ -329,15 +370,28 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
                     row_cells,
                     frame_centre_x_px=camera_centre_x_crop,
                     frame_width_px=float(iw),
+                    print_enabled=not probe_active,
                 )
+                identity_tracker.apply(tower)
                 _last_tower_state = tower
-                _last_tower_img = build_tower_image(tower)
                 if tower and publish_top_layer:
                     # Bottom-first (L0 at index 0) so GUI L1 = bottom, L6 = top.
                     tower_bottom_up = sorted(tower, key=lambda layer: layer["layer"])
                     publish_top_layer(tower_bottom_up)
+                _last_analysis_time_s = time.monotonic()
 
-            probe_monitor.update(_last_tower_state, _last_pct_results, row_cells)
+            probe_monitor.update(
+                _last_tower_state,
+                frame_shape=bgr.shape[:2],
+            )
+            if not probe_monitor.is_active():
+                _selected_probe_block_id = None
+            if _last_tower_state:
+                _last_tower_img = build_tower_image(
+                    _last_tower_state,
+                    selected_block_id=_selected_probe_block_id,
+                    probe_status_text=probe_monitor.status_text(),
+                )
 
             if _last_pct_results:
                 active_cells = [cell for layer in locked_layer_cells for cell in layer]
@@ -552,25 +606,40 @@ def _shutdown_executor(executor: SingleThreadedExecutor, nodes: list) -> None:
     executor.shutdown()
     for n in nodes:
         n.destroy_node()
-    rclpy.shutdown()
+    try:
+        if rclpy.ok():
+            rclpy.shutdown()
+    except Exception:
+        # Ignore duplicate/late shutdown races during Ctrl+C teardown.
+        pass
 
 
 # ---------------------------------------------------------------------------
 # Public entry points
 # ---------------------------------------------------------------------------
 
-def run_with_pipeline(pipeline) -> None:
+def run_with_pipeline(pipeline, target_fps: float | None = None) -> None:
     """Run the display loop reading frames from a RealSense pipeline object."""
     import pyrealsense2 as rs
     align = rs.align(rs.stream.color)
+    frame_interval_s = (1.0 / float(target_fps)) if target_fps and target_fps > 0 else None
+    last_frame_time_s: float | None = None
 
     def get_frame_pair():
+        nonlocal last_frame_time_s
+        if frame_interval_s is not None and last_frame_time_s is not None:
+            now = time.monotonic()
+            sleep_s = frame_interval_s - (now - last_frame_time_s)
+            if sleep_s > 0:
+                time.sleep(sleep_s)
         frames       = pipeline.wait_for_frames(timeout_ms=1000)
         aligned      = align.process(frames)
         color_frame  = aligned.get_color_frame()
         depth_frame  = aligned.get_depth_frame()
         if color_frame is None or not color_frame:
             return None, None
+        if frame_interval_s is not None:
+            last_frame_time_s = time.monotonic()
 
         frame        = np.asanyarray(color_frame.get_data())
         frame_format = str(color_frame.profile.format()).lower()

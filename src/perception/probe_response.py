@@ -11,39 +11,37 @@ from __future__ import annotations
 
 import time
 
-from perception_config import (
-    PROBE_TARGET_BLOCK_ID_PLACEHOLDER,
-    PROBE_TARGET_GAIN_MIN_PCT,
-    PROBE_STABLE_DELTA_MAX_PCT,
-    PROBE_ABOVE_LAYER_GAIN_MIN_PCT,
-)
+from perception_config import PROBE_TARGET_BLOCK_ID_PLACEHOLDER
 
+CENTROID_ABORT_SHIFT_PCT = 5.0
+PROBE_PRINT_INTERVAL_S = 0.2
 
-def _colour_pct(cell_result: dict | None, colour: str | None) -> float | None:
-    if not cell_result or not colour:
+def _to_int_or_none(value) -> int | None:
+    if value is None:
         return None
-    return float(cell_result.get("colours", {}).get(colour, {}).get("pct", 0.0))
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _build_probe_snapshot(
     tower: list[dict],
-    pct_results: list[dict],
-    n_layers: int,
     block_id: int,
+    frame_shape: tuple[int, int] | None = None,
 ) -> dict | None:
     target_layer = None
     target_pos = None
-    target_colour = None
     target_orientation = None
 
     for layer in tower:
         for pos_idx, block in enumerate(layer.get("blocks", [])):
-            if int(block.get("block_index", -1)) == int(block_id):
-                if not block.get("present"):
-                    return None
+            block_idx = _to_int_or_none(block.get("block_index"))
+            if block_idx is None:
+                continue
+            if block_idx == int(block_id):
                 target_layer = int(layer.get("layer", -1))
                 target_pos = int(pos_idx)
-                target_colour = str(block.get("colour", "unknown"))
                 target_orientation = layer.get("orientation")
                 break
         if target_layer is not None:
@@ -52,108 +50,145 @@ def _build_probe_snapshot(
     if target_layer is None or target_orientation not in ("left", "right"):
         return None
 
-    row_idx = (n_layers - 1) - target_layer
-    if row_idx < 0 or row_idx >= n_layers:
-        return None
-
-    left_idx = row_idx * 2
-    right_idx = left_idx + 1
-    if right_idx >= len(pct_results):
-        return None
-
-    target_cell = pct_results[left_idx] if target_orientation == "left" else pct_results[right_idx]
-
-    same_layer_ref: dict[str, float] = {}
+    behind_block_ids: list[int] = []
     layer_data = next((l for l in tower if int(l.get("layer", -1)) == target_layer), None)
     if layer_data is not None:
         for pos_idx, block in enumerate(layer_data.get("blocks", [])):
-            if pos_idx == target_pos or not block.get("present"):
-                continue
-            colour = str(block.get("colour", "unknown"))
-            if colour and colour != "unknown":
-                pct = _colour_pct(target_cell, colour)
-                if pct is not None:
-                    same_layer_ref[colour] = pct
+            block_idx = _to_int_or_none(block.get("block_index"))
+            if block_idx is not None and block_idx >= 0:
+                if pos_idx > target_pos:
+                    behind_block_ids.append(block_idx)
 
-    above_front_colour = None
-    above_mid_colour = None
-    above_front_pct = None
-    above_mid_pct = None
-    above_layer = target_layer + 1
-    if above_layer < n_layers:
-        above_data = next((l for l in tower if int(l.get("layer", -1)) == above_layer), None)
-        if above_data is not None and above_data.get("orientation") in ("left", "right"):
-            above_row_idx = (n_layers - 1) - above_layer
-            a_left_idx = above_row_idx * 2
-            a_right_idx = a_left_idx + 1
-            if a_right_idx < len(pct_results):
-                above_cell = pct_results[a_left_idx] if above_data["orientation"] == "left" else pct_results[a_right_idx]
-                above_blocks = above_data.get("blocks", [])
-                if len(above_blocks) >= 2:
-                    if above_blocks[0].get("present"):
-                        above_front_colour = str(above_blocks[0].get("colour", "unknown"))
-                        above_front_pct = _colour_pct(above_cell, above_front_colour)
-                    if above_blocks[1].get("present"):
-                        above_mid_colour = str(above_blocks[1].get("colour", "unknown"))
-                        above_mid_pct = _colour_pct(above_cell, above_mid_colour)
+    all_centroids_px: dict[int, tuple[float, float]] = {}
+    block_layer_by_id: dict[int, int] = {}
+    for layer in tower:
+        layer_idx = int(layer.get("layer", -1))
+        for block in layer.get("blocks", []):
+            if not block.get("present"):
+                continue
+            bid = _to_int_or_none(block.get("block_index"))
+            mx = block.get("mean_x_px")
+            my = block.get("mean_y_px")
+            if bid is None or bid < 0 or mx is None or my is None:
+                continue
+            all_centroids_px[bid] = (float(mx), float(my))
+            block_layer_by_id[bid] = layer_idx
+
+    excluded_centroid_ids = set([int(block_id)] + behind_block_ids)
+    monitor_centroid_ids = sorted(
+        bid for bid in all_centroids_px
+        if (
+            bid not in excluded_centroid_ids
+            and block_layer_by_id.get(bid, -1) >= int(target_layer)
+        )
+    )
+
+    target_centroid = all_centroids_px.get(int(block_id))
+    monitor_points = [all_centroids_px[bid] for bid in monitor_centroid_ids if bid in all_centroids_px]
+    if monitor_points:
+        cx = float(sum(p[0] for p in monitor_points) / len(monitor_points))
+        cy = float(sum(p[1] for p in monitor_points) / len(monitor_points))
+        monitor_centroid_centre = (cx, cy)
+    else:
+        monitor_centroid_centre = None
+
+    target_dist_px = None
+    if target_centroid is not None and monitor_centroid_centre is not None:
+        target_dist_px = (
+            (target_centroid[0] - monitor_centroid_centre[0]) ** 2
+            + (target_centroid[1] - monitor_centroid_centre[1]) ** 2
+        ) ** 0.5
+
+    # Normalize centroid shifts by in-image block width (px), not frame size.
+    target_layer_centroids = []
+    if layer_data is not None:
+        for block in layer_data.get("blocks", []):
+            bid = _to_int_or_none(block.get("block_index"))
+            if bid is None:
+                continue
+            xy = all_centroids_px.get(bid)
+            if xy is not None:
+                target_layer_centroids.append((xy[0], xy[1]))
+    target_layer_centroids.sort(key=lambda p: p[0])
+    adjacent_distances = [
+        abs(target_layer_centroids[i + 1][0] - target_layer_centroids[i][0])
+        for i in range(len(target_layer_centroids) - 1)
+    ]
+    block_width_px = None
+    if adjacent_distances:
+        block_width_px = float(sum(adjacent_distances) / len(adjacent_distances))
+    elif frame_shape is not None:
+        fh, fw = int(frame_shape[0]), int(frame_shape[1])
+        if fh > 0 and fw > 0:
+            block_width_px = float((fh * fh + fw * fw) ** 0.5)
 
     return {
         "block_id": int(block_id),
         "layer": int(target_layer),
         "target_pos": int(target_pos),
         "is_middle": bool(target_pos == 1),
-        "target_colour": target_colour,
-        "target_pct": _colour_pct(target_cell, target_colour),
-        "same_layer_ref": same_layer_ref,
-        "above_front_colour": above_front_colour,
-        "above_mid_colour": above_mid_colour,
-        "above_front_pct": above_front_pct,
-        "above_mid_pct": above_mid_pct,
+        "behind_block_ids": behind_block_ids,
+        "all_centroids_px": all_centroids_px,
+        "block_layer_by_id": block_layer_by_id,
+        "monitor_centroid_ids": monitor_centroid_ids,
+        "target_dist_px": target_dist_px,
+        "block_width_px": block_width_px,
     }
 
 
 def _assess_probe_response(baseline: dict, current: dict) -> dict:
-    target_base = float(baseline.get("target_pct") or 0.0)
-    target_now = float(current.get("target_pct") or 0.0)
-    target_delta = target_now - target_base
+    norm_px = float(
+        current.get("block_width_px")
+        or baseline.get("block_width_px")
+        or 1.0
+    )
+    monitor_ids = list(baseline.get("monitor_centroid_ids", []))
+    centroid_shift_pcts: list[float] = []
+    for bid in monitor_ids:
+        bxy = baseline.get("all_centroids_px", {}).get(bid)
+        cxy = current.get("all_centroids_px", {}).get(bid)
+        if bxy is None or cxy is None:
+            continue
+        shift_px = float(((cxy[0] - bxy[0]) ** 2 + (cxy[1] - bxy[1]) ** 2) ** 0.5)
+        centroid_shift_pcts.append((shift_px / norm_px) * 100.0)
+    avg_other_centroid_shift_pct = (
+        float(sum(centroid_shift_pcts) / len(centroid_shift_pcts))
+        if centroid_shift_pcts else 0.0
+    )
 
-    same_layer_deltas: dict[str, float] = {}
-    for colour, base_pct in baseline.get("same_layer_ref", {}).items():
-        now_pct = float(current.get("same_layer_ref", {}).get(colour, 0.0))
-        same_layer_deltas[colour] = now_pct - float(base_pct)
-    max_other_abs_delta = max((abs(v) for v in same_layer_deltas.values()), default=0.0)
+    target_id = int(baseline.get("block_id", -1))
+    base_target_xy = baseline.get("all_centroids_px", {}).get(target_id)
+    now_target_xy = current.get("all_centroids_px", {}).get(target_id)
+    target_dx_px = None
+    target_dy_px = None
+    if base_target_xy is not None and now_target_xy is not None:
+        target_dx_px = float(now_target_xy[0]) - float(base_target_xy[0])
+        target_dy_px = float(now_target_xy[1]) - float(base_target_xy[1])
 
-    def _delta(now_val: float | None, base_val: float | None) -> float | None:
-        if now_val is None or base_val is None:
-            return None
-        return float(now_val) - float(base_val)
-
-    above_front_delta = _delta(current.get("above_front_pct"), baseline.get("above_front_pct"))
-    above_mid_delta = _delta(current.get("above_mid_pct"), baseline.get("above_mid_pct"))
-    above_shift = any(
-        d is not None and d >= PROBE_ABOVE_LAYER_GAIN_MIN_PCT
-        for d in (above_front_delta, above_mid_delta)
+    target_shift_pct = None
+    if target_dx_px is not None and target_dy_px is not None:
+        target_shift_pct = (((target_dx_px ** 2 + target_dy_px ** 2) ** 0.5) / norm_px) * 100.0
+    target_moved = (
+        target_dx_px is not None
+        and target_dy_px is not None
+        and ((target_dx_px ** 2 + target_dy_px ** 2) ** 0.5) > 0.0
     )
 
     if not bool(current.get("is_middle", False)):
         status = "invalid_target_not_middle"
-    elif above_shift:
+    elif avg_other_centroid_shift_pct > CENTROID_ABORT_SHIFT_PCT:
         status = "tower_shifting"
-    elif (
-        target_delta >= PROBE_TARGET_GAIN_MIN_PCT
-        and max_other_abs_delta <= PROBE_STABLE_DELTA_MAX_PCT
-    ):
+    elif target_moved:
         status = "safe_to_remove"
     else:
         status = "monitoring"
 
     return {
         "status": status,
-        "target_delta_pct": target_delta,
-        "max_other_delta_pct": max_other_abs_delta,
-        "above_front_delta_pct": above_front_delta,
-        "above_mid_delta_pct": above_mid_delta,
-        "same_layer_deltas": same_layer_deltas,
+        "avg_other_centroid_shift_pct": avg_other_centroid_shift_pct,
+        "target_dx_px": target_dx_px,
+        "target_dy_px": target_dy_px,
+        "target_shift_pct": target_shift_pct,
     }
 
 
@@ -161,36 +196,85 @@ class ProbeResponseMonitor:
     """Tracks probe-response state across frames and prints status updates."""
 
     def __init__(self) -> None:
+        self._manual_override_enabled: bool = False
+        self._manual_target_block_id: int | None = None
         self._active_block_id: int | None = None
         self._baseline: dict | None = None
         self._last_status: str | None = None
+        self._last_eval: dict | None = None
         self._last_print_time: float = 0.0
 
     def _target_block_id(self) -> int | None:
         """Placeholder probe trigger source. Replace with topic/service later."""
+        if self._manual_override_enabled:
+            return self._manual_target_block_id
         return PROBE_TARGET_BLOCK_ID_PLACEHOLDER
 
-    def update(self, tower_state: list[dict], pct_results: list[dict], row_cells: list[tuple[dict, dict]]) -> None:
+    def set_target_block_id(self, block_id: int | None) -> None:
+        """Set active probe target from UI/runtime input."""
+        self._manual_override_enabled = True
+        self._manual_target_block_id = None if block_id is None else int(block_id)
+
+    def _status_label(self, status: str | None) -> str:
+        if status == "safe_to_remove":
+            return "SAFE_TO_REMOVE"
+        if status == "tower_shifting":
+            return "ABORT_TOWER_MOVED"
+        if status == "invalid_target_not_middle":
+            return "ABORT_INVALID_TARGET_NOT_MIDDLE"
+        if status == "monitoring":
+            return "MONITORING"
+        return "IDLE"
+
+    def status_text(self) -> str:
+        """Short status text for UI overlays."""
+        if self._active_block_id is None:
+            return "probe: idle"
+        return f"probe: block {self._active_block_id}  {self._status_label(self._last_status)}"
+
+    def is_active(self) -> bool:
+        """True when a probe target is currently selected/active."""
+        return self._target_block_id() is not None
+
+    def _print_final_decision(self) -> None:
+        if self._active_block_id is None:
+            return
+        label = self._status_label(self._last_status)
+        if label == "SAFE_TO_REMOVE":
+            print(f"[probe] final block={self._active_block_id} decision=SAFE (safe to remove)")
+            return
+        if label.startswith("ABORT_"):
+            print(f"[probe] final block={self._active_block_id} decision=ABORT ({label})")
+            return
+        print(f"[probe] final block={self._active_block_id} decision=INCONCLUSIVE ({label})")
+
+    def update(
+        self,
+        tower_state: list[dict],
+        frame_shape: tuple[int, int] | None = None,
+    ) -> None:
         probe_target_block_id = self._target_block_id()
         if probe_target_block_id is None:
+            if self._active_block_id is not None:
+                self._print_final_decision()
             self._active_block_id = None
             self._baseline = None
             self._last_status = None
+            self._last_eval = None
             return
 
-        if not tower_state or not pct_results:
+        if not tower_state:
             return
 
-        n_layers = len(row_cells)
         if self._active_block_id != int(probe_target_block_id):
             self._active_block_id = int(probe_target_block_id)
             self._baseline = _build_probe_snapshot(
                 tower_state,
-                pct_results,
-                n_layers=n_layers,
                 block_id=self._active_block_id,
+                frame_shape=frame_shape,
             )
             self._last_status = None
+            self._last_eval = None
             if self._baseline is not None:
                 print(
                     f"[probe] started for block {self._active_block_id} "
@@ -202,9 +286,8 @@ class ProbeResponseMonitor:
 
         current_snapshot = _build_probe_snapshot(
             tower_state,
-            pct_results,
-            n_layers=n_layers,
             block_id=self._active_block_id,
+            frame_shape=frame_shape,
         )
 
         if self._baseline is None or current_snapshot is None:
@@ -214,16 +297,39 @@ class ProbeResponseMonitor:
         now = time.monotonic()
         should_print = (
             eval_result["status"] != self._last_status
-            or (now - self._last_print_time) >= 1.0
+            or (now - self._last_print_time) >= PROBE_PRINT_INTERVAL_S
         )
         if should_print:
+            dx = eval_result.get("target_dx_px")
+            dy = eval_result.get("target_dy_px")
+            if dx is None or dy is None:
+                movement_xy = "(n/a,n/a)"
+            else:
+                movement_xy = f"({dx:+.1f},{dy:+.1f})"
             print(
                 "[probe] "
                 f"block={self._active_block_id} status={eval_result['status']}  "
-                f"target_d={eval_result['target_delta_pct']:+.2f}%  "
-                f"same_layer_max_d={eval_result['max_other_delta_pct']:.2f}%  "
-                f"above_front_d={eval_result['above_front_delta_pct']}  "
-                f"above_mid_d={eval_result['above_mid_delta_pct']}"
+                f"centroid_shift_avg={eval_result['avg_other_centroid_shift_pct']:.2f}%  "
+                f"centroid_movement_px={movement_xy}"
             )
             self._last_print_time = now
+        if eval_result["status"] != self._last_status:
+            label = self._status_label(eval_result["status"])
+            if label == "ABORT_TOWER_MOVED":
+                print(f"[probe] decision block={self._active_block_id}: ABORT (tower moved)")
+                # End monitoring immediately after tower-shift abort.
+                ended_block = self._active_block_id
+                self.set_target_block_id(None)
+                self._active_block_id = None
+                self._baseline = None
+                self._last_status = None
+                self._last_eval = None
+                print(f"[probe] monitoring ended for block={ended_block} after ABORT")
+                return
+            elif label == "ABORT_INVALID_TARGET_NOT_MIDDLE":
+                print(
+                    f"[probe] decision block={self._active_block_id}: "
+                    "ABORT (selected block is not a middle block)"
+                )
         self._last_status = eval_result["status"]
+        self._last_eval = eval_result

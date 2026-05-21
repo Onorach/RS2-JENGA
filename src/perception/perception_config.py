@@ -10,7 +10,7 @@ TOWER_ANALYSIS = False
 BLOCK_ANALYSIS = True
 
 # Search area centre and fraction of the full frame
-SEARCH_AREA = (0.516, 0.561, 0.259, 0.460)
+SEARCH_AREA = (0.519, 0.557, 0.259, 0.460)
 
 # Crop margin around the search area
 SEARCH_AREA_MARGIN     = 0.10
@@ -21,8 +21,11 @@ CAMERA_HFOV_DEG = 69.0
 # Camera origin in the global/world frame (mm).
 # Block global positions are computed as:
 #   block_global = block_camera_local + CAMERA_GLOBAL_POSITION_MM
-CAMERA_GLOBAL_POSITION_MM = (0.0, 0.0, 0.0)
+CAMERA_GLOBAL_POSITION_MM = (-320, 303.5, 0.0)
 BLOCK_POSE_WORLD_FRAME = "world"
+
+# Camera rotation in global frame is currently treated as zero (identity).
+# If a non-identity camera rotation is needed later, add a full transform here.
 
 # Current temporary assumption: each block is rotated 45 degrees about +Z
 # relative to the camera frame.
@@ -54,8 +57,8 @@ PROBE_ABOVE_LAYER_GAIN_MIN_PCT = 3.0
 # HSV ranges for colour identification
 HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
     "red": [
-        ((  0, 150, 118), ( 13, 255, 255)),
-        ((170, 150, 118), (179, 255, 255)),
+        ((  0,   0,   1), ( 12, 255, 255)),
+        ((171,   0,   1), (179, 255, 255)),
     ],
     "yellow": [
         (( 18,  55, 104), ( 39, 255, 255)),
@@ -67,19 +70,19 @@ HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] =
         (( 99, 171, 105), (108, 255, 255)),
     ],
     "purple": [
-        ((109, 139,  90), (129, 255, 255)),
+        ((106, 108,  54), (125, 255, 255)),
     ],
 }
 
 # Minimum connected-component area (in ROI pixels) kept per colour mask.
 # Higher values reject more tiny blobs/noise before the mask is used elsewhere.
 # Set to 0 to disable size filtering.
-COLOUR_MIN_BLOB_AREA_PX = 719
+COLOUR_MIN_BLOB_AREA_PX = 270
 
 # Colour-mask smoothing (tuned in colour mask setup).
-COLOUR_MASK_MEDIAN_PX      = 5   # Median blur on HSV before inRange; 0 = disabled.
-COLOUR_MASK_MORPH_CLOSE_PX = 0   # Close kernel — fills small holes. 0 = disabled.
-COLOUR_MASK_MORPH_OPEN_PX  = 5   # Open kernel — removes specks. 0 = disabled.
+COLOUR_MASK_MEDIAN_PX      = 0   # Median blur on HSV before inRange; 0 = disabled.
+COLOUR_MASK_MORPH_CLOSE_PX = 5   # Close kernel — fills small holes. 0 = disabled.
+COLOUR_MASK_MORPH_OPEN_PX  = 14   # Open kernel — removes specks. 0 = disabled.
 
 # BGR colours for visualisation
 COLOUR_BGR: dict[str, tuple[int, int, int]] = {
@@ -113,8 +116,8 @@ CANNY_MASK_LOW   = 0   # Lower = more edges.
 CANNY_MASK_HIGH  = 0  # Higher = fewer, stronger edges only.
 
 # Canny thresholds used on the original BGR image.
-CANNY_ORIGINAL_LOW  = 41   # Lower = more edges.
-CANNY_ORIGINAL_HIGH = 90  # Higher = fewer, stronger edges only.
+CANNY_ORIGINAL_LOW  = 42   # Lower = more edges.
+CANNY_ORIGINAL_HIGH = 116  # Higher = fewer, stronger edges only.
 
 # Width of the horizontal band (centred on the ROI) where Canny edges are
 # kept, as a percentage of ROI width. Edges outside this strip are zeroed
