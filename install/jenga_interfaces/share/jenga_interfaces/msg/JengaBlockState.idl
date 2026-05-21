@@ -1,0 +1,21 @@
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from jenga_interfaces/msg/JengaBlockState.msg
+// generated code does not contain a copyright notice
+
+#include "geometry_msgs/msg/Pose.idl"
+
+module jenga_interfaces {
+  module msg {
+    struct JengaBlockState {
+      uint32 block_id;
+
+      string colour;
+
+      uint32 layer;
+
+      uint8 layer_position;
+
+      geometry_msgs::msg::Pose pose;
+    };
+  };
+};

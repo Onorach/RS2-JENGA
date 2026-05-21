@@ -1,0 +1,35 @@
+// generated from rosidl_adapter/resource/action.idl.em
+// with input from jenga_interfaces/action/JengaPickPlace.action
+// generated code does not contain a copyright notice
+
+#include "geometry_msgs/msg/PoseStamped.idl"
+
+module jenga_interfaces {
+  module action {
+    @verbatim (language="comment", text=
+      "Goal: where to pick and place")
+    struct JengaPickPlace_Goal {
+      uint32 block_index;
+
+      geometry_msgs::msg::PoseStamped pick_pose;
+
+      geometry_msgs::msg::PoseStamped place_pose;
+    };
+    @verbatim (language="comment", text=
+      "Result: outcome")
+    struct JengaPickPlace_Result {
+      boolean success;
+
+      string message;
+
+      uint8 error_code;
+    };
+    @verbatim (language="comment", text=
+      "Feedback: progress")
+    struct JengaPickPlace_Feedback {
+      string current_stage;
+
+      float progress_pct;
+    };
+  };
+};

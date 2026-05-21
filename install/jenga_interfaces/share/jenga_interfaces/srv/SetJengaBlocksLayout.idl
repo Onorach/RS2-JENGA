@@ -1,0 +1,23 @@
+// generated from rosidl_adapter/resource/srv.idl.em
+// with input from jenga_interfaces/srv/SetJengaBlocksLayout.srv
+// generated code does not contain a copyright notice
+
+
+module jenga_interfaces {
+  module srv {
+    struct SetJengaBlocksLayout_Request {
+      @verbatim (language="comment", text=
+        "empty = all blocks")
+      sequence<uint32> block_indices;
+
+      @verbatim (language="comment", text=
+        "\"stock\" | \"tower\"")
+      string target_layout;
+    };
+    struct SetJengaBlocksLayout_Response {
+      boolean success;
+
+      string message;
+    };
+  };
+};

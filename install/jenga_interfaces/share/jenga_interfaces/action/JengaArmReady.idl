@@ -1,0 +1,30 @@
+// generated from rosidl_adapter/resource/action.idl.em
+// with input from jenga_interfaces/action/JengaArmReady.action
+// generated code does not contain a copyright notice
+
+
+module jenga_interfaces {
+  module action {
+    @verbatim (language="comment", text=
+      "Goal: optional SRDF named state; empty uses server's arm_home_state parameter string target_state")
+    struct JengaArmReady_Goal {
+      string target_state;
+    };
+    @verbatim (language="comment", text=
+      "Result: outcome")
+    struct JengaArmReady_Result {
+      boolean success;
+
+      string message;
+
+      uint8 error_code;
+    };
+    @verbatim (language="comment", text=
+      "Feedback: progress")
+    struct JengaArmReady_Feedback {
+      string current_stage;
+
+      float progress_pct;
+    };
+  };
+};

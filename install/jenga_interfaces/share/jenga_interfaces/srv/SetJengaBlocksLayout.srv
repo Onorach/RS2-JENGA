@@ -1,0 +1,5 @@
+uint32[] block_indices   # empty = all blocks
+string target_layout     # "stock" | "tower"
+---
+bool success
+string message

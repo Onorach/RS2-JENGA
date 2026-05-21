@@ -1,0 +1,16 @@
+// generated from rosidl_adapter/resource/msg.idl.em
+// with input from jenga_interfaces/msg/JengaBlockStates.msg
+// generated code does not contain a copyright notice
+
+#include "jenga_interfaces/msg/JengaBlockState.idl"
+#include "std_msgs/msg/Header.idl"
+
+module jenga_interfaces {
+  module msg {
+    struct JengaBlockStates {
+      std_msgs::msg::Header header;
+
+      sequence<jenga_interfaces::msg::JengaBlockState> blocks;
+    };
+  };
+};

@@ -1,0 +1,35 @@
+// generated from rosidl_adapter/resource/action.idl.em
+// with input from jenga_interfaces/action/JengaExtractSideBlock.action
+// generated code does not contain a copyright notice
+
+#include "geometry_msgs/msg/PoseStamped.idl"
+
+module jenga_interfaces {
+  module action {
+    @verbatim (language="comment", text=
+      "Goal: extract a block from the tower from the side, then place it elsewhere")
+    struct JengaExtractSideBlock_Goal {
+      uint32 block_index;
+
+      geometry_msgs::msg::PoseStamped block_pose;
+
+      geometry_msgs::msg::PoseStamped place_pose;
+    };
+    @verbatim (language="comment", text=
+      "Result: outcome")
+    struct JengaExtractSideBlock_Result {
+      boolean success;
+
+      string message;
+
+      uint8 error_code;
+    };
+    @verbatim (language="comment", text=
+      "Feedback: progress")
+    struct JengaExtractSideBlock_Feedback {
+      string current_stage;
+
+      float progress_pct;
+    };
+  };
+};

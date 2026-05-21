@@ -1,0 +1,47 @@
+// generated from rosidl_adapter/resource/action.idl.em
+// with input from jenga_interfaces/action/JengaProbeBlock.action
+// generated code does not contain a copyright notice
+
+#include "geometry_msgs/msg/PoseStamped.idl"
+
+module jenga_interfaces {
+  module action {
+    @verbatim (language="comment", text=
+      "Goal: probe a block with an FT-guided push test (block_pose is the estimated pose in the tower)")
+    struct JengaProbeBlock_Goal {
+      uint32 block_index;
+
+      geometry_msgs::msg::PoseStamped block_pose;
+    };
+    @verbatim (language="comment", text=
+      "Result: outcome of the force-torque guided probe")
+    struct JengaProbeBlock_Result {
+      boolean success;
+
+      string message;
+
+      uint8 error_code;
+
+      float score;
+
+      @verbatim (language="comment", text=
+        "0=UNKNOWN, 1=LOOSE, 2=STUCK, 3=ERROR")
+      uint8 probe_outcome;
+
+      @verbatim (language="comment", text=
+        "actual distance pushed along probe axis")
+      float displacement_m;
+
+      @verbatim (language="comment", text=
+        "peak contact force observed during push")
+      float max_force_n;
+    };
+    @verbatim (language="comment", text=
+      "Feedback: progress")
+    struct JengaProbeBlock_Feedback {
+      string current_stage;
+
+      float progress_pct;
+    };
+  };
+};

@@ -1,0 +1,4 @@
+# generated from rosidl_cmake/cmake/rosidl_cmake-extras.cmake.in
+
+set(jenga_interfaces_IDL_FILES "msg/JengaBlockState.idl;msg/JengaBlockStates.idl;action/JengaPickPlace.idl;action/JengaArmReady.idl;action/JengaExtractSideBlock.idl;action/JengaExtractMiddleBlock.idl;action/JengaProbeBlock.idl;srv/ProtrudeJengaBlock.idl;srv/SetJengaBlocksLayout.idl")
+set(jenga_interfaces_INTERFACE_FILES "msg/JengaBlockState.msg;msg/JengaBlockStates.msg;action/JengaPickPlace.action;action/JengaArmReady.action;action/JengaExtractSideBlock.action;action/JengaExtractMiddleBlock.action;action/JengaProbeBlock.action;srv/ProtrudeJengaBlock.srv;srv/ProtrudeJengaBlock_Request.msg;srv/ProtrudeJengaBlock_Response.msg;srv/SetJengaBlocksLayout.srv;srv/SetJengaBlocksLayout_Request.msg;srv/SetJengaBlocksLayout_Response.msg")
