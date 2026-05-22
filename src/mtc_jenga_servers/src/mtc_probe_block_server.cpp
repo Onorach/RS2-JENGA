@@ -377,7 +377,6 @@ class MtcProbeBlockServer : public rclcpp::Node {
     PushResult result;
     ensureMoveGroup();
 
-    // Tare: record bias wrench before contact
     Eigen::Vector3d wrench_bias = Eigen::Vector3d::Zero();
     auto w0 = getLatestWrench();
     if (w0) {
@@ -391,7 +390,6 @@ class MtcProbeBlockServer : public rclcpp::Node {
     const double push_vel_scale = std::clamp(push_velocity_m_s_ / 0.1, 0.01, 0.05);
     int stuck_count = 0;
 
-    // ---> FIX 1: Initialize absolute target and push direction OUTSIDE the loop <---
     auto start_pose_msg = move_group_->getCurrentPose(probe_frame_);
     geometry_msgs::msg::Pose target_pose = start_pose_msg.pose;
     const Eigen::Vector3d push_dir = probeAxisInWorld();
@@ -403,7 +401,6 @@ class MtcProbeBlockServer : public rclcpp::Node {
         break;
       }
 
-      // ---> FIX 2: Advance the absolute target (never read yielded current_pose here) <---
       target_pose.position.x += push_dir.x() * push_step_m_;
       target_pose.position.y += push_dir.y() * push_step_m_;
       target_pose.position.z += push_dir.z() * push_step_m_;
@@ -411,7 +408,6 @@ class MtcProbeBlockServer : public rclcpp::Node {
       std::vector<geometry_msgs::msg::Pose> waypoints;
       waypoints.push_back(target_pose);
 
-      // Tell MoveIt to plan from the actual current physical state to the absolute target
       move_group_->setStartStateToCurrentState();
 
       moveit_msgs::msg::RobotTrajectory trajectory_msg;
@@ -424,7 +420,6 @@ class MtcProbeBlockServer : public rclcpp::Node {
         break;
       }
 
-      // ---> FIX 3: Properly scale velocities/accelerations to prevent jackhammering <---
       auto& points = trajectory_msg.joint_trajectory.points;
       for (auto& pt : points) {
         double t_sec = pt.time_from_start.sec + pt.time_from_start.nanosec * 1e-9;
@@ -432,7 +427,6 @@ class MtcProbeBlockServer : public rclcpp::Node {
         pt.time_from_start.sec = static_cast<int32_t>(t_sec);
         pt.time_from_start.nanosec = static_cast<uint32_t>((t_sec - pt.time_from_start.sec) * 1e9);
 
-        // Scale down velocities and accelerations mathematically to match the stretched time
         for (auto& v : pt.velocities) {
             v *= std::max(push_vel_scale, 0.01);
         }
@@ -452,11 +446,10 @@ class MtcProbeBlockServer : public rclcpp::Node {
 
       result.displacement_m += push_step_m_;
 
-      // Read F/T and compute contact force along probe axis
       auto wrench = getLatestWrench();
       if (wrench) {
         const Eigen::Vector3d force = wrenchForceVec(*wrench) - wrench_bias;
-        const double contact_force = force.dot(push_dir); // Use the static push_dir here too
+        const double contact_force = force.dot(push_dir);
         const double force_magnitude = std::abs(contact_force);
 
         result.max_force_n = std::max(result.max_force_n, force_magnitude);
