@@ -217,6 +217,27 @@ class JengaInterfaceApp:
     def launch_rviz_simulation(self):
         """Launches RViz as an independent process with proper ROS environment sourcing."""
         try:
+            # 1. Get the current environment
+            my_env = os.environ.copy()
+            
+            # 2. Define the path to your workspace setup file
+            # Update this path if your workspace is located elsewhere
+            ws_setup = "/home/nathan/RS2-JENGA/install/setup.bash"
+            
+            # 3. Create a command string that sources the setup and then launches
+            # This is the most robust way to ensure the environment is loaded for the subprocess
+            cmd = f"source {ws_setup} && ros2 launch ur_onrobot_moveit_config ur_onrobot_moveit.launch.py ur_type:=ur3e onrobot_type:=rg2 launch_rviz:=true launch_servo:=false"
+            
+            # 4. Use shell=True to allow the 'source' command to execute
+            subprocess.Popen(cmd, shell=True, executable="/bin/bash", preexec_fn=os.setsid)
+            
+            print("[TERMINAL LOG] Simulation visualization launched in external window.")
+        except Exception as e:
+            print(f"[ERROR] Failed to launch RViz: {e}")
+
+    def launch_rviz_simulation(self):
+        """Launches RViz as an independent process with proper ROS environment sourcing."""
+        try:
             my_env = os.environ.copy()
             ws_setup = os.path.join(os.path.expanduser("~"), "ros2_ws", "src", "RS2-JENGA", "install", "setup.bash")
             cmd = f"source {ws_setup} && ros2 launch ur_onrobot_moveit_config ur_onrobot_moveit.launch.py ur_type:=ur3e onrobot_type:=rg2 launch_rviz:=true launch_servo:=false"
@@ -268,6 +289,8 @@ class JengaInterfaceApp:
             btn.pack(pady=3)
             self.override_buttons[index] = btn
 
+        # Section B: Physical Tower Intermediary Layout Grid
+        tk.Label(ctrl_container, text="Jenga Matrix Grid (0-2)", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=(15, 2))
         # Section B: Physical Tower Intermediary Layout Grid
         tk.Label(ctrl_container, text="Next Goal", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=(15, 2))
         grid_wrapper = tk.Frame(ctrl_container, bg=COLOUR_DARK_GRAY)
