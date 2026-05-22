@@ -11,6 +11,7 @@ class JengaMockPublisher(Node):
         self.publisher_ = self.create_publisher(JengaBlockStates, '/jenga/block_states', 10)
         self.timer = self.create_timer(1.0, self.timer_callback)
         self.get_logger().info("Jenga Mock Publisher has started. Emulating 6 incomplete layers...")
+        self.get_logger().info("Jenga Mock Publisher has started. Emulating 6 incomplete layers...")
 
     def timer_callback(self):
         msg = JengaBlockStates()
