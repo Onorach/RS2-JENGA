@@ -72,6 +72,9 @@ class MtcPickPlaceServer : public rclcpp::Node {
     (void)mtc_jenga::param<int>(this, "action_timeout_sec", 5);
     vel_scale_ = mtc_jenga::param<double>(this, "max_velocity_scaling_factor", 0.1);
     acc_scale_ = mtc_jenga::param<double>(this, "max_acceleration_scaling_factor", 0.1);
+    grasp_r_ = mtc_jenga::param<double>(this, "grasp_frame_roll", 0.0);
+    grasp_p_ = mtc_jenga::param<double>(this, "grasp_frame_pitch", M_PI);
+    grasp_y_ = mtc_jenga::param<double>(this, "grasp_frame_yaw", M_PI / 2.0);
 
     action_server_ = rclcpp_action::create_server<JengaPickPlace>(
         this, "jenga_pick_place",
@@ -256,12 +259,14 @@ class MtcPickPlaceServer : public rclcpp::Node {
         // Y axis is preserved under Ry(180°), so the finger opening direction sweeps with
         // angle_delta and IK selects the wrist angle that keeps tips parallel to the
         // 2.5×1.5 cm block end faces.
-        Eigen::Isometry3d gft = Eigen::Isometry3d::Identity();
-        gft = gft * Eigen::AngleAxisd(M_PI / 2, Eigen::Vector3d::UnitX());
+        Eigen::Isometry3d grasp_ft = Eigen::Isometry3d::Identity();
+        grasp_ft = grasp_ft * Eigen::AngleAxisd(grasp_r_, Eigen::Vector3d::UnitX())
+                            * Eigen::AngleAxisd(grasp_p_, Eigen::Vector3d::UnitY())
+                            * Eigen::AngleAxisd(grasp_y_, Eigen::Vector3d::UnitZ());
         auto w = std::make_unique<mtc::stages::ComputeIK>("grasp pose IK", std::move(stage));
         w->setMaxIKSolutions(4);
         w->setMinSolutionDistance(0.5);
-        w->setIKFrame(gft, hand_frame);
+        w->setIKFrame(grasp_ft, hand_frame);
         w->properties().configureInitFrom(mtc::Stage::PARENT, {"eef", "group"});
         w->properties().configureInitFrom(mtc::Stage::INTERFACE, {"target_pose"});
         grasp->insert(std::move(w));
@@ -550,6 +555,8 @@ class MtcPickPlaceServer : public rclcpp::Node {
   double acc_scale_{0.1};
   uint32_t plan_max_attempts_{1};
   double plan_time_{1.0};
+
+  double grasp_r_{0.0}, grasp_p_{M_PI / 1.0}, grasp_y_{M_PI / 2.0};
 
   std::mutex status_mutex_;
   std::atomic<bool> busy_{false};

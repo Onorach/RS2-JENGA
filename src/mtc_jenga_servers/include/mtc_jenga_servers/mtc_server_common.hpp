@@ -5,9 +5,11 @@
 #include <memory>
 #include <sstream>
 #include <string>
+#include <vector>
 
 #include <geometry_msgs/msg/pose.hpp>
 #include <moveit/planning_scene_interface/planning_scene_interface.h>
+#include <moveit_msgs/msg/attached_collision_object.hpp>
 #include <moveit/task_constructor/storage.h>
 #include <moveit/task_constructor/task.h>
 #include <moveit/trajectory_processing/time_optimal_trajectory_generation.h>
@@ -54,6 +56,53 @@ inline std::string blockIdFromIndex(const uint32_t idx) {
   return o.str();
 }
 
+/// Links with probe collision geometry (probe_tip has no geometry but is included for ACM).
+inline std::vector<std::string> probeCollisionLinkNames() {
+  return {"probe_link", "probe_tip"};
+}
+
+/// Attach a world collision object to a robot link (sim: block follows probe during push).
+inline bool attachBlockToLink(const std::string& block_id,
+                              const std::string& attach_link,
+                              const rclcpp::Logger& logger) {
+  moveit::planning_interface::PlanningSceneInterface psi;
+  const auto objects = psi.getObjects({block_id});
+  if (objects.find(block_id) == objects.end()) {
+    RCLCPP_ERROR(logger, "attachBlockToLink: '%s' not in planning scene", block_id.c_str());
+    return false;
+  }
+  moveit_msgs::msg::AttachedCollisionObject aco;
+  aco.link_name = attach_link;
+  aco.object = objects.at(block_id);
+  aco.object.operation = moveit_msgs::msg::CollisionObject::ADD;
+  aco.touch_links = {attach_link, "probe_link", "onrobot_base_link"};
+  if (!psi.applyAttachedCollisionObject(aco)) {
+    RCLCPP_ERROR(logger, "attachBlockToLink: failed to attach '%s' to '%s'",
+                 block_id.c_str(), attach_link.c_str());
+    return false;
+  }
+  RCLCPP_INFO(logger, "Attached '%s' to '%s' (sim block follow)", block_id.c_str(), attach_link.c_str());
+  return true;
+}
+
+/// Detach a collision object previously attached to attach_link.
+inline bool detachBlock(const std::string& block_id,
+                        const std::string& attach_link,
+                        const rclcpp::Logger& logger) {
+  moveit::planning_interface::PlanningSceneInterface psi;
+  moveit_msgs::msg::AttachedCollisionObject aco;
+  aco.link_name = attach_link;
+  aco.object.id = block_id;
+  aco.object.operation = moveit_msgs::msg::CollisionObject::REMOVE;
+  if (!psi.applyAttachedCollisionObject(aco)) {
+    RCLCPP_WARN(logger, "detachBlock: failed to detach '%s' from '%s'",
+                block_id.c_str(), attach_link.c_str());
+    return false;
+  }
+  RCLCPP_INFO(logger, "Detached '%s' from '%s'", block_id.c_str(), attach_link.c_str());
+  return true;
+}
+
 inline void applyBlockBoxAt(const std::string& block_id,
                             const std::string& frame_id,
                             const geometry_msgs::msg::Pose& pose,
@@ -61,7 +110,7 @@ inline void applyBlockBoxAt(const std::string& block_id,
                             const double box_y,
                             const double box_z,
                             const double grasp_offset_m = 0.035,
-                            const double probe_offset_m = -1.0) {
+                            const double probe_offset_m = 0.0375) {
   moveit::planning_interface::PlanningSceneInterface psi;
   moveit_msgs::msg::CollisionObject co;
   co.id = block_id;

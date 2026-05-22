@@ -62,11 +62,15 @@ class MtcProbeBlockServer : public rclcpp::Node {
     plan_time_ = mtc_jenga::param<double>(this, "plan_time", 1.0);
     vel_scale_ = mtc_jenga::param<double>(this, "max_velocity_scaling_factor", 0.1);
     acc_scale_ = mtc_jenga::param<double>(this, "max_acceleration_scaling_factor", 0.1);
-    cart_step_ = mtc_jenga::param<double>(this, "cartesian_step", 0.003);
+    cart_step_ = mtc_jenga::param<double>(this, "cartesian_step", 0.001);
 
     approach_min_ = mtc_jenga::param<double>(this, "approach_distance_min", 0.01);
     approach_max_ = mtc_jenga::param<double>(this, "approach_distance_max", 0.05);
     retreat_distance_ = mtc_jenga::param<double>(this, "retreat_distance", 0.02);
+
+    probe_r_ = mtc_jenga::param<double>(this, "probe_frame_roll", 0.0);
+    probe_p_ = mtc_jenga::param<double>(this, "probe_frame_pitch", M_PI / 1.0);
+    probe_y_ = mtc_jenga::param<double>(this, "probe_frame_yaw", 0.0);
 
     ft_sensor_topic_ = mtc_jenga::param<std::string>(this, "ft_topic", "force_torque_sensor_broadcaster/wrench");
     stuck_force_threshold_n_ = mtc_jenga::param<double>(this, "stuck_force_threshold_n", 10.0);
@@ -74,10 +78,11 @@ class MtcProbeBlockServer : public rclcpp::Node {
     stuck_dwell_samples_ = static_cast<int>(mtc_jenga::param<int>(this, "stuck_dwell_samples", 5));
     protrusion_target_m_ = mtc_jenga::param<double>(this, "protrusion_target_m", 0.02);
     push_velocity_m_s_ = mtc_jenga::param<double>(this, "push_velocity_m_s", 0.005);
-    push_step_m_ = mtc_jenga::param<double>(this, "push_step_m", 0.002);
+    push_step_m_ = mtc_jenga::param<double>(this, "push_step_m", 0.001);
 
     probe_subframe_ = mtc_jenga::param<std::string>(this, "probe_subframe", "probe_plus");
     probe_offset_m_ = mtc_jenga::param<double>(this, "probe_offset_m", 0.045);
+    use_sim_block_attach_ = mtc_jenga::param<bool>(this, "use_sim_block_attach", true);
 
     status_topic_ = mtc_jenga::param<std::string>(this, "status_topic", "mtc_probe_status");
     pub_status_ = create_publisher<std_msgs::msg::String>(status_topic_, 10);
@@ -105,9 +110,10 @@ class MtcProbeBlockServer : public rclcpp::Node {
 
     publishStatus("idle");
     RCLCPP_INFO(get_logger(),
-                "mtc_probe_block_server: action=%s status=%s ft=%s probe_frame=%s",
+                "mtc_probe_block_server: action=%s status=%s ft=%s probe_frame=%s "
+                "use_sim_block_attach=%s",
                 action_name_.c_str(), status_topic_.c_str(), ft_sensor_topic_.c_str(),
-                probe_frame_.c_str());
+                probe_frame_.c_str(), use_sim_block_attach_ ? "true" : "false");
   }
 
  private:
@@ -158,6 +164,14 @@ class MtcProbeBlockServer : public rclcpp::Node {
     {
       auto stage = std::make_unique<mtc::stages::CurrentState>("current");
       current_state_ptr = stage.get();
+      task.add(std::move(stage));
+    }
+
+    mtc::Stage* allow_collision_ptr = nullptr;
+    {
+      auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("allow collision (probe,block)");
+      stage->allowCollisions(block_id, mtc_jenga::probeCollisionLinkNames(), true);
+      allow_collision_ptr = stage.get(); // Save the pointer for the generator
       task.add(std::move(stage));
     }
 
@@ -217,12 +231,17 @@ class MtcProbeBlockServer : public rclcpp::Node {
         target.header.frame_id = block_id + "/" + probe_subframe_;
         target.pose.orientation.w = 1.0;
         gen->setPose(target);
-        gen->setMonitoredStage(current_state_ptr);
+        
+        gen->setMonitoredStage(allow_collision_ptr);
 
+        Eigen::Isometry3d probe_ft = Eigen::Isometry3d::Identity();
+        probe_ft = probe_ft * Eigen::AngleAxisd(probe_r_, Eigen::Vector3d::UnitX())
+                            * Eigen::AngleAxisd(probe_p_, Eigen::Vector3d::UnitY())
+                            * Eigen::AngleAxisd(probe_y_, Eigen::Vector3d::UnitZ());
         auto ik = std::make_unique<mtc::stages::ComputeIK>("probe IK", std::move(gen));
         ik->setMaxIKSolutions(8);
-        ik->setMinSolutionDistance(0.5);
-        ik->setIKFrame(Eigen::Isometry3d::Identity(), probe_frame_);
+        ik->setMinSolutionDistance(0.05);
+        ik->setIKFrame(probe_ft, probe_frame_);
         ik->properties().configureInitFrom(mtc::Stage::PARENT, {"eef", "group"});
         ik->properties().configureInitFrom(mtc::Stage::INTERFACE, {"target_pose"});
         approach->insert(std::move(ik));
@@ -237,7 +256,7 @@ class MtcProbeBlockServer : public rclcpp::Node {
   // ---------------------------------------------------------------------------
   // Phase 3: MTC Retreat Task
   // ---------------------------------------------------------------------------
-  mtc::Task buildRetreatTask() {
+  mtc::Task buildRetreatTask(const std::string& block_id) {
     mtc::Task task;
     task.stages()->setName("jenga_probe_retreat");
     auto node_ptr = rclcpp::Node::shared_from_this();
@@ -274,14 +293,27 @@ class MtcProbeBlockServer : public rclcpp::Node {
       task.add(std::move(stage));
     }
     {
-      auto stage = std::make_unique<mtc::stages::MoveTo>("return home", sampling_planner);
-      stage->properties().configureInitFrom(mtc::Stage::PARENT, {"group"});
-      stage->setGoal(arm_home_state_);
-      stage->setTimeout(plan_time_);
+      auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>("forbid collision (probe,block)");
+      stage->allowCollisions(block_id, mtc_jenga::probeCollisionLinkNames(), false);
       task.add(std::move(stage));
     }
 
     return task;
+  }
+
+  bool attachBlockForSim(const std::string& block_id) {
+    if (!use_sim_block_attach_) {
+      RCLCPP_INFO(get_logger(),
+                  "Skipping sim block attach (use_sim_block_attach=false; use perception pose updates)");
+      return false;
+    }
+    return mtc_jenga::attachBlockToLink(block_id, probe_frame_, get_logger());
+  }
+
+  void detachBlockIfAttached(const std::string& block_id, bool& block_attached) {
+    if (!block_attached) return;
+    mtc_jenga::detachBlock(block_id, probe_frame_, get_logger());
+    block_attached = false;
   }
 
   // ---------------------------------------------------------------------------
@@ -356,7 +388,7 @@ class MtcProbeBlockServer : public rclcpp::Node {
       RCLCPP_WARN(get_logger(), "No FT data available for taring; proceeding with zero bias");
     }
 
-    const double push_vel_scale = std::clamp(push_velocity_m_s_ / 0.1, 0.01, 1.0);
+    const double push_vel_scale = std::clamp(push_velocity_m_s_ / 0.1, 0.01, 0.05);
     int stuck_count = 0;
 
     while (rclcpp::ok()) {
@@ -450,36 +482,6 @@ class MtcProbeBlockServer : public rclcpp::Node {
       }
     }
 
-    // Back away along -probe_tip X (reverse of push direction)
-    if (result.displacement_m > 1e-6) {
-      RCLCPP_INFO(get_logger(), "Backing away %.4f m along probe reverse axis", result.displacement_m);
-      auto current_pose = move_group_->getCurrentPose(probe_frame_);
-      const Eigen::Vector3d retreat_dir = probeAxisInWorld() * -1.0;
-
-      geometry_msgs::msg::Pose retreat_target = current_pose.pose;
-      retreat_target.position.x += retreat_dir.x() * result.displacement_m;
-      retreat_target.position.y += retreat_dir.y() * result.displacement_m;
-      retreat_target.position.z += retreat_dir.z() * result.displacement_m;
-
-      std::vector<geometry_msgs::msg::Pose> waypoints;
-      waypoints.push_back(retreat_target);
-
-      moveit_msgs::msg::RobotTrajectory traj_msg;
-      const double fraction = move_group_->computeCartesianPath(
-          waypoints, cart_step_, 0.0, traj_msg);
-
-      if (fraction >= 0.95) {
-        moveit::planning_interface::MoveGroupInterface::Plan plan;
-        plan.trajectory_ = traj_msg;
-        auto exec_result = move_group_->execute(plan);
-        if (exec_result != moveit::core::MoveItErrorCode::SUCCESS) {
-          RCLCPP_WARN(get_logger(), "Back-away execute failed: %d", exec_result.val);
-        }
-      } else {
-        RCLCPP_WARN(get_logger(), "Back-away Cartesian path planning failed (fraction=%.2f)", fraction);
-      }
-    }
-
     return result;
   }
 
@@ -490,6 +492,7 @@ class MtcProbeBlockServer : public rclcpp::Node {
                 const std::string& block_id,
                 PushResult& push_result_out) {
     push_result_out = {};
+    bool block_attached = false;
 
     if (estop_.load()) {
       RCLCPP_WARN(get_logger(), "E-stop active: refusing to run probe");
@@ -509,14 +512,21 @@ class MtcProbeBlockServer : public rclcpp::Node {
       return false;
     }
 
+    block_attached = attachBlockForSim(block_id);
+
     // Phase 2: FT-monitored push
     RCLCPP_INFO(get_logger(), "Phase 2: FT-monitored push (target=%.4f m, stuck_threshold=%.1f N)",
                 protrusion_target_m_, stuck_force_threshold_n_);
     push_result_out = runFtPushLoop();
+    detachBlockIfAttached(block_id, block_attached);
+
+    if (push_result_out.outcome == PROBE_ERROR) {
+      return false;
+    }
 
     // Phase 3: MTC retreat + return home
     RCLCPP_INFO(get_logger(), "Phase 3: MTC retreat + home");
-    mtc::Task retreat_task = buildRetreatTask();
+    mtc::Task retreat_task = buildRetreatTask(block_id);
     if (!planAndExecuteMtc(retreat_task, "Phase3-Retreat")) {
       RCLCPP_WARN(get_logger(), "Phase 3 retreat failed; probe result is still valid");
     }
@@ -618,20 +628,23 @@ class MtcProbeBlockServer : public rclcpp::Node {
   double plan_time_{1.0};
   double vel_scale_{0.20};
   double acc_scale_{0.20};
-  double cart_step_{0.003};
+  double cart_step_{0.001};
 
   double approach_min_{0.01}, approach_max_{0.05};
   double retreat_distance_{0.02};
+
+  double probe_r_{0.0}, probe_p_{M_PI / 2.0}, probe_y_{0.0};
 
   double stuck_force_threshold_n_{10.0};
   double emergency_force_threshold_n_{30.0};
   int stuck_dwell_samples_{5};
   double protrusion_target_m_{0.02};
   double push_velocity_m_s_{0.005};
-  double push_step_m_{0.002};
+  double push_step_m_{0.001};
 
   std::string probe_subframe_{"probe_plus"};
   double probe_offset_m_{0.045};
+  bool use_sim_block_attach_{true};
 
   std::atomic<bool> busy_{false};
   std::atomic<int> executions_completed_{0};

@@ -18,6 +18,11 @@ def generate_launch_description() -> LaunchDescription:
     arm_group_arg = DeclareLaunchArgument("arm_group", default_value="ur_onrobot_manipulator")
     gripper_tcp_arg = DeclareLaunchArgument("gripper_tcp", default_value="gripper_tcp")
     probe_frame_arg = DeclareLaunchArgument("probe_frame", default_value="probe_tip")
+    use_sim_block_attach_arg = DeclareLaunchArgument(
+        "use_sim_block_attach",
+        default_value="true",
+        description="Attach probed block to probe_tip during push (sim). Set false when perception updates block poses.",
+    )
     max_vel_arg = DeclareLaunchArgument(
         "max_velocity_scaling_factor",
         default_value="0.1",
@@ -44,11 +49,20 @@ def generate_launch_description() -> LaunchDescription:
                 "arm_group": LaunchConfiguration("arm_group"),
                 "gripper_tcp": LaunchConfiguration("gripper_tcp"),
                 "probe_frame": LaunchConfiguration("probe_frame"),
+                "use_sim_block_attach": LaunchConfiguration("use_sim_block_attach"),
             },
         ],
     )
 
     return LaunchDescription(
-        [arm_group_arg, gripper_tcp_arg, probe_frame_arg, max_vel_arg, max_acc_arg, node]
+        [
+            arm_group_arg,
+            gripper_tcp_arg,
+            probe_frame_arg,
+            use_sim_block_attach_arg,
+            max_vel_arg,
+            max_acc_arg,
+            node,
+        ]
     )
 

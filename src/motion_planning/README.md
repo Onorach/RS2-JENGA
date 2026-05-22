@@ -184,7 +184,7 @@ Run with the workspace sourced and the MTC stack (and MoveIt) running.
 
 | Command | Action exercised | Notes |
 |---------|------------------|--------|
-| `ros2 run motion_planning test_mtc_pick_place` | `JengaPickPlace` | Params: `action_name`, `goal_frame`, `start_with_home_joints`, `end_with_home_joints`, `joint_trajectory_action`, `joint_home_duration_sec`, … |
+| `ros2 run motion_planning test_mtc_pick_place` | `JengaPickPlace` | Calls `set_jenga_blocks_layout` (blocks below `block_index` in tower, `block_index` and above in stock), then pick+place from layout YAML. Params: `block_index` (default 0), `layout_path`, `set_layout_service`, `layout_service_timeout_sec`, `action_name`, `goal_frame`, `start_with_home_joints`, `end_with_home_joints`, `joint_trajectory_action`, `joint_home_duration_sec`, … |
 | `ros2 run motion_planning test_mtc_extract_side` | `JengaExtractSideBlock` | Params: `action_name`, `goal_frame` |
 | `ros2 run motion_planning test_mtc_extract_middle` | `JengaExtractMiddleBlock` | Params: `action_name`, `goal_frame` |
 | `ros2 run motion_planning test_mtc_extract_middle_protruded` | `JengaExtractMiddleBlock` | Sets tower scene, calls `protrude_jenga_block`, then extracts. Params include `block_index`, `protrude_distance_m`, `protrude_axis`, `layout_path`, `planning_scene_topic`, `extract_axis`, … |
@@ -194,6 +194,7 @@ Run with the workspace sourced and the MTC stack (and MoveIt) running.
 Example:
 
 ```bash
+ros2 run motion_planning test_mtc_pick_place --ros-args -p block_index:=5 -p goal_frame:=world
 ros2 run motion_planning test_mtc_probe_block --ros-args -p block_index:=10 -p goal_frame:=world
 ```
 

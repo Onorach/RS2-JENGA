@@ -18,7 +18,7 @@ def generate_launch_description() -> LaunchDescription:
     )
     which_arg = DeclareLaunchArgument(
         "which",
-        default_value="side",
+        default_value="both",
         description="Which extract server to launch: side|middle|both",
     )
     arm_group_arg = DeclareLaunchArgument("arm_group", default_value="ur_onrobot_manipulator")

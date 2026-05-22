@@ -120,7 +120,7 @@ def main(args=None) -> int:
 
     action_name = str(node.declare_parameter("action_name", "jenga_probe_block").value)
     goal_frame = str(node.declare_parameter("goal_frame", "world").value)
-    block_index = int(node.declare_parameter("block_index", 0).value)
+    block_index = int(node.declare_parameter("block_index", 10).value)
     planning_scene_topic = str(node.declare_parameter("planning_scene_topic", "/planning_scene").value)
     scene_timeout_sec = float(node.declare_parameter("scene_timeout_sec", 2.0).value)
     tf_timeout_sec = float(node.declare_parameter("tf_timeout_sec", 0.5).value)
