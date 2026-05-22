@@ -4,373 +4,359 @@ import threading
 import json
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Image
 from std_msgs.msg import String, Int8MultiArray
-from std_srvs.srv import SetBool  # Required for service calls
+from std_srvs.srv import SetBool
 from cv_bridge import CvBridge
 import tkinter as tk
 from PIL import Image as PILImage, ImageTk
 
+# Import custom message types
+from jenga_interfaces.msg import JengaBlockStates
+
 try:
     _PIL_RESAMPLE = PILImage.Resampling.LANCZOS
 except AttributeError:
-    _PIL_RESAMPLE = PILImage.LANCZOS  # Pillow < 9.1
+    _PIL_RESAMPLE = PILImage.LANCZOS
 
-# --- Color Definitions ---
-COLOUR_YELLOW = "#ffff00"  
-COLOUR_BLACK = "#000000"   
-COLOUR_LIGHT_GRAY = "#D3D3D3" 
+# --- UI Theme & Color Configurations ---
+COLOUR_YELLOW = "#FFFF00"  
+COLOUR_BLACK = "#121212"   
+COLOUR_LIGHT_GRAY = "#E0E0E0" 
+COLOUR_DARK_GRAY = "#1E1E1E"
 COLOUR_WHITE = "#FFFFFF"   
-COLOUR_RED = "#FF0000"     
+COLOUR_RED = "#FF3333"     
+COLOUR_GREEN = "#33CC33"
 
 BLOCK_COLOURS = {
-    "red": "#FF0000",
-    "green": "#00FF00",
-    "blue": "#0000FF",
-    "yellow": "#FFFF00",
-    "black": "#000000",
+    "red": "#FF3333",
+    "green": "#33CC33",
+    "blue": "#3333FF",
+    "yellow": "#FFFF33",
+    "black": "#2A2A2A",
     "natural": "#DEB887",
-    "purple": "#800080",
+    "purple": "#9933FF",
     "none": "#FFFFFF",
     "unknown": "#FFFFFF",
 }
 
+class JengaTowerModel:
+    """
+    Thread-safe Central Data Model.
+    Stores and calculates the physical state of the tower using 0-2 positioning.
+    """
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._block_data = {}  # Map: (layer, position) -> {"id": str, "colour": str}
+        self._robot_state = "Unknown"
 
-def _layers_from_tower_message(data) -> list:
-    """Normalise /top_layer_state JSON into a bottom-first list (L0 / GUI L1 at index 0)."""
-    if isinstance(data, list):
-        layers = data
-    elif isinstance(data, dict):
-        if "layers" in data or "tower" in data:
-            layers = data.get("layers", data.get("tower", []))
-        elif "blocks" in data:
-            layers = [data]
-        else:
-            layers = []
-    else:
-        layers = []
-    if not layers:
-        return []
-    return sorted(layers, key=lambda layer: layer.get("layer", 0))
+    def update_blocks(self, msg_blocks):
+        with self._lock:
+            self._block_data.clear()
+            for block in msg_blocks:
+                # Map incoming layer position to 0-indexed if it comes from a 1-indexed publisher,
+                # or pass it through if your perception pipeline is updated to 0-2.
+                # Assuming the ROS topic provides 0, 1, or 2:
+                pos = block.layer_position
+                self._block_data[(block.layer, pos)] = {
+                    "id": str(block.block_id),
+                    "colour": block.colour.lower().strip()
+                }
+
+    def update_robot_state(self, state_str):
+        with self._lock:
+            self._robot_state = state_str
+
+    def get_robot_state(self):
+        with self._lock:
+            return self._robot_state
+
+    def get_block(self, layer, position):
+        with self._lock:
+            return self._block_data.get((layer, position), None)
+
+    def calculate_valid_placement_layer(self):
+        """Dynamically finds the topmost layer that is incomplete (has 2 or fewer blocks)."""
+        with self._lock:
+            counts = {}
+            max_occupied_layer = -1
+            
+            for (layer, _) in self._block_data.keys():
+                counts[layer] = counts.get(layer, 0) + 1
+                if layer > max_occupied_layer:
+                    max_occupied_layer = layer
+            
+            if max_occupied_layer == -1:
+                return 0
+            
+            if counts.get(max_occupied_layer, 0) < 3:
+                return max_occupied_layer
+            
+            return max_occupied_layer + 1
+
 
 class RealSenseCameraNode(Node):
-    def __init__(self):
+    """
+    ROS 2 Communication Hub.
+    Handles data routing and change-driven terminal tracking.
+    """
+    def __init__(self, model: JengaTowerModel):
         super().__init__('realsense_gui_node')
-        self.topic_name = '/camera/camera/color/image_raw'
-        self.state_topic = '/robot_state'
-        self.override_topic = '/ee_override_array'
-        self.top_layer_topic = '/top_layer_state'
-        self.goal_topic = '/selected_goal'
-
-        qos_profile = QoSProfile(
-            reliability=ReliabilityPolicy.BEST_EFFORT,
-            history=HistoryPolicy.KEEP_LAST,
-            depth=1
-        )
+        self.model = model
+        self.bridge = CvBridge()
         
+        self.cv_image = None
+        self.image_lock = threading.Lock()
+        self.has_new_frame = False
+
+        # State tracking cache variables to ensure terminal outputs only print on updates
+        self._last_override_state = None
+        self._last_goal_state = None
+        self._last_estop_state = None
+
         # Subscriptions
-        self.subscription = self.create_subscription(Image, self.topic_name, self.listener_callback, qos_profile)
-        self.state_subscription = self.create_subscription(String, self.state_topic, self.state_callback, 10)
-        self.top_layer_sub = self.create_subscription(String, self.top_layer_topic, self.top_layer_callback, 10)
-        
-        # Publishers
-        self.override_pub = self.create_publisher(Int8MultiArray, self.override_topic, 10)
-        self.goal_pub = self.create_publisher(String, self.goal_topic, 10)
+        self.create_subscription(Image, '/camera/camera/color/image_raw', self.image_callback, 10)
+        self.create_subscription(String, '/robot_state', self.robot_state_callback, 10)
+        self.create_subscription(JengaBlockStates, '/jenga/block_states', self.block_states_callback, 10)
 
-        # Service Client for E-STOP
+        # Publishers
+        self.override_pub = self.create_publisher(Int8MultiArray, '/ee_override_array', 10)
+        self.goal_pub = self.create_publisher(String, '/selected_goal', 10)
+        
+        # Services
         self.estop_client = self.create_client(SetBool, '/estop')
 
-        self.bridge = CvBridge()
-        self.cv_image = None
-        self.new_image_flag = False
-        self.robot_state_str = None
-        self.top_layer_data = None 
-        self.image_lock = threading.Lock()
-        
-    def listener_callback(self, msg):
+    def image_callback(self, msg):
         try:
-            cv_img = self.bridge.imgmsg_to_cv2(msg, desired_encoding='rgb8')
             with self.image_lock:
-                self.cv_image = cv_img
-                self.new_image_flag = True
+                self.cv_image = self.bridge.imgmsg_to_cv2(msg, desired_encoding='rgb8')
+                self.has_new_frame = True
         except Exception as e:
-            self.get_logger().error(f"CvBridge Error: {e}")
+            self.get_logger().error(f"Image Conversion Error: {e}")
 
-    def state_callback(self, msg):
-        self.robot_state_str = msg.data
+    def robot_state_callback(self, msg):
+        self.model.update_robot_state(msg.data)
 
-    def top_layer_callback(self, msg):
-        try:
-            self.top_layer_data = json.loads(msg.data)
-        except Exception as e:
-            self.get_logger().error(f"Failed to parse tower data JSON: {e}")
+    def block_states_callback(self, msg):
+        self.model.update_blocks(msg.blocks)
 
-    def publish_override(self, boolean_array):
-        msg = Int8MultiArray()
-        msg.data = [int(val) for val in boolean_array]
-        self.override_pub.publish(msg)
+    def publish_override(self, array):
+        current_override = tuple(array)
+        if current_override != self._last_override_state:
+            self._last_override_state = current_override
+            state_labels = ["CLOSE", "OPEN", "RELEASE"]
+            active_action = "UNKNOWN"
+            for idx, val in enumerate(array):
+                if val == 1:
+                    active_action = state_labels[idx]
+            print(f"[TERMINAL LOG] Gripper Override Changed -> State Array: {array} ({active_action})")
+            
+        self.override_pub.publish(Int8MultiArray(data=array))
 
-    def publish_goal(self, goal_matrix):
-        msg = String()
-        msg.data = json.dumps(goal_matrix)
-        self.goal_pub.publish(msg)
-
-    def call_estop_service(self, state: bool):
-        """Asynchronously calls the /estop service"""
-        if not self.estop_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().error('Service /estop not available!')
-            return
+    def publish_goal_sequence(self, pick_layer, pick_pos, place_layer, place_pos):
+        goal_payload = {
+            "pick": {"layer": pick_layer, "position": pick_pos},
+            "place": {"layer": place_layer, "position": place_pos}
+        }
         
-        request = SetBool.Request()
-        request.data = state
-        self.estop_client.call_async(request)
-        self.get_logger().info(f"Service Call Sent: /estop data={state}")
+        if goal_payload != self._last_goal_state:
+            self._last_goal_state = goal_payload
+            print(f"[TERMINAL LOG] Goal Matrix Coordinates Updated -> {json.dumps(goal_payload, indent=2)}")
+
+        self.goal_pub.publish(String(data=json.dumps(goal_payload)))
+
+    def call_estop(self, state: bool):
+        if state != self._last_estop_state:
+            self._last_estop_state = state
+            status_text = "TRIPPED / ACTIVE" if state else "DISENGAGED / READY"
+            print(f"[TERMINAL LOG] Software ESTOP State Changed -> {status_text}")
+
+        if self.estop_client.wait_for_service(timeout_sec=0.5):
+            self.estop_client.call_async(SetBool.Request(data=state))
+
 
 class JengaInterfaceApp:
-    def __init__(self, root, ros_node):
+    """
+    Graphic User Interface and State Machine.
+    """
+    def __init__(self, root, ros_node, model):
         self.root = root
         self.ros_node = ros_node
-        self.root.title("JENGA Tower Interface")
-        self.root.configure(bg=COLOUR_BLACK)
+        self.model = model
+        
+        self.goal_buttons = {}
+        self.override_buttons = {}
+        
+        self.current_state = "WAITING_PICK"  
+        self.selected_pick_coords = None     
+        self.is_estop_active = False
 
-        self.ee_override_array = [False, False, True] 
-        self.estop_active = False 
-        
-        # Sequence Matrix state machine tracking
-        self.sequence_state = "WAITING_PICK"  # WAITING_PICK, WAITING_PLACE, COMPLETE
-        self.pick_selection = None            # [Block ID, Layer, Position]
-        self.place_selection = None           # [Block ID, Layer, Position]
-        
-        self.buttons = {}
-        self.goal_buttons = {}  # (layer 0–5, position 1–3) -> Button widget; L0 = bottom
-        self.estop_button = None 
-        self.cam_label = None
-        self.state_label = None
-        self.goal_status_label = None
-    
         self.setup_ui()
-        self.refresh_buttons()
-        self.ros_node.publish_override(self.ee_override_array)
-        self.update_gui_loop()
+        self.update_loop()
 
     def setup_ui(self):
+        self.root.title("Autonomous Jenga Controller")
+        self.root.configure(bg=COLOUR_BLACK)
+
         banner = tk.Frame(self.root, bg=COLOUR_YELLOW)
-        banner.pack(side=tk.TOP, fill=tk.X, padx=10, pady=10)
-        tk.Label(banner, text="JENGA Tower Interface", bg=COLOUR_YELLOW, fg=COLOUR_BLACK, 
-                 font=("Arial", 28, "bold")).pack(anchor="w", padx=20)
+        banner.pack(side=tk.TOP, fill=tk.X, padx=10, pady=5)
+        tk.Label(banner, text="JENGA Control Station", bg=COLOUR_YELLOW, fg=COLOUR_BLACK, 
+                 font=("Arial", 24, "bold")).pack(anchor="w", padx=20, pady=5)
 
         main_frame = tk.Frame(self.root, bg=COLOUR_BLACK)
-        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
         left_column = tk.Frame(main_frame, bg=COLOUR_BLACK)
         left_column.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        cam_container = tk.Frame(left_column, bg=COLOUR_WHITE)
-        cam_container.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=5, pady=5)
-        self.cam_label = tk.Label(cam_container, bg=COLOUR_WHITE, text="Waiting for RealSense...")
-        self.cam_label.pack(fill=tk.BOTH, expand=True)
+        self.cam_label = tk.Label(left_column, bg=COLOUR_DARK_GRAY, text="Awaiting Video Feed...", fg=COLOUR_WHITE)
+        self.cam_label.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        state_container = tk.Frame(left_column, bg=COLOUR_LIGHT_GRAY, height=60)
-        state_container.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
-        state_container.pack_propagate(False) 
-        tk.Label(state_container, text="Robot State:", bg=COLOUR_LIGHT_GRAY, font=("Arial", 12, "bold")).pack(side=tk.LEFT, padx=10)
-        self.state_label = tk.Label(state_container, text="No Robot State received.", 
-                                    bg=COLOUR_LIGHT_GRAY, fg="blue", font=("Arial", 12, "italic"))
+        state_container = tk.Frame(left_column, bg=COLOUR_DARK_GRAY, height=45)
+        state_container.pack(side=tk.BOTTOM, fill=tk.X, padx=5, pady=5)
+        state_container.pack_propagate(False)
+        tk.Label(state_container, text="Robot Status:", bg=COLOUR_DARK_GRAY, fg=COLOUR_YELLOW, font=("Arial", 11, "bold")).pack(side=tk.LEFT, padx=15)
+        self.state_label = tk.Label(state_container, text="Offline", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 11, "italic"))
         self.state_label.pack(side=tk.LEFT, padx=5)
 
-        ctrl_container = tk.Frame(main_frame, bg=COLOUR_LIGHT_GRAY, width=320)
+        ctrl_container = tk.Frame(main_frame, bg=COLOUR_DARK_GRAY, width=340)
         ctrl_container.pack(side=tk.RIGHT, fill=tk.Y, padx=5, pady=5)
-        
-        # --- Gripper Override Section ---
-        tk.Label(ctrl_container, text="Gripper Override", bg=COLOUR_LIGHT_GRAY, font=("Arial", 14, "bold")).pack(pady=5)
-        btns = [("close", "Override to\nclosed", 0), ("open", "Override to\nopened", 1), ("release", "Release\nOverride", 2)]
-        for key, txt, idx in btns:
-            b = tk.Button(ctrl_container, text=txt, bg=COLOUR_YELLOW, fg=COLOUR_BLACK, font=("Arial", 10), width=18, height=2, command=lambda i=idx: self.handle_press(i))
-            b.pack(pady=3)
-            self.buttons[idx] = b
+        ctrl_container.pack_propagate(False)
 
-        # --- 6 Layer Tower Selection Grid ---
-        tk.Label(ctrl_container, text="Tower Layers", bg=COLOUR_LIGHT_GRAY, font=("Arial", 14, "bold")).pack(pady=(15, 2))
-        
-        goal_btn_frame = tk.Frame(ctrl_container, bg=COLOUR_LIGHT_GRAY)
-        goal_btn_frame.pack(pady=2)
+        tk.Label(ctrl_container, text="Gripper Overrides", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=5)
+        gripper_actions = [("Close", 0), ("Open", 1), ("Release", 2)]
+        for label, index in gripper_actions:
+            btn = tk.Button(ctrl_container, text=label, bg=COLOUR_YELLOW, fg=COLOUR_BLACK, activebackground=COLOUR_WHITE,
+                            font=("Arial", 10, "bold"), width=24, command=lambda idx=index: self.ros_node.publish_override([1 if i == idx else 0 for i in range(3)]))
+            btn.pack(pady=3)
+            self.override_buttons[index] = btn
 
-        # Build grid top-down on screen: L5 at top … L0 at bottom (matches perception).
+        tk.Label(ctrl_container, text="Jenga Matrix Grid", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=(15, 2))
+        grid_wrapper = tk.Frame(ctrl_container, bg=COLOUR_DARK_GRAY)
+        grid_wrapper.pack(pady=5)
+
         for layer in range(5, -1, -1):
-            row_frame = tk.Frame(goal_btn_frame, bg=COLOUR_LIGHT_GRAY)
-            row_frame.pack(pady=2)
+            row_frame = tk.Frame(grid_wrapper, bg=COLOUR_DARK_GRAY)
+            row_frame.pack(pady=1)
+            tk.Label(row_frame, text=f"L{layer}", bg=COLOUR_DARK_GRAY, fg=COLOUR_LIGHT_GRAY, font=("Arial", 9, "bold"), width=4).pack(side=tk.LEFT)
 
-            tk.Label(row_frame, text=f"L{layer}:", bg=COLOUR_LIGHT_GRAY, font=("Arial", 10, "bold"), width=4).pack(side=tk.LEFT)
-
-            # Position indices: 1 = left, 2 = middle, 3 = right
-            for pos_idx in range(1, 4):
+            # Positions are now 0-indexed: 0 = left, 1 = middle, 2 = right
+            for pos_idx in range(3):
                 btn = tk.Button(row_frame, text="000", bg=COLOUR_WHITE, fg=COLOUR_BLACK, font=("Arial", 9, "bold"),
-                                width=6, height=2, relief="raised",
-                                command=lambda l=layer, p=pos_idx: self.select_block_sequence(l, p))
-                btn.pack(side=tk.LEFT, padx=3)
+                                width=7, height=2, relief="flat", command=lambda l=layer, p=pos_idx: self.handle_matrix_click(l, p))
+                btn.pack(side=tk.LEFT, padx=2)
                 self.goal_buttons[(layer, pos_idx)] = btn
 
-        self.goal_status_label = tk.Label(ctrl_container, text="Select next block to be picked up", 
-                                          bg=COLOUR_LIGHT_GRAY, fg=COLOUR_BLACK, font=("Arial", 10, "italic"), 
-                                          wraplength=280, justify="center")
+        self.goal_status_label = tk.Label(ctrl_container, text="Step 1: Click a block to Pick Up.", 
+                                          bg=COLOUR_DARK_GRAY, fg=COLOUR_YELLOW, font=("Arial", 10, "bold"), wraplength=300)
         self.goal_status_label.pack(pady=10)
 
-        # --- ESTOP Section ---
-        tk.Label(ctrl_container, text="ESTOP", bg=COLOUR_LIGHT_GRAY, font=("Arial", 14, "bold")).pack(pady=(10, 2))
-        self.estop_button = tk.Button(ctrl_container, text="OFF", bg=COLOUR_BLACK, fg=COLOUR_WHITE, 
-                                      font=("Arial", 12, "bold"), width=18, height=2, 
-                                      command=self.toggle_estop)
-        self.estop_button.pack(pady=3)
+        tk.Label(ctrl_container, text="Safety Utilities", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=(10, 2))
+        self.estop_button = tk.Button(ctrl_container, text="SYSTEM ENGAGED", bg=COLOUR_GREEN, fg=COLOUR_WHITE, 
+                                      font=("Arial", 11, "bold"), width=24, height=2, command=self.handle_estop_toggle)
+        self.estop_button.pack(pady=5)
 
-    def toggle_estop(self):
-        """Toggles the ESTOP state and calls the ROS service"""
-        self.estop_active = not self.estop_active
-        if self.estop_active:
-            self.estop_button.config(text="ON", bg=COLOUR_RED)
-        else:
-            self.estop_button.config(text="OFF", bg=COLOUR_BLACK)
-        self.ros_node.call_estop_service(self.estop_active)
+    def handle_matrix_click(self, layer, position):
+        block = self.model.get_block(layer, position)
+        target_place_layer = self.model.calculate_valid_placement_layer()
 
-    def handle_press(self, index):
-        self.ee_override_array[index] = not self.ee_override_array[index]
-        if index == 0 and self.ee_override_array[0]:
-            self.ee_override_array[1] = False; self.ee_override_array[2] = False
-        elif index == 1 and self.ee_override_array[1]:
-            self.ee_override_array[0] = False; self.ee_override_array[2] = False
-        elif index == 2 and self.ee_override_array[2]:
-            self.ee_override_array[0] = False; self.ee_override_array[1] = False
-        if self.ee_override_array[0] or self.ee_override_array[1]:
-            self.ee_override_array[2] = False
-        self.refresh_buttons()
-        self.ros_node.publish_override(self.ee_override_array)
-
-    def _get_block_id_from_memory(self, layer, pos_idx):
-        """Helper to lookup active block ID string from the node's stored JSON data."""
-        if not self.ros_node.top_layer_data:
-            return "000"
-
-        layers_list = _layers_from_tower_message(self.ros_node.top_layer_data)
-
-        if 0 <= layer < len(layers_list):
-            layer_data = layers_list[layer]
-            if isinstance(layer_data, dict):
-                blocks = layer_data.get("blocks", [])
-                block_idx = pos_idx - 1  # 1-3 to 0-2
-                if 0 <= block_idx < len(blocks):
-                    b_id = blocks[block_idx].get("id", "000")
-                    return str(b_id) if b_id is not None and b_id != "" else "000"
-        return "000"
-
-    def get_top_incomplete_layer(self):
-        """Finds the highest layer (0-5) that has any empty spots."""
-        if not self.ros_node.top_layer_data: return 0
-        layers = _layers_from_tower_message(self.ros_node.top_layer_data)
-        for layer in range(len(layers) - 1, -1, -1):
-            blocks = layers[layer].get("blocks", [])
-            # Layer is incomplete if it has missing blocks or unknown/none colours
-            for b in blocks:
-                if not b.get("present", False) or b.get("colour") in ["unknown", "none", None]:
-                    return layer
-        return 0
-
-    def is_eligible(self, layer, pos_idx):
-        """Returns True if the spot is actually available."""
-        target_layer = self.get_top_incomplete_layer()
-        if layer != target_layer: return False
-        
-        layers = _layers_from_tower_message(self.ros_node.top_layer_data)
-        if layer < len(layers):
-            blocks = layers[layer].get("blocks", [])
-            b = blocks[pos_idx - 1] if (pos_idx - 1) < len(blocks) else {}
-            return not b.get("present", False) or b.get("colour") in ["unknown", "none", None]
-        return True
-
-    def select_block_sequence(self, layer, pos_idx):
-        if self.sequence_state == "COMPLETE":
-            self.sequence_state = "WAITING_PICK"
-            self.pick_selection = None
-            self.place_selection = None
-
-        if self.sequence_state == "WAITING_PICK":
-            # Optional: Add logic here to restrict picking as well if desired
-            self.pick_selection = [self._get_block_id_from_memory(layer, pos_idx), layer, pos_idx]
-            self.sequence_state = "WAITING_PLACE"
-            target = self.get_top_incomplete_layer()
-            self.goal_status_label.config(
-                text=f"Selected L{layer} P{pos_idx}. Now click an empty spot on L{target}.",
-                fg="blue"
-            )
-
-        elif self.sequence_state == "WAITING_PLACE":
-            if self.is_eligible(layer, pos_idx):
-                self.place_selection = [self._get_block_id_from_memory(layer, pos_idx), layer, pos_idx]
-                self.sequence_state = "COMPLETE"
-                self.goal_status_label.config(text="Valid placement selected.", fg="green")
-                # Publish
-                self.ros_node.publish_goal([self.pick_selection, self.place_selection])
-            else:
+        if self.current_state == "WAITING_PICK":
+            if block is not None:
+                self.selected_pick_coords = (layer, position)
+                self.current_state = "WAITING_PLACE"
                 self.goal_status_label.config(
-                    text=f"Invalid! Only empty spots on L{self.get_top_incomplete_layer()} are eligible.",
-                    fg="red"
+                    text=f"Pick selected: L{layer} P{position}.\nStep 2: Choose empty slot on Layer {target_place_layer}.",
+                    fg=COLOUR_WHITE
                 )
-                
-    def refresh_buttons(self):
-        for idx, active in enumerate(self.ee_override_array):
-            color = COLOUR_RED if active else COLOUR_YELLOW
-            text_color = COLOUR_WHITE if active else COLOUR_BLACK
-            self.buttons[idx].config(bg=color, fg=text_color, activebackground=color)
+            else:
+                self.goal_status_label.config(text="Invalid action: Empty spot selected! Choose an actual block.", fg=COLOUR_RED)
 
-    def update_gui_loop(self):
-        # Update Image Frame window
-        if self.ros_node.new_image_flag:
+        elif self.current_state == "WAITING_PLACE":
+            if block is not None:
+                self.selected_pick_coords = (layer, position)
+                self.goal_status_label.config(
+                    text=f"Pick updated: L{layer} P{position}.\nStep 2: Choose empty slot on Layer {target_place_layer}.",
+                    fg=COLOUR_WHITE
+                )
+                return
+
+            if layer != target_place_layer:
+                self.goal_status_label.config(
+                    text=f"Rule Infraction! Placements are restricted strictly to Layer {target_place_layer}.", 
+                    fg=COLOUR_RED
+                )
+                return
+
+            pick_l, pick_p = self.selected_pick_coords
+            
+            self.ros_node.publish_goal_sequence(pick_l, pick_p, layer, position)
+            
+            self.current_state = "WAITING_PICK"
+            self.selected_pick_coords = None
+            self.goal_status_label.config(text="Execution target sent. Step 1: Select next block to Pick Up.", fg=COLOUR_YELLOW)
+
+    def handle_estop_toggle(self):
+        self.is_estop_active = not self.is_estop_active
+        self.ros_node.call_estop(self.is_estop_active)
+        
+        if self.is_estop_active:
+            self.estop_button.config(text="ESTOP TRIPPED", bg=COLOUR_RED)
+        else:
+            self.estop_button.config(text="SYSTEM ENGAGED", bg=COLOUR_GREEN)
+
+    def update_loop(self):
+        if self.ros_node.has_new_frame:
             with self.ros_node.image_lock:
-                frame = self.ros_node.cv_image.copy()
-                self.ros_node.new_image_flag = False
-            im_pil = PILImage.fromarray(frame)
-            im_pil.thumbnail((800, 600), _PIL_RESAMPLE)
-            img_tk = ImageTk.PhotoImage(image=im_pil)
-            self.cam_label.config(image=img_tk)
+                cv_img = self.ros_node.cv_image.copy()
+                self.ros_node.has_new_frame = False
+            
+            h, w, _ = cv_img.shape
+            scale = min(640 / w, 480 / h)
+            img_pil = PILImage.fromarray(cv_img).resize((int(w * scale), int(h * scale)), _PIL_RESAMPLE)
+            img_tk = ImageTk.PhotoImage(image=img_pil)
+            self.cam_label.config(image=img_tk, text="")
             self.cam_label.image = img_tk
-            
-        if self.ros_node.robot_state_str:
-            self.state_label.config(text=self.ros_node.robot_state_str, font=("Arial", 12, "bold"), fg=COLOUR_BLACK)
-            
-        # Update full tower matrix colors and ID text labels dynamically
-        if self.ros_node.top_layer_data:
-            layers_list = _layers_from_tower_message(self.ros_node.top_layer_data)
-            
-            for layer in range(6):
-                for pos_idx in range(1, 4):
-                    block_idx = pos_idx - 1
-                    target_color = COLOUR_WHITE
-                    block_id_str = "000"
 
-                    if layer < len(layers_list):
-                        layer_data = layers_list[layer]
-                        if isinstance(layer_data, dict):
-                            blocks = layer_data.get("blocks", [])
-                            if block_idx < len(blocks):
-                                block = blocks[block_idx]
-                                if block.get("present", False):
-                                    c_name = block.get("colour", "unknown")
-                                    target_color = BLOCK_COLOURS.get(c_name, COLOUR_WHITE)
-                                b_id = block.get("id", "000")
-                                if b_id is not None and b_id != "":
-                                    block_id_str = str(b_id)
-                                    
-                    btn = self.goal_buttons.get((layer, pos_idx))
-                    if btn:
-                        btn.config(text=block_id_str, bg=target_color, activebackground=target_color)
-                        
-        self.root.after(33, self.update_gui_loop)
+        self.state_label.config(text=self.model.get_robot_state())
+        target_place_layer = self.model.calculate_valid_placement_layer()
+        
+        for layer in range(6):
+            # Adjusted internal loop tracking to check indices 0, 1, and 2
+            for pos_idx in range(3):
+                btn = self.goal_buttons.get((layer, pos_idx))
+                if not btn:
+                    continue
+                
+                block = self.model.get_block(layer, pos_idx)
+                
+                if block:
+                    btn_text = block["id"]
+                    bg_color = BLOCK_COLOURS.get(block["colour"], COLOUR_WHITE)
+                    fg_color = COLOUR_WHITE if block["colour"] in ["black", "blue"] else COLOUR_BLACK
+                    relief_type = "raised"
+                else:
+                    btn_text = "---"
+                    fg_color = "#666666"
+                    relief_type = "flat"
+                    bg_color = "#334433" if (layer == target_place_layer and self.current_state == "WAITING_PLACE") else COLOUR_DARK_GRAY
+
+                if btn.cget("text") != btn_text or btn.cget("bg") != bg_color:
+                    btn.config(text=btn_text, bg=bg_color, fg=fg_color, activebackground=bg_color, relief=relief_type)
+
+        self.root.after(30, self.update_loop)
+
 
 def main():
     rclpy.init()
-    node = RealSenseCameraNode()
+    model = JengaTowerModel()
+    node = RealSenseCameraNode(model)
+    
     root = tk.Tk()
-    app = JengaInterfaceApp(root, node)
-    threading.Thread(target=lambda: rclpy.spin(node), daemon=True).start()
+    app = JengaInterfaceApp(root, node, model)
+    
+    ros_thread = threading.Thread(target=lambda: rclpy.spin(node), daemon=True)
+    ros_thread.start()
+    
     try:
         root.mainloop()
     finally:
