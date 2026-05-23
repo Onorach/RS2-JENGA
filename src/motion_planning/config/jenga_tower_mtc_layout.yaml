@@ -4,6 +4,8 @@
 layout: parametric
 
 parametric:
+  # Hardware-specific: shift entire stock + tower footprint in layout frame (metres).
+  platform_offset: {x: 0.0, y: 0.0}
   # tower first so stock can alias layer_dz / slot_dx (stack spacing matches tower slot/layer pitch)
   tower:
     base: {x: 0.000, y: 0.297, z: 0.0138}

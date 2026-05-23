@@ -160,10 +160,10 @@ class MtcProbeBlockServer : public rclcpp::Node {
     task.setProperty("eef", hand_group_name_);
     task.setProperty("ik_frame", probe_frame_);
 
-    mtc::Stage* current_state_ptr = nullptr;
+    // mtc::Stage* current_state_ptr = nullptr;
     {
       auto stage = std::make_unique<mtc::stages::CurrentState>("current");
-      current_state_ptr = stage.get();
+      // current_state_ptr = stage.get();
       task.add(std::move(stage));
     }
 

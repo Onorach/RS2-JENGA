@@ -7,6 +7,8 @@ Optional startup publish via ROS parameter ``initial_layout`` (``none`` default,
 - ``set_jenga_blocks_layout`` (SetJengaBlocksLayout): republish selected indices (or all
   when ``block_indices`` is empty) at either stock or tower layout.
 - ``protrude_jenga_block`` (ProtrudeJengaBlock): offset one block along an axis.
+- Optional ``perception_updates``: subscribe to ``jenga_interfaces/JengaBlockStates`` and
+  refine poses for reported ``block_id`` values (hybrid: does not remove unreported blocks).
 """
 
 from __future__ import annotations
@@ -21,6 +23,7 @@ from geometry_msgs.msg import Point, Pose, Quaternion
 
 from motion_planning.jenga_tower_mtc_sequencer import (
     _stock_pick_xyz_list,
+    parametric_platform_offset,
     tower_poses_from_layout_dict,
 )
 from moveit_msgs.msg import CollisionObject, ObjectColor, PlanningScene, PlanningSceneWorld
@@ -29,10 +32,12 @@ from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPo
 from shape_msgs.msg import SolidPrimitive
 from std_msgs.msg import ColorRGBA, Header
 
+from jenga_interfaces.msg import JengaBlockStates
 from jenga_interfaces.srv import ProtrudeJengaBlock
 from jenga_interfaces.srv import SetJengaBlocksLayout
 
 import math
+import time
 
 
 @dataclass(frozen=True)
@@ -149,6 +154,20 @@ def _quat_rotate_vec(q: Quaternion, v: tuple[float, float, float]) -> tuple[floa
     return (vpx, vpy, vpz)
 
 
+def _collision_object_id(block_index: int) -> str:
+    return f"block_{int(block_index):02d}"
+
+
+def _as_bool(val: object) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return val != 0
+    if isinstance(val, str):
+        return val.strip().lower() in ("1", "true", "yes", "on")
+    return bool(val)
+
+
 class JengaBlocksSceneNode(Node):
     def __init__(self) -> None:
         super().__init__("jenga_blocks_scene")
@@ -174,6 +193,21 @@ class JengaBlocksSceneNode(Node):
         )
         initial_layout_raw = str(self.declare_parameter("initial_layout", "none").value)
         self._initial_layout = self._parse_initial_layout(initial_layout_raw)
+
+        self._perception_updates = _as_bool(
+            self.declare_parameter("perception_updates", False).value
+        )
+        self._block_states_topic = str(
+            self.declare_parameter("block_states_topic", "/jenga/block_states").value
+        )
+        self._max_update_rate_hz = float(
+            self.declare_parameter("max_update_rate_hz", 2.0).value
+        )
+        self._require_frame_match = _as_bool(
+            self.declare_parameter("require_frame_match", True).value
+        )
+        self._last_perception_apply_mono: float = 0.0
+        self._block_states_sub = None
 
         # Use transient-local durability so late subscribers still receive the latest
         # published scene (important since we often publish only once at startup).
@@ -214,6 +248,28 @@ class JengaBlocksSceneNode(Node):
                 self._publish_period_sec, self._republish_cached
             )
 
+        if self._perception_updates:
+            sub_qos = QoSProfile(
+                history=HistoryPolicy.KEEP_LAST,
+                depth=10,
+                reliability=ReliabilityPolicy.RELIABLE,
+            )
+            self._block_states_sub = self.create_subscription(
+                JengaBlockStates,
+                self._block_states_topic,
+                self._on_block_states,
+                sub_qos,
+            )
+            rate_msg = (
+                f"{self._max_update_rate_hz:.2f} Hz max"
+                if self._max_update_rate_hz > 0.0
+                else "unlimited rate"
+            )
+            self.get_logger().info(
+                f"Perception updates enabled: subscribing to {self._block_states_topic} "
+                f"({rate_msg})."
+            )
+
     @staticmethod
     def _parse_initial_layout(raw: str) -> str | None:
         layout = (raw or "").strip().lower()
@@ -245,7 +301,9 @@ class JengaBlocksSceneNode(Node):
             z=float(oq.get("z", 0.0)),
             w=float(oq.get("w", 1.0)),
         )
-        pick_xyz = _stock_pick_xyz_list(stock, n_tower=n)
+        pick_xyz = _stock_pick_xyz_list(
+            stock, n_tower=n, xy_offset=parametric_platform_offset(data)
+        )
         if len(pick_xyz) < n:
             raise ValueError(
                 f"Not enough stock pick positions ({len(pick_xyz)}) for {n} blocks."
@@ -269,7 +327,7 @@ class JengaBlocksSceneNode(Node):
             )
         objects: list[CollisionObject] = []
         for i, pose in enumerate(poses):
-            block_id = f"block_{i:02d}"
+            block_id = _collision_object_id(i)
             objects.append(
                 _build_block_object(
                     block_id=block_id,
@@ -402,10 +460,73 @@ class JengaBlocksSceneNode(Node):
             response.message = f"set layout failed: {exc}"
         return response
 
+    def _min_perception_interval_sec(self) -> float:
+        if self._max_update_rate_hz <= 0.0:
+            return 0.0
+        return 1.0 / self._max_update_rate_hz
+
+    def _upsert_cached_object(self, obj: CollisionObject) -> None:
+        for i, existing in enumerate(self._cached_objects):
+            if existing.id == obj.id:
+                self._cached_objects[i] = obj
+                return
+        self._cached_objects.append(obj)
+
+    def _on_block_states(self, msg: JengaBlockStates) -> None:
+        if not self._perception_updates:
+            return
+        min_interval = self._min_perception_interval_sec()
+        if min_interval > 0.0:
+            now = time.monotonic()
+            if (now - self._last_perception_apply_mono) < min_interval:
+                return
+            self._last_perception_apply_mono = now
+
+        msg_frame = (msg.header.frame_id or "").strip()
+        if self._require_frame_match and msg_frame and msg_frame != self._frame_id:
+            self.get_logger().warning(
+                f"Skipping JengaBlockStates: frame_id '{msg_frame}' "
+                f"!= configured frame_id '{self._frame_id}'."
+            )
+            return
+
+        updated, skipped = self._apply_block_states(msg)
+        if updated:
+            self._publish_objects(updated)
+            self.get_logger().debug(
+                f"Perception: published {len(updated)} block collision update(s) "
+                f"(skipped {skipped})."
+            )
+
+    def _apply_block_states(
+        self, msg: JengaBlockStates
+    ) -> tuple[list[CollisionObject], int]:
+        """Update cached poses for reported blocks; hybrid mode keeps unreported blocks."""
+        updated: list[CollisionObject] = []
+        skipped = 0
+        for block in msg.blocks:
+            idx = int(block.block_id)
+            if idx < 0:
+                skipped += 1
+                continue
+            collision_id = _collision_object_id(idx)
+            obj = _build_block_object(
+                block_id=collision_id,
+                frame_id=self._frame_id,
+                pose=block.pose,
+                dims=self._dims,
+                grasp_offset_m=self._grasp_offset_m,
+                probe_offset_m=self._probe_offset_m,
+                operation=CollisionObject.ADD,
+            )
+            self._upsert_cached_object(obj)
+            updated.append(obj)
+        return updated, skipped
+
     def _on_protrude(
         self, request: ProtrudeJengaBlock.Request, response: ProtrudeJengaBlock.Response
     ) -> ProtrudeJengaBlock.Response:
-        block_id = f"block_{int(request.block_index):02d}"
+        block_id = _collision_object_id(int(request.block_index))
         axis = str(request.axis) if request.axis else "x"
         dist = float(request.distance_m)
 

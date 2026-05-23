@@ -26,6 +26,7 @@ from tf2_ros import Buffer, TransformException, TransformListener
 from jenga_interfaces.action import JengaExtractMiddleBlock
 from jenga_interfaces.srv import ProtrudeJengaBlock
 from jenga_interfaces.srv import SetJengaBlocksLayout
+from motion_planning.jenga_tower_mtc_sequencer import parametric_platform_offset
 
 
 def _on_feedback(fb) -> None:  # noqa: ANN001
@@ -331,8 +332,9 @@ def main(args=None) -> int:
         p = data.get("parametric", {})
         tower = p.get("tower", {})
         base = tower.get("base", {})
-        base_x = float(base.get("x", 0.0))
-        base_y = float(base.get("y", 0.0))
+        ox, oy = parametric_platform_offset(data)
+        base_x = float(base.get("x", 0.0)) + ox
+        base_y = float(base.get("y", 0.0)) + oy
         base_z = float(base.get("z", float(p.get("stock", {}).get("z", 0.0138))))
         oq = p.get("orientation_place", {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0})
         q_place = _q_normalize(

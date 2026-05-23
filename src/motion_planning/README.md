@@ -49,6 +49,37 @@ By default (`jenga_blocks_startup_layout:=none`), no blocks are published at sta
 | `set_jenga_blocks_layout` | `jenga_interfaces/srv/SetJengaBlocksLayout` | Republish selected `block_indices` (or all if empty) at either `target_layout: "stock"` or `"tower"` (planning scene only). |
 | `protrude_jenga_block` | `jenga_interfaces/srv/ProtrudeJengaBlock` | Move one block’s collision object along an axis by `distance_m` (planning scene only; used by extraction tests). |
 
+### Perception-driven scene updates (hybrid)
+
+With `jenga_blocks_perception_updates:=true`, `jenga_blocks_scene` subscribes to `jenga_interfaces/msg/JengaBlockStates` (default topic `/jenga/block_states`) and updates collision poses for each reported `block_id` → `block_{id:02d}`. Blocks not present in the message are left unchanged (seed the scene first via `set_jenga_blocks_layout` or startup layout).
+
+**Typical workflow after `jenga_tower_mtc_sequencer` builds the tower:**
+
+```bash
+# 1) Seed all 18 collision objects at nominal tower layout
+ros2 service call /set_jenga_blocks_layout jenga_interfaces/srv/SetJengaBlocksLayout \
+  "{block_indices: [], target_layout: 'tower'}"
+
+# 2) Enable perception updates (restart launch, or set at startup)
+ros2 launch motion_planning motion_planning.launch.py planner:=mtc \
+  jenga_blocks_perception_updates:=true
+```
+
+| Launch parameter | Node parameter | Default | Description |
+|------------------|----------------|---------|-------------|
+| `jenga_blocks_perception_updates` | `perception_updates` | `false` | Subscribe to `JengaBlockStates` |
+| `jenga_blocks_states_topic` | `block_states_topic` | `/jenga/block_states` | Perception topic |
+| `jenga_blocks_max_update_rate_hz` | `max_update_rate_hz` | `2.0` | Apply cap (`0` = unlimited) |
+| `jenga_blocks_require_frame_match` | `require_frame_match` | `true` | Skip if `header.frame_id` ≠ `jenga_blocks_frame_id` |
+
+`block_id` in perception messages must match MTC `block_index` / planning-scene `block_XX` (bottom layer 0–2, then 3–5, …). Verify with:
+
+```bash
+ros2 run motion_planning verify_jenga_block_ids
+```
+
+**Pose accuracy:** perception is ~3 mm; adjacent nominal blocks are nearly touching. If MoveIt reports spurious block–block collisions, add a `collision_shrink_m` margin later (not enabled by default).
+
 Example:
 
 ```bash
@@ -59,6 +90,37 @@ ros2 service call /set_jenga_blocks_layout jenga_interfaces/srv/SetJengaBlocksLa
 # Reset only specific indices (example: put block_10 and block_11 back to stock)
 ros2 service call /set_jenga_blocks_layout jenga_interfaces/srv/SetJengaBlocksLayout "{block_indices: [10, 11], target_layout: 'stock'}"
 ```
+
+### Platform centre calibration (`platform_offset`)
+
+Parametric layouts in `config/jenga_tower_mtc_layout.yaml` support a single XY shift for the whole stock + tower footprint (same frame as `goal_frame` / `jenga_blocks_frame_id`, default `world`):
+
+```yaml
+parametric:
+  platform_offset: {x: 0.0, y: 0.0}   # metres; tune per hardware setup
+  tower:
+    base: {x: 0.000, y: 0.297, z: 0.0138}
+    ...
+  stock:
+    y_centre: 0.297
+    ...
+```
+
+**Per-machine file:** copy the YAML (e.g. `jenga_tower_mtc_layout_lab2.yaml`), change only `platform_offset`, and pass it at launch:
+
+```bash
+ros2 launch motion_planning motion_planning.launch.py planner:=mtc \
+  jenga_blocks_layout_path:=/path/to/jenga_tower_mtc_layout_lab2.yaml
+```
+
+**Quick tune on hardware:** compare block collision objects to the physical platform in RViz, edit `platform_offset` in steps of `0.001` (1 mm), then refresh the scene without restarting:
+
+```bash
+ros2 service call /set_jenga_blocks_layout jenga_interfaces/srv/SetJengaBlocksLayout \
+  "{block_indices: [], target_layout: 'stock'}"
+```
+
+Restart MTC sequencers/tests after YAML changes (they load the file once at startup). Optional check: `ros2 run motion_planning verify_jenga_block_ids --ros-args -p layout_path:=...`
 
 ## Launch
 
@@ -90,6 +152,10 @@ ros2 launch motion_planning motion_planning.launch.py
 | `add_floor_plane`         | `false`                            | Add floor-plane at startup (use GUI or `:=true` + `world` frame if needed) |
 | `floor_z`                  | `0.0`                              | Floor Z height (metres)                              |
 | `jenga_blocks_startup_layout` | `none`                          | MTC only: `none` (default), `stock`, or `tower` — publish all Jenga block collision objects at startup |
+| `jenga_blocks_perception_updates` | `false`                     | MTC only: subscribe to `JengaBlockStates` for live pose updates |
+| `jenga_blocks_states_topic` | `/jenga/block_states`           | Perception topic when perception updates enabled |
+| `jenga_blocks_max_update_rate_hz` | `2.0`                     | Max rate for applying perception messages (`0` = unlimited) |
+| `jenga_blocks_require_frame_match` | `true`                   | Skip perception messages with mismatched `frame_id` |
 
 **Examples:**
 

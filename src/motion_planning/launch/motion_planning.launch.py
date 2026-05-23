@@ -326,6 +326,33 @@ def generate_launch_description():
             "leave the planning scene unchanged on startup."
         ),
     )
+    jenga_blocks_perception_updates_arg = DeclareLaunchArgument(
+        "jenga_blocks_perception_updates",
+        default_value="false",
+        description=(
+            "If true, jenga_blocks_scene subscribes to JengaBlockStates and updates "
+            "poses for reported block_id values (hybrid with YAML/services)."
+        ),
+    )
+    jenga_blocks_states_topic_arg = DeclareLaunchArgument(
+        "jenga_blocks_states_topic",
+        default_value="/jenga/block_states",
+        description="Topic for jenga_interfaces/JengaBlockStates perception updates.",
+    )
+    jenga_blocks_max_update_rate_hz_arg = DeclareLaunchArgument(
+        "jenga_blocks_max_update_rate_hz",
+        default_value="2.0",
+        description=(
+            "Max rate (Hz) for applying perception block-state messages (0 = unlimited)."
+        ),
+    )
+    jenga_blocks_require_frame_match_arg = DeclareLaunchArgument(
+        "jenga_blocks_require_frame_match",
+        default_value="true",
+        description=(
+            "If true, skip JengaBlockStates when header.frame_id != jenga_blocks_frame_id."
+        ),
+    )
     joint_secondary_pref_clip_arg = DeclareLaunchArgument(
         "joint_secondary_pref_clip",
         default_value="0.45",
@@ -646,6 +673,12 @@ def generate_launch_description():
                 "layout_path": LaunchConfiguration("jenga_blocks_layout_path"),
                 "frame_id": LaunchConfiguration("jenga_blocks_frame_id"),
                 "initial_layout": LaunchConfiguration("jenga_blocks_startup_layout"),
+                "perception_updates": LaunchConfiguration("jenga_blocks_perception_updates"),
+                "block_states_topic": LaunchConfiguration("jenga_blocks_states_topic"),
+                "max_update_rate_hz": LaunchConfiguration("jenga_blocks_max_update_rate_hz"),
+                "require_frame_match": LaunchConfiguration(
+                    "jenga_blocks_require_frame_match"
+                ),
             }
         ],
     )
@@ -715,6 +748,10 @@ def generate_launch_description():
         jenga_blocks_layout_path_arg,
         jenga_blocks_frame_id_arg,
         jenga_blocks_startup_layout_arg,
+        jenga_blocks_perception_updates_arg,
+        jenga_blocks_states_topic_arg,
+        jenga_blocks_max_update_rate_hz_arg,
+        jenga_blocks_require_frame_match_arg,
         max_step_arg,
         jump_threshold_arg,
         cartesian_fraction_threshold_arg,
