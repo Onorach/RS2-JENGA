@@ -209,12 +209,41 @@ def _colour_mean_xy_in_region(
     return out
 
 
+def _depth_split_x_from_closest_pixels(
+    depth_frame: np.ndarray,
+    mask: np.ndarray,
+) -> float | None:
+    """
+    Estimate split x for a colour blob using the closest (smallest) depth.
+    """
+    ys, xs = np.where(mask)
+    if len(xs) == 0:
+        return None
+
+    depths = depth_frame[ys, xs].astype(np.float32)
+    valid = (depths > 0) & np.isfinite(depths)
+    if not np.any(valid):
+        return None
+
+    xs_valid = xs[valid]
+    depths_valid = depths[valid]
+    min_depth = float(np.min(depths_valid))
+    near = depths_valid <= min_depth
+    if not np.any(near):
+        return None
+    return float(np.mean(xs_valid[near]))
+
+
 def colour_mean_xy_in_cell(
     bgr_frame: np.ndarray,
     cell: dict,
     depth_frame: np.ndarray | None = None,
     target_depth_mm: float | None = None,
     depth_tolerance_mm: float = 40.0,
+    orientation: str | None = None,
+    use_outside_of_split: bool = False,
+    robust_stat: str = "mean",
+    require_split_for_output: bool = False,
 ) -> dict[str, tuple[float, float]]:
     """
     Mean image-space centroid (x, y) per colour inside cell.
@@ -238,7 +267,92 @@ def colour_mean_xy_in_cell(
     else:
         depth_gate = None
 
-    return _colour_mean_xy_in_region(hsv, quad, depth_gate)
+    if (
+        not use_outside_of_split
+        or orientation not in ("left", "right")
+        or depth_frame is None
+    ):
+        if use_outside_of_split and require_split_for_output:
+            return {}
+        return _colour_mean_xy_in_region(hsv, quad, depth_gate)
+
+    total = int(quad.sum())
+    out: dict[str, tuple[float, float]] = {}
+    use_median = str(robust_stat).strip().lower() == "median"
+    x_grid = np.broadcast_to(np.arange(iw, dtype=np.float32), (ih, iw))
+
+    for colour in HSV_RANGES:
+        colour_mask = quad & classify_hsv(hsv, colour)
+        n_colour = int(colour_mask.sum())
+        if n_colour < MIN_COLOUR_PIXELS:
+            continue
+        if n_colour / total * 100.0 < MIN_COLOUR_PCT:
+            continue
+
+        active_mask = colour_mask
+        if depth_gate is not None:
+            gated = colour_mask & depth_gate
+            if int(gated.sum()) >= MIN_COLOUR_PIXELS:
+                active_mask = gated
+
+        split_x = _depth_split_x_from_closest_pixels(depth_frame, active_mask)
+        if split_x is not None:
+            if orientation == "left":
+                outside_mask = active_mask & (x_grid <= float(split_x))
+            else:
+                outside_mask = active_mask & (x_grid >= float(split_x))
+            ys, xs = np.where(outside_mask)
+            if len(xs) >= max(10, MIN_COLOUR_PIXELS // 5):
+                if use_median:
+                    out[colour] = (float(np.median(xs)), float(np.median(ys)))
+                else:
+                    out[colour] = (float(np.mean(xs)), float(np.mean(ys)))
+                continue
+        if require_split_for_output:
+            continue
+
+        ys, xs = np.where(active_mask)
+        if len(xs) == 0:
+            continue
+        if use_median:
+            out[colour] = (float(np.median(xs)), float(np.median(ys)))
+        else:
+            out[colour] = (float(np.mean(xs)), float(np.mean(ys)))
+
+    return out
+
+
+def colour_depth_split_x_in_cell(
+    bgr_frame: np.ndarray,
+    depth_frame: np.ndarray | None,
+    cell: dict,
+) -> dict[str, float]:
+    """
+    Vertical split x per colour blob in a cell, using closest depth pixels.
+    """
+    if depth_frame is None:
+        return {}
+
+    ih, iw = bgr_frame.shape[:2]
+    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
+    quad = _quad_mask((ih, iw), cell["corners"])
+    total = int(quad.sum())
+    if total == 0:
+        return {}
+
+    out: dict[str, float] = {}
+    for colour in HSV_RANGES:
+        colour_mask = quad & classify_hsv(hsv, colour)
+        n_colour = int(colour_mask.sum())
+        if n_colour < MIN_COLOUR_PIXELS:
+            continue
+        if n_colour / total * 100.0 < MIN_COLOUR_PCT:
+            continue
+
+        split_x = _depth_split_x_from_closest_pixels(depth_frame, colour_mask)
+        if split_x is not None:
+            out[colour] = float(split_x)
+    return out
 
 
 def colour_mean_xy_per_lane_in_cell(
@@ -386,6 +500,14 @@ def build_debug_image(
                 y = int(round(float(cy) - min_y))
                 if not (0 <= x < cw and 0 <= y < ch):
                     continue
+
+                split_x = block.get("depth_split_x_px")
+                if split_x is not None:
+                    sx = int(round(float(split_x) - min_x))
+                    if 0 <= sx < cw:
+                        y0 = max(0, y - 18)
+                        y1 = min(ch - 1, y + 18)
+                        cv2.line(canvas, (sx, y0), (sx, y1), (255, 255, 255), 1, cv2.LINE_AA)
 
                 cv2.circle(canvas, (x, y), 6, (255, 255, 255), -1)
                 cv2.circle(canvas, (x, y), 3, (0, 0, 0), -1)

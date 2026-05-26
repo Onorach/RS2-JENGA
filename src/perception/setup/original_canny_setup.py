@@ -1,7 +1,7 @@
 """
 original_canny_setup.py
 -----------------------
-Interactive calibration for CANNY_ORIGINAL_* and CANNY_CENTRE_BAND_PCT.
+Interactive calibration for CANNY_ORIGINAL_* and CANNY_CENTRE_BAND_*.
 
 Separate window from colour-mask Canny (CANNY_MASK_*).
 """
@@ -17,7 +17,7 @@ import numpy as np
 
 from colour_identification import compute_roi
 from grid_generation import centre_band_x_bounds, preview_original_canny_views
-from setup.gui_helpers import _init_opencv_gui, _warn_if_no_display, waiting_frame
+from setup.gui_helpers import _init_opencv_gui, _warn_if_no_display, waiting_frame, window_closed
 from setup.colour_setup import load_search_area_from_config
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "perception_config.py"
@@ -31,22 +31,32 @@ _BTN_W = 140
 _BTN_GAP = 20
 _CANNY_MAX = 255
 _BAND_MAX = 100
+_OFFSET_RANGE = 100
+_OFFSET_TRACKBAR_MAX = _OFFSET_RANGE * 2
+_OFFSET_TRACKBAR_ZERO = _OFFSET_RANGE
 
 
-def load_original_canny_from_config() -> tuple[int, int, float]:
+def load_original_canny_from_config() -> tuple[int, int, float, float]:
     text = _CONFIG_PATH.read_text(encoding="utf-8")
     low_m = re.search(r"^CANNY_ORIGINAL_LOW\s*=\s*(\d+)", text, re.MULTILINE)
     high_m = re.search(r"^CANNY_ORIGINAL_HIGH\s*=\s*(\d+)", text, re.MULTILINE)
     band_m = re.search(r"^CANNY_CENTRE_BAND_PCT\s*=\s*([0-9.]+)", text, re.MULTILINE)
+    offset_m = re.search(
+        r"^CANNY_CENTRE_BAND_OFFSET_PCT\s*=\s*([+-]?[0-9.]+)",
+        text,
+        re.MULTILINE,
+    )
     if not low_m or not high_m or not band_m:
         raise RuntimeError(f"Could not parse original Canny settings in {_CONFIG_PATH}")
-    return int(low_m.group(1)), int(high_m.group(1)), float(band_m.group(1))
+    offset = float(offset_m.group(1)) if offset_m else 0.0
+    return int(low_m.group(1)), int(high_m.group(1)), float(band_m.group(1)), offset
 
 
 def save_original_canny_to_config(
     canny_low: int,
     canny_high: int,
     centre_band_pct: float,
+    centre_band_offset_pct: float,
 ) -> None:
     text = _CONFIG_PATH.read_text(encoding="utf-8")
     text, n1 = re.subn(
@@ -71,7 +81,15 @@ def save_original_canny_to_config(
         count=1,
         flags=re.MULTILINE,
     )
-    if n1 != 1 or n2 != 1 or n3 != 1:
+    text, n4 = re.subn(
+        r"^CANNY_CENTRE_BAND_OFFSET_PCT\s*=\s*[+-]?[0-9.]+.*$",
+        f"CANNY_CENTRE_BAND_OFFSET_PCT = {centre_band_offset_pct:.1f}  "
+        "# Horizontal offset of that band (% of ROI width): +right, -left.",
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if n1 != 1 or n2 != 1 or n3 != 1 or n4 != 1:
         raise RuntimeError(f"Could not update original Canny settings in {_CONFIG_PATH}")
     _CONFIG_PATH.write_text(text, encoding="utf-8")
 
@@ -96,12 +114,13 @@ def _draw_control_strip(
     canny_low: int,
     canny_high: int,
     band_width_pct: float,
+    band_offset_pct: float,
 ) -> None:
     panel[:] = (42, 42, 42)
     cv2.putText(
         panel,
         f"Canny low {canny_low}  |  Canny high {canny_high}  |  "
-        f"band width {band_width_pct:.1f}%",
+        f"band width {band_width_pct:.1f}%  |  band offset {band_offset_pct:+.1f}%",
         (12, 22),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.45,
@@ -146,11 +165,15 @@ def _label_panel(img: np.ndarray, text: str) -> np.ndarray:
     return out
 
 
-def _draw_band_guides(bgr: np.ndarray, band_width_pct: float) -> np.ndarray:
-    """Overlay vertical lines at the centre-band width on a BGR preview."""
+def _draw_band_guides(
+    bgr: np.ndarray,
+    band_width_pct: float,
+    band_offset_pct: float,
+) -> np.ndarray:
+    """Overlay vertical lines at the configured original-edge band bounds."""
     out = bgr.copy()
     h, w = out.shape[:2]
-    x_lo, x_hi = centre_band_x_bounds(w, band_width_pct)
+    x_lo, x_hi = centre_band_x_bounds(w, band_width_pct, band_offset_pct)
     if x_hi <= x_lo:
         return out
     cv2.line(out, (x_lo, 0), (x_lo, h - 1), (0, 255, 255), 1, cv2.LINE_AA)
@@ -168,18 +191,24 @@ def _build_preview(
     canny_low: int,
     canny_high: int,
     band_width_pct: float,
+    band_offset_pct: float,
 ) -> np.ndarray:
     full_bgr, band_bgr = preview_original_canny_views(
         roi_bgr,
         canny_low=canny_low,
         canny_high=canny_high,
         centre_band_pct=band_width_pct,
+        centre_band_offset_pct=band_offset_pct,
     )
     full_bgr = _draw_band_guides(
         _label_panel(full_bgr, "Canny (original BGR)"),
         band_width_pct,
+        band_offset_pct,
     )
-    band_bgr = _label_panel(band_bgr, f"Centre band ({band_width_pct:.1f}% width)")
+    band_bgr = _label_panel(
+        band_bgr,
+        f"Band ({band_width_pct:.1f}% width, {band_offset_pct:+.1f}% offset)",
+    )
 
     h, w = full_bgr.shape[:2]
     sep = np.zeros((6, w, 3), dtype=np.uint8)
@@ -198,26 +227,34 @@ def _build_preview(
 def run_original_canny_setup(
     get_frame_pair: Callable[[], tuple[np.ndarray | None, object]],
     search_area: tuple[float, float, float, float] | None = None,
-    initial_values: tuple[int, int, float] | None = None,
-) -> tuple[str, tuple[int, int, float]]:
+    initial_values: tuple[int, int, float, float] | None = None,
+) -> tuple[str, tuple[int, int, float, float]]:
     """Original-image Canny + centre band width UI. Returns action and values."""
     active_search_area = (
         search_area if search_area is not None else load_search_area_from_config()
     )
-    orig_low, orig_high, orig_band = (
+    loaded = (
         initial_values if initial_values is not None else load_original_canny_from_config()
     )
-    current = [orig_low, orig_high, int(round(orig_band))]
+    if len(loaded) == 3:
+        orig_low, orig_high, orig_band = loaded
+        orig_offset = 0.0
+    else:
+        orig_low, orig_high, orig_band, orig_offset = loaded
+    current = [orig_low, orig_high, int(round(orig_band)), int(round(orig_offset))]
     trackbars_ready = False
     done = False
     action = "cancel"
     _updating_trackbars = False
 
-    def _read_trackbars() -> tuple[int, int, float]:
+    def _read_trackbars() -> tuple[int, int, float, float]:
         low = cv2.getTrackbarPos("Canny low", _WINDOW)
         high = cv2.getTrackbarPos("Canny high", _WINDOW)
         band = float(cv2.getTrackbarPos("band width %", _WINDOW))
-        return low, high, band
+        offset = float(
+            cv2.getTrackbarPos("band offset %", _WINDOW) - _OFFSET_TRACKBAR_ZERO
+        )
+        return low, high, band, offset
 
     def _sync_trackbars() -> None:
         nonlocal _updating_trackbars
@@ -227,13 +264,18 @@ def run_original_canny_setup(
         cv2.setTrackbarPos("Canny low", _WINDOW, current[0])
         cv2.setTrackbarPos("Canny high", _WINDOW, current[1])
         cv2.setTrackbarPos("band width %", _WINDOW, current[2])
+        cv2.setTrackbarPos(
+            "band offset %",
+            _WINDOW,
+            max(0, min(_OFFSET_TRACKBAR_MAX, current[3] + _OFFSET_TRACKBAR_ZERO)),
+        )
         _updating_trackbars = False
 
     def _on_trackbar(_pos: int) -> None:
         if _updating_trackbars:
             return
-        low, high, band = _read_trackbars()
-        current[:] = [low, high, int(round(band))]
+        low, high, band, offset = _read_trackbars()
+        current[:] = [low, high, int(round(band)), int(round(offset))]
 
     def _create_trackbars() -> None:
         nonlocal trackbars_ready, _updating_trackbars
@@ -245,6 +287,13 @@ def run_original_canny_setup(
         cv2.createTrackbar("Canny low", _WINDOW, current[0], _CANNY_MAX, _on_trackbar)
         cv2.createTrackbar("Canny high", _WINDOW, current[1], _CANNY_MAX, _on_trackbar)
         cv2.createTrackbar("band width %", _WINDOW, current[2], _BAND_MAX, _on_trackbar)
+        cv2.createTrackbar(
+            "band offset %",
+            _WINDOW,
+            max(0, min(_OFFSET_TRACKBAR_MAX, current[3] + _OFFSET_TRACKBAR_ZERO)),
+            _OFFSET_TRACKBAR_MAX,
+            _on_trackbar,
+        )
         _updating_trackbars = False
         trackbars_ready = True
         _sync_trackbars()
@@ -269,7 +318,7 @@ def run_original_canny_setup(
             done = True
 
     print(
-        "Original Canny setup: tune Canny low/high and band width %, "
+        "Original Canny setup: tune Canny low/high, band width %, and band offset %, "
         "then Back / Next / Finish (b / n / f)."
     )
     _init_opencv_gui()
@@ -280,19 +329,24 @@ def run_original_canny_setup(
     cv2.waitKey(1)
 
     while not done:
+        if trackbars_ready and window_closed(_WINDOW):
+            action = "cancel"
+            done = True
+            break
         bgr_full, _ = get_frame_pair()
         if bgr_full is not None and trackbars_ready:
-            low, high, band_i = _read_trackbars()
-            current[:] = [low, high, band_i]
+            low, high, band_i, offset_i = _read_trackbars()
+            current[:] = [low, high, int(round(band_i)), int(round(offset_i))]
             band_pct = float(band_i)
+            band_offset_pct = float(offset_i)
 
             ih, iw = bgr_full.shape[:2]
             rx, ry, rw, rh = compute_roi(iw, ih, search_area=active_search_area)
             roi_bgr = bgr_full[ry : ry + rh, rx : rx + rw]
 
-            view_disp = _build_preview(roi_bgr, low, high, band_pct)
+            view_disp = _build_preview(roi_bgr, low, high, band_pct, band_offset_pct)
             panel = np.zeros((_PANEL_H, view_disp.shape[1], 3), dtype=np.uint8)
-            _draw_control_strip(panel, low, high, band_pct)
+            _draw_control_strip(panel, low, high, band_pct, band_offset_pct)
             composite = np.vstack([view_disp, panel])
             view_h = view_disp.shape[0]
             cv2.setMouseCallback(_WINDOW, _on_mouse, (view_h, view_disp.shape[1]))
@@ -315,8 +369,8 @@ def run_original_canny_setup(
             done = True
 
     try:
-        low, high, band = _read_trackbars()
-        current[:] = [low, high, int(round(band))]
+        low, high, band, offset = _read_trackbars()
+        current[:] = [low, high, int(round(band)), int(round(offset))]
     except cv2.error:
         pass
     trackbars_ready = False
@@ -334,4 +388,4 @@ def run_original_canny_setup(
         print("Original Canny setup: finishing setup.")
     else:
         print("Original Canny setup cancelled — settings unchanged.")
-    return action, (current[0], current[1], float(current[2]))
+    return action, (current[0], current[1], float(current[2]), float(current[3]))

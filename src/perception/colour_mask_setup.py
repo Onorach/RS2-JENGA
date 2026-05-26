@@ -18,7 +18,7 @@ import numpy as np
 
 from colour_identification import classify_roi_bgr, compute_roi
 from setup.colour_setup import load_hsv_ranges_from_config, load_search_area_from_config
-from setup.gui_helpers import _init_opencv_gui, _warn_if_no_display, waiting_frame
+from setup.gui_helpers import _init_opencv_gui, _warn_if_no_display, waiting_frame, window_closed
 
 _CONFIG_PATH = Path(__file__).resolve().parent / "perception_config.py"
 _WINDOW = "Colour mask setup"
@@ -170,12 +170,15 @@ def run_colour_mask_setup(
     get_frame_pair: Callable[[], tuple[np.ndarray | None, object]],
     search_area: tuple[float, float, float, float] | None = None,
     initial_values: tuple[int, int, int, int] | None = None,
+    hsv_ranges: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] | None = None,
 ) -> tuple[str, tuple[int, int, int, int]]:
     """Colour mask smoothing UI. Returns action and current values."""
     active_search_area = (
         search_area if search_area is not None else load_search_area_from_config()
     )
-    hsv_ranges = load_hsv_ranges_from_config()
+    active_hsv_ranges = (
+        hsv_ranges if hsv_ranges is not None else load_hsv_ranges_from_config()
+    )
     orig_med, orig_close, orig_open, orig_blob = (
         initial_values if initial_values is not None else load_colour_mask_from_config()
     )
@@ -210,15 +213,17 @@ def run_colour_mask_setup(
         current[:] = list(_read_trackbars())
 
     def _create_trackbars() -> None:
-        nonlocal trackbars_ready
+        nonlocal trackbars_ready, _updating_trackbars
         if trackbars_ready:
             return
+        _updating_trackbars = True
         cv2.namedWindow(_WINDOW, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(_WINDOW, _MIN_WIDTH, 640)
         cv2.createTrackbar("median blur", _WINDOW, current[0], _MEDIAN_MAX, _on_trackbar)
         cv2.createTrackbar("fill gaps", _WINDOW, current[1], _MORPH_MAX, _on_trackbar)
         cv2.createTrackbar("reduce noise", _WINDOW, current[2], _MORPH_MAX, _on_trackbar)
         cv2.createTrackbar("min blob area", _WINDOW, current[3], _BLOB_MAX, _on_trackbar)
+        _updating_trackbars = False
         trackbars_ready = True
         _sync_trackbars()
 
@@ -254,6 +259,10 @@ def run_colour_mask_setup(
     cv2.waitKey(1)
 
     while not done:
+        if trackbars_ready and window_closed(_WINDOW):
+            action = "cancel"
+            done = True
+            break
         bgr_full, _ = get_frame_pair()
         if bgr_full is None:
             cv2.imshow(_WINDOW, placeholder)
@@ -266,7 +275,7 @@ def run_colour_mask_setup(
             roi_bgr = bgr_full[ry : ry + rh, rx : rx + rw]
             colour_img, _ = classify_roi_bgr(
                 roi_bgr,
-                hsv_ranges,
+                active_hsv_ranges,
                 median_px=median_px,
                 morph_close_px=fill_gaps,
                 morph_open_px=reduce_noise,

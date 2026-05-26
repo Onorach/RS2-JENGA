@@ -13,6 +13,8 @@ from typing import Callable
 import cv2
 import numpy as np
 
+from setup.gui_helpers import window_closed
+
 _WINDOW = "Confirm depth image"
 _MIN_WIDTH = 640
 _PANEL_H = 88
@@ -163,6 +165,10 @@ def run_depth_confirm_setup(
             done = True
 
     while not done:
+        if window_closed(_WINDOW):
+            action = "cancel"
+            done = True
+            break
         bgr, depth_mm = get_frame_pair()
         depth_img = _depth_to_colour(
             depth_mm if depth_mm is None else np.asarray(depth_mm),

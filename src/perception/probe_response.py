@@ -14,11 +14,8 @@ import json
 import time
 from collections import deque
 
-from box_percentages import (
-    colour_mean_xy_in_cell,
-    colour_mean_depth_in_cell,
-    endon_outside_edge_x,
-)
+from box_percentages import endon_outside_edge_x
+from block_centroids import compute_layer_centroids
 from perception_config import PROBE_TARGET_BLOCK_ID_PLACEHOLDER, CENTROID_ABORT_SHIFT_PCT
 PROBE_PRINT_INTERVAL_S = 0.2
 
@@ -114,53 +111,74 @@ def update_tower_centroids_for_probe(
     baseline: dict,
 ) -> list[dict]:
     """
-    During probe monitoring: keep each block's x at its baseline offset from
-    the outside edge; refresh y from the live mean of that colour on the layer side.
+    Recompute near-face centroids (median, split-required) for all layers at or
+    above the target block layer.  Layers below the target have their centroid
+    values **frozen to baseline** — they are written back from the baseline
+    snapshot so the shift comparison in _assess_probe_response always sees
+    stable positions rather than freshly recomputed (depth-free, jittery)
+    colour-blob means produced by analyse_tower.
+
+    Uses compute_layer_centroids which always searches BOTH the end-on and
+    opposite cells via a combined split_x search, so the front block's split
+    (which may fall in the side-on cell) is never missed.
     """
-    tower_out = copy.deepcopy(tower)
-    offsets = baseline.get("block_edge_offset_x", {})
+    tower_out    = copy.deepcopy(tower)
+    target_layer = _to_int_or_none(baseline.get("layer"))
+    n_layers     = len(row_cells)
+    # Baseline centroid positions keyed by block_id — used to freeze layers
+    # below the probe target so the shift comparison never sees jitter from
+    # depth-free recomputation in analyse_tower.
+    baseline_centroids: dict[int, tuple[float, float]] = baseline.get("all_centroids_px", {})
 
     for layer in tower_out:
         layer_idx = int(layer.get("layer", -1))
+
+        # Layers below the probe target cannot move during a probe.
+        # Write baseline centroid values back so _build_probe_snapshot always
+        # compares against frozen positions rather than freshly recomputed
+        # (possibly depth-free, jittery) colour-blob means.
+        if target_layer is not None and layer_idx < int(target_layer):
+            for block in layer.get("blocks", []):
+                if not block.get("present"):
+                    continue
+                bid = _to_int_or_none(block.get("block_index"))
+                if bid is None:
+                    continue
+                base_xy = baseline_centroids.get(bid)
+                if base_xy is not None:
+                    block["mean_x_px"] = float(base_xy[0])
+                    block["mean_y_px"] = float(base_xy[1])
+            continue
+
         orientation = str(layer.get("orientation", ""))
         if orientation not in ("left", "right"):
             continue
 
-        endon_cell = _endon_cell_for_layer(row_cells, layer_idx, orientation)
-        if endon_cell is None:
+        row_idx = (n_layers - 1) - layer_idx
+        if row_idx < 0 or row_idx >= n_layers:
             continue
+        left_cell, right_cell = row_cells[row_idx]
 
-        edge_x = endon_outside_edge_x(endon_cell, orientation)
-
-        target_depth_mm = None
-        if depth_frame is not None:
-            mean_depth = colour_mean_depth_in_cell(bgr_frame, depth_frame, endon_cell)
-            if mean_depth:
-                target_depth_mm = float(sum(mean_depth.values()) / len(mean_depth))
-
-        side_mean_xy = colour_mean_xy_in_cell(
+        # High-accuracy centroids: median of near-face pixels, split required.
+        # Both cells searched internally by compute_layer_centroids so the
+        # front-block opposite-cell fallback is always applied.
+        centroids = compute_layer_centroids(
             bgr_frame,
-            endon_cell,
-            depth_frame=depth_frame,
-            target_depth_mm=target_depth_mm,
-            depth_tolerance_mm=40.0,
+            depth_frame,
+            left_cell,
+            right_cell,
+            orientation,
+            robust_stat="median",
+            require_split=True,
         )
 
         for block in layer.get("blocks", []):
             if not block.get("present"):
                 continue
-            bid = _to_int_or_none(block.get("block_index"))
-            if bid is None or bid < 0:
-                continue
-            offset_x = offsets.get(bid)
-            if offset_x is None:
-                continue
-
-            block["mean_x_px"] = float(edge_x) + float(offset_x)
-
             colour = str(block.get("colour", ""))
-            if colour in side_mean_xy:
-                block["mean_y_px"] = float(side_mean_xy[colour][1])
+            if colour in centroids:
+                block["mean_x_px"] = float(centroids[colour][0])
+                block["mean_y_px"] = float(centroids[colour][1])
 
     return tower_out
 
@@ -471,6 +489,34 @@ class ProbeResponseMonitor:
     def baseline_snapshot(self) -> dict | None:
         """Baseline probe snapshot (blob centroids at monitoring start), if any."""
         return self._baseline
+
+    def is_monitoring_mode(self) -> bool:
+        """True only while probe state is actively MONITORING."""
+        return (
+            self._active_block_id is not None
+            and self._baseline is not None
+            and self._last_status == "monitoring"
+        )
+
+    def monitoring_min_layer(self) -> int | None:
+        """
+        Minimum layer index for monitoring overlays.
+
+        Returns target block layer while in monitoring mode, else None.
+        """
+        if not self.is_monitoring_mode() or self._baseline is None:
+            return None
+        return _to_int_or_none(self._baseline.get("layer"))
+
+    def active_session_min_layer(self) -> int | None:
+        """
+        Minimum layer index for active topple-monitoring session overlays.
+
+        Returns target block layer whenever a probe session has a valid baseline.
+        """
+        if self._active_block_id is None or self._baseline is None:
+            return None
+        return _to_int_or_none(self._baseline.get("layer"))
 
     def set_on_final_decision(self, cb) -> None:
         """Set callback called once per monitoring session."""

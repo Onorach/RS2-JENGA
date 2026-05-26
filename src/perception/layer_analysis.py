@@ -10,16 +10,17 @@ import cv2
 import numpy as np
 
 from box_percentages import (
-    colour_mean_xy_in_cell,
-    colour_mean_depth_in_cell,
     compute_percentages,
 )
+from block_centroids import (
+    compute_layer_centroids,
+    compute_split_x_per_colour,
+)
+from block_pose_global import build_block_pose_mm
 from perception_config import (
     COLOUR_BGR,
     CAMERA_HFOV_DEG,
-    CAMERA_GLOBAL_POSITION_MM,
     BLOCK_POSE_WORLD_FRAME,
-    BLOCK_YAW_DEG_ASSUMED,
 )
 
 CENTROID_OFFSET_MM = 26.52   # Distance from visible block face to block centroid (mm).
@@ -141,23 +142,19 @@ def analyse_layer(
         else (right_pcts, right_cell)
     )
 
-    # Compute depth first — used both for block positions and to gate mean_x.
-    # Depth gating removes same-colour side-face pixels from adjacent layers
-    # that would otherwise bias mean_x toward the outer edge of the cell.
-    mean_depth = colour_mean_depth_in_cell(bgr_frame, depth_frame, endon_cell)
-
-    target_depth_mm = (
-        float(np.mean(list(mean_depth.values()))) if mean_depth else None
-    )
-
-    mean_xy = colour_mean_xy_in_cell(
+    # Compute near-face centroids for all colours in this layer.
+    # Searches both cells so the front block's split (which may fall in the
+    # opposite/side-on cell) is always found. Falls back to depth-gated mean
+    # when no split is available (e.g. depth stream absent).
+    mean_xy = compute_layer_centroids(
         bgr_frame,
-        endon_cell,
-        depth_frame=depth_frame,
-        target_depth_mm=target_depth_mm,
-        depth_tolerance_mm=40.0,
+        depth_frame,
+        left_cell,
+        right_cell,
+        orientation,
+        robust_stat="mean",
+        require_split=False,
     )
-
     endon_blocks = _blocks_from_endon(endon_pcts, mean_xy, endon_cell, orientation=orientation)
 
     frame_width    = float(frame_width_px) if frame_width_px is not None else float(bgr_frame.shape[1])
@@ -220,15 +217,6 @@ def _centroid_face_depth_mm(
     return float(np.median(valid))
 
 
-def _display_lateral_mm(block: dict, orientation: str) -> float | None:
-    """Return the orientation-adjusted lateral offset used for pose_camera_mm y."""
-    lateral_mm = block.get("lateral_mm")
-    if lateral_mm is None:
-        return None
-    x_offset = -26.5 if orientation == "left" else 26.5
-    return float(lateral_mm + x_offset)
-
-
 def _format_global_pose_xyz(block: dict) -> str:
     """Format global-frame position (mm) from pose_global_mm (same frame as JengaBlockState)."""
     pose = block.get("pose_global_mm")
@@ -242,17 +230,6 @@ def _format_global_pose_xyz(block: dict) -> str:
     except (KeyError, TypeError, ValueError):
         return ""
     return f" @x={x_mm:+.1f}mm @y={y_mm:+.1f}mm @z={z_mm:+.1f}mm"
-
-
-def _assumed_orientation_xyzw() -> dict[str, float]:
-    """Quaternion for a fixed yaw-only orientation assumption."""
-    half_yaw_rad = np.deg2rad(BLOCK_YAW_DEG_ASSUMED) / 2.0
-    return {
-        "x": 0.0,
-        "y": 0.0,
-        "z": float(np.sin(half_yaw_rad)),
-        "w": float(np.cos(half_yaw_rad)),
-    }
 
 
 def _block_abs_global_y(block: dict) -> float:
@@ -304,15 +281,26 @@ def analyse_tower(
     frame_centre_x_px: float | None = None,
     frame_width_px: float | None = None,
     print_enabled: bool = True,
+    min_centroid_layer: int | None = None,
 ) -> list[dict]:
     global _last_print_time
     tower = []
     n_layers = len(row_cells)
     for row_idx, (left_def, right_def) in enumerate(row_cells):
         pct_results = compute_percentages(bgr_frame, cells=[left_def, right_def])
+        # layer index: row_cells[0] is topmost in image → highest layer index
+        layer_idx = (n_layers - 1) - row_idx
+
+        # When monitoring a probe, skip all centroid/depth work for layers
+        # below the target layer — they cannot move during a probe so there
+        # is no need to recompute them, saving significant CPU per frame.
+        skip_centroid = (
+            min_centroid_layer is not None
+            and layer_idx < int(min_centroid_layer)
+        )
         layer = analyse_layer(
             bgr_frame,
-            depth_frame,
+            depth_frame if not skip_centroid else None,
             pct_results[0],
             pct_results[1],
             left_def,
@@ -320,8 +308,7 @@ def analyse_tower(
             frame_centre_x_px=frame_centre_x_px,
             frame_width_px=frame_width_px,
         )
-        # row_cells[0] is the topmost band in the image; L0 is the bottom of the tower.
-        layer["layer"] = (n_layers - 1) - row_idx
+        layer["layer"] = layer_idx
         tower.append(layer)
 
     # L0 = bottom; block IDs 000–002 at bottom, then 003–005, … (motion-planning block_XX).
@@ -331,34 +318,18 @@ def analyse_tower(
             if not block.get("present"):
                 continue
             depth_mm = block.get("depth_mm")
-            lateral_display_mm = _display_lateral_mm(block, layer["orientation"])
-            if depth_mm is None or lateral_display_mm is None:
+            lateral_mm = block.get("lateral_mm")
+            pose_camera_mm, pose_global_mm = build_block_pose_mm(
+                depth_mm=depth_mm,
+                lateral_mm=(None if lateral_mm is None else float(lateral_mm)),
+                orientation=str(layer["orientation"]),
+                layer_idx=int(layer["layer"]),
+            )
+            if pose_camera_mm is None or pose_global_mm is None:
                 continue
 
-            # Assumed camera-local frame:
-            #   +x away from camera, +y left of camera.
-            # Keep z as requested from layer only (mm).
-            z_local_mm = 15.0 * (float(layer["layer"]) + 1.0) - 7.5
-            x_local_mm = float(depth_mm)
-            y_local_mm = float(lateral_display_mm)
-            orientation_xyzw = _assumed_orientation_xyzw()
-
-            block["pose_camera_mm"] = {
-                "position": {
-                    "x": x_local_mm,
-                    "y": y_local_mm,
-                    "z": z_local_mm,
-                },
-                "orientation": orientation_xyzw,
-            }
-            block["pose_global_mm"] = {
-                "position": {
-                    "x": x_local_mm + float(CAMERA_GLOBAL_POSITION_MM[0]),
-                    "y": y_local_mm + float(CAMERA_GLOBAL_POSITION_MM[1]),
-                    "z": z_local_mm + float(CAMERA_GLOBAL_POSITION_MM[2]),
-                },
-                "orientation": orientation_xyzw,
-            }
+            block["pose_camera_mm"] = pose_camera_mm
+            block["pose_global_mm"] = pose_global_mm
 
         # Per-layer indexing rule: lowest index is block closest to y=0.
         sorted_block_positions = sorted(
@@ -375,6 +346,73 @@ def analyse_tower(
     if print_enabled and now - _last_print_time >= PRINT_INTERVAL_S:
         _print_tower(tower)
         _last_print_time = now
+
+    return tower
+
+
+def annotate_depth_split_lines_for_tower(
+    bgr_frame: np.ndarray,
+    depth_frame: np.ndarray | None,
+    row_cells: list[tuple[dict, dict]],
+    tower: list[dict],
+    min_layer: int | None = None,
+) -> list[dict]:
+    """
+    Add visual-only per-block depth split lines without affecting centroids.
+
+    When min_layer is set, only layers >= min_layer are computed.
+    """
+    for layer in tower:
+        for block in layer.get("blocks", []):
+            block.pop("depth_split_x_px", None)
+
+    if depth_frame is None or not tower or not row_cells:
+        return tower
+
+    n_layers = len(row_cells)
+    for layer in tower:
+        layer_idx = int(layer.get("layer", -1))
+        if min_layer is not None and layer_idx < int(min_layer):
+            continue
+
+        orientation = str(layer.get("orientation", ""))
+        if orientation not in ("left", "right"):
+            continue
+
+        row_idx = (n_layers - 1) - layer_idx
+        if row_idx < 0 or row_idx >= n_layers:
+            continue
+
+        left_cell, right_cell = row_cells[row_idx]
+        # Search BOTH cells so the front block's split line is always found
+        # (its near face may be visible from the opposite/side-on cell).
+        split_x_by_colour = compute_split_x_per_colour(
+            bgr_frame,
+            depth_frame,
+            left_cell,
+            right_cell,
+            orientation,
+        )
+
+        # Only annotate the NEAREST (front) block per layer.
+        # Multiple blocks can have split lines computed, but displaying all of
+        # them clutters the overlay.  The front block (smallest face_depth_mm)
+        # is the only one whose split line is meaningful for monitoring.
+        nearest_block = None
+        nearest_depth = float("inf")
+        for block in layer.get("blocks", []):
+            if not block.get("present"):
+                continue
+            d = block.get("face_depth_mm") or block.get("depth_mm")
+            if d is not None and float(d) < nearest_depth:
+                nearest_depth = float(d)
+                nearest_block = block
+
+        if nearest_block is not None:
+            colour   = str(nearest_block.get("colour", ""))
+            split_x  = split_x_by_colour.get(colour)
+            if split_x is not None:
+                nearest_block["depth_split_x_px"] = float(split_x)
 
     return tower
 
