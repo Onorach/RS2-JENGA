@@ -18,6 +18,7 @@ import numpy as np
 
 from colour_identification import compute_roi
 from perception_config import SEARCH_AREA_MARGIN
+from setup.gui_helpers import window_closed
 from tower_mask import HEX_RECOMPUTE_INTERVAL, build_display, compute_hex_region
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "perception_config.py"
@@ -267,6 +268,10 @@ def run_tower_setup(
     hex_frame_n = 0
 
     while not done:
+        if trackbars_ready and window_closed(_WINDOW):
+            action = "cancel"
+            done = True
+            break
         bgr_full, _ = get_frame_pair()
         if bgr_full is not None and trackbars_ready:
             sat_min, brightness_min, fill_gaps, reduce_noise = _read_trackbars()

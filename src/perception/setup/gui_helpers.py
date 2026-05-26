@@ -43,3 +43,15 @@ def waiting_frame(width: int, height: int, message: str) -> np.ndarray:
         cv2.LINE_AA,
     )
     return img
+
+
+def window_closed(window_name: str) -> bool:
+    """
+    True when the OpenCV window was closed by the window manager (X button).
+    """
+    try:
+        # WND_PROP_AUTOSIZE returns -1 when the window no longer exists.
+        # This is more reliable than VISIBLE during initial show/minimize.
+        return cv2.getWindowProperty(window_name, cv2.WND_PROP_AUTOSIZE) < 0
+    except cv2.error:
+        return True

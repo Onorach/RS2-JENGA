@@ -21,6 +21,7 @@ from colour_identification import classify_roi_bgr, compute_roi
 from box_percentages import compute_percentages, build_debug_image
 from layer_analysis import (
     analyse_tower,
+    annotate_depth_split_lines_for_tower,
     build_tower_image,
     block_id_from_tower_image_point,
     print_tower_state,
@@ -51,6 +52,7 @@ from perception_config import (
     BLOCK_ANALYSIS,
     SEARCH_AREA_MARGIN,
     BLOCK_POSE_WORLD_FRAME,
+    GRID_LOCK_EDGE_ACCUMULATION_FRAMES,
 )
 from probe_response import (
     ProbeResponseMonitor,
@@ -85,7 +87,6 @@ def _ensure_window_open(name: str) -> None:
 
 # Runtime-only history and timing controls for the live grid pipeline.
 EDGE_HISTORY_FRAMES         = 30
-POINTS_OVERLAY_PAUSE_FRAMES = 60
 GRID_POINTS_MAX_INPUT_LINES = 500
 
 _GRID_DETECTION_WINDOWS = (
@@ -107,7 +108,8 @@ _POST_LOCK_WINDOWS = (
 def _destroy_windows(names: tuple[str, ...]) -> None:
     for name in names:
         try:
-            cv2.destroyWindow(name)
+            if cv2.getWindowProperty(name, cv2.WND_PROP_AUTOSIZE) >= 0:
+                cv2.destroyWindow(name)
         except cv2.error:
             pass
     cv2.waitKey(1)
@@ -232,10 +234,24 @@ def _run_loop(
                             continue
                         cx = int(round(float(mx)))
                         cy = int(round(float(my)))
+                        split_x = block.get("depth_split_x_px")
+                        if split_x is not None:
+                            sx = int(round(float(split_x)))
+                            if 0 <= sx < live_disp.shape[1]:
+                                y0 = max(0, cy - 18)
+                                y1 = min(live_disp.shape[0] - 1, cy + 18)
+                                cv2.line(
+                                    live_disp,
+                                    (sx, y0),
+                                    (sx, y1),
+                                    (255, 255, 255),
+                                    1,
+                                    cv2.LINE_AA,
+                                )
                         if 0 <= cx < live_disp.shape[1] and 0 <= cy < live_disp.shape[0]:
                             cv2.circle(live_disp, (cx, cy), 5, (255, 255, 255), -1)
                             cv2.circle(live_disp, (cx, cy), 2, (0, 0, 0), -1)
-                if grid_frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES)):
+                if grid_frame_n >= max(1, int(GRID_LOCK_EDGE_ACCUMULATION_FRAMES)):
                     for px, py in live_valid_points_crop:
                         if 0 <= px < live_disp.shape[1] and 0 <= py < live_disp.shape[0]:
                             cv2.circle(live_disp, (int(px), int(py)), 2, (0, 0, 255), -1)
@@ -276,7 +292,7 @@ def _run_loop(
 
             # Use accumulated points from frame 0 up to lock time.
             points_for_lock = cluster_points(accumulated_grid_points)
-            if grid_frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES)):
+            if grid_frame_n >= max(1, int(GRID_LOCK_EDGE_ACCUMULATION_FRAMES)):
                 live_valid_points_crop = [
                     (int(ix + roi_x), int(iy + roi_y)) for ix, iy in points_for_lock
                 ]
@@ -287,7 +303,7 @@ def _run_loop(
         # --- Grid lock ---
         if (
             grid_detection_started
-            and grid_frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES))
+            and grid_frame_n >= max(1, int(GRID_LOCK_EDGE_ACCUMULATION_FRAMES))
             and BLOCK_ANALYSIS
             and not points_locked
             and accumulated_grid_points
@@ -432,6 +448,10 @@ def _run_loop(
                     if depth_mm is not None
                     else np.zeros(bgr.shape[:2], dtype=np.uint16)
                 )
+                # When a probe is active, skip centroid/depth work for layers
+                # below the target — they cannot move and recomputing them
+                # wastes CPU every frame.
+                probe_min_layer = probe_monitor.monitoring_min_layer()
                 tower = analyse_tower(
                     bgr,
                     depth_for_layers,
@@ -439,6 +459,7 @@ def _run_loop(
                     frame_centre_x_px=camera_centre_x_crop,
                     frame_width_px=float(iw),
                     print_enabled=False,
+                    min_centroid_layer=probe_min_layer,
                 )
                 identity_tracker.apply(tower)
                 _last_tower_state = tower
@@ -456,6 +477,15 @@ def _run_loop(
                     bgr_frame=bgr,
                     depth_frame=depth_mm,
                     row_cells=row_cells,
+                )
+            if _last_tower_state:
+                monitor_min_layer = probe_monitor.active_session_min_layer()
+                annotate_depth_split_lines_for_tower(
+                    bgr,
+                    depth_mm if monitor_min_layer is not None else None,
+                    row_cells,
+                    _last_tower_state,
+                    min_layer=monitor_min_layer,
                 )
             if (
                 not probe_active

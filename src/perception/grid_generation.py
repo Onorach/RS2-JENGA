@@ -22,6 +22,7 @@ from perception_config import (
     CANNY_ORIGINAL_LOW,
     CANNY_ORIGINAL_HIGH,
     CANNY_CENTRE_BAND_PCT,
+    CANNY_CENTRE_BAND_OFFSET_PCT,
     HOUGH_MASK_THRESHOLD,
     HOUGH_MASK_MIN_LENGTH,
     HOUGH_MASK_MAX_GAP,
@@ -60,13 +61,19 @@ def clean_colour_mask(colour_img: np.ndarray) -> np.ndarray:
 def apply_centre_band_mask(
     img: np.ndarray,
     centre_band_pct: float | None = None,
+    centre_band_offset_pct: float | None = None,
 ) -> np.ndarray:
-    """Zero pixels outside the centred horizontal band (CANNY_CENTRE_BAND_PCT)."""
+    """Zero pixels outside the configured horizontal band on the ROI."""
     pct = float(CANNY_CENTRE_BAND_PCT if centre_band_pct is None else centre_band_pct)
+    offset_pct = float(
+        CANNY_CENTRE_BAND_OFFSET_PCT
+        if centre_band_offset_pct is None
+        else centre_band_offset_pct
+    )
     if pct >= 100.0 or pct <= 0.0:
         return img
     h, w = img.shape[:2]
-    x_lo, x_hi = centre_band_x_bounds(w, pct)
+    x_lo, x_hi = centre_band_x_bounds(w, pct, offset_pct)
     masked = np.zeros_like(img)
     masked[:, x_lo:x_hi] = img[:, x_lo:x_hi]
     return masked
@@ -92,14 +99,27 @@ def preview_mask_canny(colour_img: np.ndarray, *, canny_low: int | None = None, 
     return cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
 
 
-def centre_band_x_bounds(width: int, centre_band_pct: float) -> tuple[int, int]:
-    """Return (x_lo, x_hi) for the centred horizontal band in pixel coordinates."""
+def centre_band_x_bounds(
+    width: int,
+    centre_band_pct: float,
+    centre_band_offset_pct: float = 0.0,
+) -> tuple[int, int]:
+    """Return (x_lo, x_hi) for horizontal band in pixel coordinates."""
     pct = float(centre_band_pct)
     if pct >= 100.0 or pct <= 0.0:
         return 0, width
     band_w = max(1, int(round(width * pct / 100.0)))
-    x_lo = max(0, (width - band_w) // 2)
-    return x_lo, min(width, x_lo + band_w)
+    centre_x = (width / 2.0) + (float(centre_band_offset_pct) / 100.0) * width
+    x_lo = int(round(centre_x - (band_w / 2.0)))
+    x_hi = x_lo + band_w
+    if x_lo < 0:
+        x_hi -= x_lo
+        x_lo = 0
+    if x_hi > width:
+        shift = x_hi - width
+        x_lo = max(0, x_lo - shift)
+        x_hi = width
+    return x_lo, x_hi
 
 
 def compute_original_edges(
@@ -138,13 +158,18 @@ def preview_original_canny_views(
     canny_low: int | None = None,
     canny_high: int | None = None,
     centre_band_pct: float | None = None,
+    centre_band_offset_pct: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return BGR previews: full Canny on ROI, then centre-band masked edges."""
     th, tw = roi_bgr.shape[:2]
     edges = compute_original_edges(
         roi_bgr, (th, tw), canny_low=canny_low, canny_high=canny_high,
     )
-    banded = apply_centre_band_mask(edges, centre_band_pct=centre_band_pct)
+    banded = apply_centre_band_mask(
+        edges,
+        centre_band_pct=centre_band_pct,
+        centre_band_offset_pct=centre_band_offset_pct,
+    )
     full_bgr = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
     band_bgr = cv2.cvtColor(banded, cv2.COLOR_GRAY2BGR)
     return full_bgr, band_bgr

@@ -18,6 +18,7 @@ import cv2
 import numpy as np
 
 from colour_identification import classify_roi_bgr, compute_roi
+from setup.gui_helpers import window_closed
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "perception_config.py"
 _WINDOW = "Colour setup"
@@ -402,6 +403,10 @@ def run_colour_setup(
     _create_trackbars()
 
     while not done:
+        if trackbars_ready and window_closed(_WINDOW):
+            action = "cancel"
+            done = True
+            break
         bgr_full, _ = get_frame_pair()
         if bgr_full is not None and trackbars_ready:
             ih, iw = bgr_full.shape[:2]

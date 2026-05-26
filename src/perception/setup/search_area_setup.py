@@ -42,6 +42,7 @@ from setup.tower_setup import (
     run_tower_setup,
     save_tower_mask_to_config,
 )
+from setup.gui_helpers import window_closed
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "perception_config.py"
 _WINDOW = "Search area setup"
@@ -235,7 +236,11 @@ def _run_search_area_step(
 
     def _create_trackbars(iw: int, ih: int) -> None:
         nonlocal trackbars_ready, trackbar_size
-        cv2.destroyWindow(_WINDOW)
+        try:
+            if cv2.getWindowProperty(_WINDOW, cv2.WND_PROP_AUTOSIZE) >= 0:
+                cv2.destroyWindow(_WINDOW)
+        except cv2.error:
+            pass
         cv2.namedWindow(_WINDOW, cv2.WINDOW_NORMAL)
         cv2.createTrackbar("centre x (px)", _WINDOW, current_px[0], iw, _on_centre_x)
         cv2.createTrackbar("centre y (px)", _WINDOW, current_px[1], ih, _on_centre_y)
@@ -248,6 +253,10 @@ def _run_search_area_step(
     print("Search area setup: adjust sliders (pixels), then Back / Next / Finish (b / n / f).")
 
     while not done:
+        if trackbars_ready and window_closed(_WINDOW):
+            action = "cancel"
+            done = True
+            break
         bgr_full, _ = get_frame_pair()
         if bgr_full is not None:
             ih, iw = bgr_full.shape[:2]
@@ -299,7 +308,11 @@ def _run_search_area_step(
             action = "finish"
             done = True
 
-    cv2.destroyWindow(_WINDOW)
+    try:
+        if cv2.getWindowProperty(_WINDOW, cv2.WND_PROP_AUTOSIZE) >= 0:
+            cv2.destroyWindow(_WINDOW)
+    except cv2.error:
+        pass
 
     iw, ih = frame_size
     if iw > 0 and ih > 0:
@@ -315,7 +328,7 @@ def _save_all_setup_values(
     search_area: tuple[float, float, float, float],
     hsv_ranges: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]],
     colour_mask: tuple[int, int, int, int],
-    original_canny: tuple[int, int, float],
+    original_canny: tuple[int, int, float, float],
     mask_canny: tuple[int, int],
     tower_mask: tuple[int, int, int, int],
 ) -> None:
@@ -352,6 +365,7 @@ def run_search_area_setup(get_frame_pair: Callable[[], tuple[np.ndarray | None, 
                 get_frame_pair,
                 search_area=staged_search_area,
                 initial_values=staged_colour_mask,
+                hsv_ranges=staged_hsv,
             )
         elif step_idx == 3:
             action, staged_original_canny = run_original_canny_setup(
@@ -364,6 +378,8 @@ def run_search_area_setup(get_frame_pair: Callable[[], tuple[np.ndarray | None, 
                 get_frame_pair,
                 search_area=staged_search_area,
                 initial_values=staged_mask_canny,
+                hsv_ranges=staged_hsv,
+                colour_mask_values=staged_colour_mask,
             )
         elif step_idx == 5:
             action, staged_tower_mask = run_tower_setup(

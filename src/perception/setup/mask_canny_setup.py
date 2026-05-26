@@ -18,7 +18,8 @@ import numpy as np
 from colour_identification import classify_roi_bgr, compute_roi
 from grid_generation import preview_mask_canny
 from setup.colour_setup import load_hsv_ranges_from_config, load_search_area_from_config
-from setup.gui_helpers import _init_opencv_gui, _warn_if_no_display, waiting_frame
+from setup.gui_helpers import _init_opencv_gui, _warn_if_no_display, waiting_frame, window_closed
+from colour_mask_setup import load_colour_mask_from_config
 
 _CONFIG_PATH = Path(__file__).resolve().parent.parent / "perception_config.py"
 _WINDOW = "Mask Canny setup"
@@ -142,12 +143,21 @@ def run_mask_canny_setup(
     get_frame_pair: Callable[[], tuple[np.ndarray | None, object]],
     search_area: tuple[float, float, float, float] | None = None,
     initial_values: tuple[int, int] | None = None,
+    hsv_ranges: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] | None = None,
+    colour_mask_values: tuple[int, int, int, int] | None = None,
 ) -> tuple[str, tuple[int, int]]:
     """Colour-mask Canny calibration UI. Returns action and values."""
     active_search_area = (
         search_area if search_area is not None else load_search_area_from_config()
     )
-    hsv_ranges = load_hsv_ranges_from_config()
+    active_hsv_ranges = (
+        hsv_ranges if hsv_ranges is not None else load_hsv_ranges_from_config()
+    )
+    active_colour_mask_values = (
+        colour_mask_values
+        if colour_mask_values is not None
+        else load_colour_mask_from_config()
+    )
     orig_low, orig_high = initial_values if initial_values is not None else load_mask_canny_from_config()
     current = [orig_low, orig_high]
     trackbars_ready = False
@@ -219,15 +229,27 @@ def run_mask_canny_setup(
     cv2.waitKey(1)
 
     while not done:
+        if trackbars_ready and window_closed(_WINDOW):
+            action = "cancel"
+            done = True
+            break
         bgr_full, _ = get_frame_pair()
         if bgr_full is not None and trackbars_ready:
             low, high = _read_trackbars()
             current[:] = [low, high]
+            median_px, fill_gaps, reduce_noise, min_blob = active_colour_mask_values
 
             ih, iw = bgr_full.shape[:2]
             rx, ry, rw, rh = compute_roi(iw, ih, search_area=active_search_area)
             roi_bgr = bgr_full[ry : ry + rh, rx : rx + rw]
-            colour_img, _ = classify_roi_bgr(roi_bgr, hsv_ranges)
+            colour_img, _ = classify_roi_bgr(
+                roi_bgr,
+                active_hsv_ranges,
+                median_px=median_px,
+                morph_close_px=fill_gaps,
+                morph_open_px=reduce_noise,
+                min_blob_area_px=min_blob,
+            )
 
             view_disp = _build_preview(colour_img, low, high)
             panel = np.zeros((_PANEL_H, view_disp.shape[1], 3), dtype=np.uint8)
