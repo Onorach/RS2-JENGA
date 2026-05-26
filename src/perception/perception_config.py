@@ -10,7 +10,7 @@ TOWER_ANALYSIS = False
 BLOCK_ANALYSIS = True
 
 # Search area centre and fraction of the full frame
-SEARCH_AREA = (0.512, 0.637, 0.284, 0.435)
+SEARCH_AREA = (0.510, 0.654, 0.268, 0.456)
 
 # Crop margin around the search area
 SEARCH_AREA_MARGIN     = 0.10
@@ -61,20 +61,20 @@ CENTROID_ABORT_SHIFT_PCT = 6.0
 # HSV ranges for colour identification
 HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
     "red": [
-        ((  0, 101,  93), ( 12, 255, 255)),
-        ((171, 101,  93), (179, 255, 255)),
+        ((  0, 126, 167), ( 12, 255, 255)),
+        ((171, 126, 167), (179, 255, 255)),
     ],
     "yellow": [
-        (( 15,   0, 250), ( 54, 255, 255)),
+        (( 14,   0, 207), ( 54, 255, 255)),
     ],
     "green": [
-        (( 40,  62,  54), ( 85, 255, 255)),
+        (( 40,  47,  34), ( 85, 255, 255)),
     ],
     "blue": [
-        (( 82, 163, 121), (104, 255, 255)),
+        (( 82, 111,  94), (108, 255, 255)),
     ],
     "purple": [
-        ((106,  68,  29), (146, 255, 255)),
+        ((106, 163,  49), (146, 255, 255)),
     ],
 }
 
@@ -102,10 +102,10 @@ COLOUR_BGR: dict[str, tuple[int, int, int]] = {
 # Tower mask
 # ---------------------------------------------------------------------------
 
-TOWER_MASK_SAT_MIN                 = 100   # Min HSV saturation for tower foreground.
-TOWER_MASK_BRIGHTNESS_MIN          = 79    # Min HSV value (brightness) for tower foreground.
-TOWER_MASK_MORPH_CLOSE_PX          = 4    # Close kernel size — fills small mask holes. 0 = disabled.
-TOWER_MASK_MORPH_OPEN_PX           = 27    # Open kernel size — removes noise blobs. 0 = disabled.
+TOWER_MASK_SAT_MIN                 = 151   # Min HSV saturation for tower foreground.
+TOWER_MASK_BRIGHTNESS_MIN          = 47    # Min HSV value (brightness) for tower foreground.
+TOWER_MASK_MORPH_CLOSE_PX          = 0    # Close kernel size — fills small mask holes. 0 = disabled.
+TOWER_MASK_MORPH_OPEN_PX           = 31    # Open kernel size — removes noise blobs. 0 = disabled.
 
 # ---------------------------------------------------------------------------
 # Edge detection
@@ -120,19 +120,19 @@ CANNY_MASK_LOW   = 0   # Lower = more edges.
 CANNY_MASK_HIGH  = 0  # Higher = fewer, stronger edges only.
 
 # Canny thresholds used on the original BGR image.
-CANNY_ORIGINAL_LOW  = 65   # Lower = more edges.
+CANNY_ORIGINAL_LOW  = 41   # Lower = more edges.
 CANNY_ORIGINAL_HIGH = 138  # Higher = fewer, stronger edges only.
 
 # Width of the horizontal band (centred on the ROI) where Canny edges are
 # kept, as a percentage of ROI width. Edges outside this strip are zeroed
 # before Hough line detection, so both visualisation and grid-point search
 # are restricted to the middle slice. Set to 100.0 to disable.
-CANNY_CENTRE_BAND_PCT = 18.0   # Centre band width (% of ROI) for original Canny / Hough.
+CANNY_CENTRE_BAND_PCT = 16.0   # Centre band width (% of ROI) for original Canny / Hough.
 
 # Hough settings used for lines extracted from colour-mask edges.
-HOUGH_MASK_THRESHOLD  = 10  # Min Hough votes to accept a line.
-HOUGH_MASK_MIN_LENGTH = 30  # Min accepted line length (pixels).
-HOUGH_MASK_MAX_GAP    = 20  # Max gap for joining broken line segments.
+HOUGH_MASK_THRESHOLD  = 8  # Min Hough votes to accept a line.
+HOUGH_MASK_MIN_LENGTH = 10  # Min accepted line length (pixels).
+HOUGH_MASK_MAX_GAP    = 30  # Max gap for joining broken line segments.
 
 # Hough settings used for lines extracted from original-image edges.
 HOUGH_ORIGINAL_THRESHOLD  = 20
