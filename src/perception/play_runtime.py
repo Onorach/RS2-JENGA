@@ -58,6 +58,7 @@ from probe_response import (
     ProbeResponseMonitor,
     block_id_for_pick_slot,
     parse_selected_goal_pick,
+    recompute_tower_centroids_strict,
 )
 from block_identity_tracker import BlockIdentityTracker
 
@@ -437,9 +438,11 @@ def _run_loop(
         if BLOCK_ANALYSIS and points_locked:
             row_cells = [(layer[0], layer[1]) for layer in locked_layer_cells]
             probe_active = probe_monitor.is_active()
+            placing_active = probe_monitor.is_robot_placing()
             if (
                 _last_tower_img is None
                 or probe_active
+                or placing_active
             ):
                 active_cells = [cell for layer in locked_layer_cells for cell in layer]
                 _last_pct_results = compute_percentages(bgr, cells=active_cells)
@@ -460,7 +463,16 @@ def _run_loop(
                     frame_width_px=float(iw),
                     print_enabled=False,
                     min_centroid_layer=probe_min_layer,
+                    identity_tracker=identity_tracker,
                 )
+                if placing_active and not probe_active:
+                    tower = recompute_tower_centroids_strict(
+                        bgr,
+                        depth_for_layers,
+                        row_cells,
+                        tower,
+                        min_layer=0,
+                    )
                 identity_tracker.apply(tower)
                 _last_tower_state = tower
                 if tower and publish_top_layer:

@@ -85,12 +85,49 @@ def _blocks_from_endon(
     mean_xy: dict[str, tuple[float, float]],
     cell: dict,
     orientation: str = "left",
+    known_colours: list[str | None] | None = None,
 ) -> list[dict]:
     """
     One centroid per colour across the full end-on layer side (all pixels of
     that colour in the cell). Assign each colour to a front/mid/back lane by
     its mean x, then reorder lanes for tower orientation.
+
+    known_colours
+    -------------
+    When provided (a list of three colour names in slot_idx order, i.e.
+    [front, mid, back]), the x-lane assignment is SKIPPED.  Instead each
+    slot is filled directly from the canonical colour.  This prevents identity
+    flips when a pushed block's colour coverage temporarily drops below the
+    detection threshold — we know which colour belongs in each slot.
+
+    A half-height percentage threshold is used so blocks with reduced coverage
+    (pushed far in depth) are still marked as present.
     """
+    if known_colours is not None and any(c is not None for c in known_colours):
+        LOW_PCT = BLOCK_PRESENT_MIN_PCT / 2.0
+        res: list[dict] = []
+        for slot_colour in known_colours:
+            if slot_colour is None or slot_colour in ("unknown", ""):
+                res.append({"colour": "unknown", "present": False, "depth_mm": None})
+                continue
+            xy  = mean_xy.get(slot_colour)
+            pct = pcts.get(slot_colour, 0.0)
+            if xy is not None and pct >= LOW_PCT:
+                res.append({
+                    "colour":    slot_colour,
+                    "present":   True,
+                    "mean_x_px": xy[0],
+                    "mean_y_px": xy[1],
+                })
+            else:
+                # Block not visible enough this frame: mark absent but keep
+                # canonical colour so downstream can still name the slot.
+                res.append({"colour": slot_colour, "present": False, "depth_mm": None})
+        # known_colours is already in [front, mid, back] = slot_idx order.
+        # No orientation reversal needed — canonical is orientation-agnostic.
+        return res
+
+    # ── Original x-lane detection (first frame / no canonical yet) ────────
     corners = cell["corners"]
     x_left_bound  = (corners[0][0] + corners[2][0]) / 2.0
     x_right_bound = (corners[1][0] + corners[3][0]) / 2.0
@@ -132,6 +169,7 @@ def analyse_layer(
     right_cell:   dict,
     frame_centre_x_px: float | None = None,
     frame_width_px: float | None = None,
+    known_block_colours: list[str | None] | None = None,
 ) -> dict:
     left_pcts   = _colour_pcts(left_result)
     right_pcts  = _colour_pcts(right_result)
@@ -141,6 +179,14 @@ def analyse_layer(
         (left_pcts, left_cell) if orientation == "left"
         else (right_pcts, right_cell)
     )
+
+    # Build the required_colours set so compute_layer_centroids always
+    # searches for canonical block colours even at low pixel coverage.
+    required_colours: set[str] | None = None
+    if known_block_colours is not None:
+        rc = {c for c in known_block_colours if c not in (None, "unknown", "")}
+        if rc:
+            required_colours = rc
 
     # Compute near-face centroids for all colours in this layer.
     # Searches both cells so the front block's split (which may fall in the
@@ -154,8 +200,13 @@ def analyse_layer(
         orientation,
         robust_stat="mean",
         require_split=False,
+        required_colours=required_colours,
     )
-    endon_blocks = _blocks_from_endon(endon_pcts, mean_xy, endon_cell, orientation=orientation)
+    endon_blocks = _blocks_from_endon(
+        endon_pcts, mean_xy, endon_cell,
+        orientation=orientation,
+        known_colours=known_block_colours,
+    )
 
     frame_width    = float(frame_width_px) if frame_width_px is not None else float(bgr_frame.shape[1])
     frame_centre_x = float(frame_centre_x_px) if frame_centre_x_px is not None else (frame_width / 2.0)
@@ -282,7 +333,18 @@ def analyse_tower(
     frame_width_px: float | None = None,
     print_enabled: bool = True,
     min_centroid_layer: int | None = None,
+    identity_tracker=None,
 ) -> list[dict]:
+    """
+    Analyse the full tower layer by layer.
+
+    identity_tracker : BlockIdentityTracker | None
+        When provided and already initialized, the canonical colour-per-slot
+        is queried for each layer and passed down so _blocks_from_endon can
+        look for the KNOWN colour in each slot rather than re-detecting from
+        x-lane positions.  This prevents identity flips when a pushed block's
+        colour coverage drops temporarily.
+    """
     global _last_print_time
     tower = []
     n_layers = len(row_cells)
@@ -298,6 +360,17 @@ def analyse_tower(
             min_centroid_layer is not None
             and layer_idx < int(min_centroid_layer)
         )
+
+        # Fetch canonical colour assignments for this layer when available.
+        # On the first frame (tracker not yet initialized) this returns all
+        # None and _blocks_from_endon falls back to x-lane detection.
+        known_colours: list[str | None] | None = None
+        if identity_tracker is not None and identity_tracker.is_initialized():
+            known_colours = identity_tracker.canonical_colours_for_layer(layer_idx)
+            # If all None (e.g. layer not yet seen), fall back to free detection.
+            if not any(c is not None for c in known_colours):
+                known_colours = None
+
         layer = analyse_layer(
             bgr_frame,
             depth_frame if not skip_centroid else None,
@@ -307,6 +380,7 @@ def analyse_tower(
             right_def,
             frame_centre_x_px=frame_centre_x_px,
             frame_width_px=frame_width_px,
+            known_block_colours=known_colours,
         )
         layer["layer"] = layer_idx
         tower.append(layer)
@@ -393,7 +467,6 @@ def annotate_depth_split_lines_for_tower(
             right_cell,
             orientation,
         )
-
         # Only annotate the NEAREST (front) block per layer.
         # Multiple blocks can have split lines computed, but displaying all of
         # them clutters the overlay.  The front block (smallest face_depth_mm)
