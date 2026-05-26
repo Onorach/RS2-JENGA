@@ -34,7 +34,7 @@ class JengaMockPublisher(Node):
             {"layer": 2, "pos": 2, "id": 5, "colour": "natural"},
             
             # Layer 3: Missing position 0
-            {"layer": 3, "pos": 1, "id": 6, "colour": "purple"},
+            
             {"layer": 3, "pos": 2, "id": 7, "colour": "black"},
             
             # Layer 4: Missing positions 1 and 2
@@ -43,8 +43,8 @@ class JengaMockPublisher(Node):
             {"layer": 4, "pos": 2, "id": 14, "colour": "green"},         
             
             # Layer 5 (Topmost Layer): Missing position 1
-            {"layer": 5, "pos": 0, "id": 9, "colour": "green"},
-            {"layer": 5, "pos": 2, "id": 10, "colour": "blue"}
+            {"layer": 5, "pos": 0, "id": 9, "colour": "green"}
+               
         ]
 
         blocks_list = []
