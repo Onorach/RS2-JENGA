@@ -301,9 +301,7 @@ class JengaBlocksSceneNode(Node):
             z=float(oq.get("z", 0.0)),
             w=float(oq.get("w", 1.0)),
         )
-        pick_xyz = _stock_pick_xyz_list(
-            stock, n_tower=n, xy_offset=parametric_platform_offset(data)
-        )
+        pick_xyz = _stock_pick_xyz_list(stock, n_tower=n, xyz_offset=parametric_platform_offset(data))
         if len(pick_xyz) < n:
             raise ValueError(
                 f"Not enough stock pick positions ({len(pick_xyz)}) for {n} blocks."

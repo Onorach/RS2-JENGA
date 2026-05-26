@@ -103,7 +103,7 @@ Parametric layouts in `config/jenga_tower_mtc_layout.yaml` support a single XY s
 
 ```yaml
 parametric:
-  platform_offset: {x: 0.0, y: 0.0}   # metres; tune per hardware setup
+  platform_offset: {x: 0.0, y: 0.0, z: 0.0}   # metres; tune per hardware setup
   tower:
     base: {x: 0.000, y: 0.297, z: 0.0138}
     ...

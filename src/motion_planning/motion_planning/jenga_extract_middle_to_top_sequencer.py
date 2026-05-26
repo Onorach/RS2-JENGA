@@ -227,7 +227,7 @@ def _tower_params_from_layout(data: dict[str, Any], *, frame_id: str) -> _TowerP
     p = data.get("parametric", {})
     t = p.get("tower", {})
     base = t.get("base", {})
-    ox, oy = parametric_platform_offset(data)
+    ox, oy, oz = parametric_platform_offset(data)
     tower_yaw_deg = float(t.get("tower_yaw_deg", 45.0))
     oq = p.get("orientation_place", {"x": 0.0, "y": 0.0, "z": 0.707, "w": 0.707})
     q_place = _qdict_to_msg(oq)
@@ -237,7 +237,7 @@ def _tower_params_from_layout(data: dict[str, Any], *, frame_id: str) -> _TowerP
         frame_id=frame_id,
         base_x=float(base.get("x", 0.0)) + ox,
         base_y=float(base.get("y", 0.0)) + oy,
-        base_z=float(base.get("z", float(p.get("stock", {}).get("z", 0.0138)))),
+        base_z=float(base.get("z", float(p.get("stock", {}).get("z", 0.0138)))) + oz,
         tower_yaw_rad=math.radians(tower_yaw_deg),
         blocks_per_layer=int(t.get("blocks_per_layer", 3)),
         layer_dz=float(t.get("layer_dz", 0.0151)),

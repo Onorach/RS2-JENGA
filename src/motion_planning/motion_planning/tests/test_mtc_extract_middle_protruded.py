@@ -332,10 +332,10 @@ def main(args=None) -> int:
         p = data.get("parametric", {})
         tower = p.get("tower", {})
         base = tower.get("base", {})
-        ox, oy = parametric_platform_offset(data)
+        ox, oy, oz = parametric_platform_offset(data)
         base_x = float(base.get("x", 0.0)) + ox
         base_y = float(base.get("y", 0.0)) + oy
-        base_z = float(base.get("z", float(p.get("stock", {}).get("z", 0.0138))))
+        base_z = float(base.get("z", float(p.get("stock", {}).get("z", 0.0138)))) + oz
         oq = p.get("orientation_place", {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0})
         q_place = _q_normalize(
             float(oq.get("x", 0.0)),
