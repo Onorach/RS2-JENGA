@@ -5,19 +5,27 @@ Bag playback mode for Jenga perception.
 
 Usage
 -----
+    cd src/perception
     python3 play_bag.py <bag_file> [--setup]
 """
 
+from __future__ import annotations
+
 import argparse
 import os
+import sys
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
 import pyrealsense2 as rs
 
+_PERCEPTION_DIR = Path(__file__).resolve().parent
+if str(_PERCEPTION_DIR) not in sys.path:
+    sys.path.insert(0, str(_PERCEPTION_DIR))
+
 from play_runtime import run_with_pipeline
-from setup.search_area_setup import run_search_area_setup
 
 
 def _resolve_bag(path: str) -> str:
@@ -115,6 +123,8 @@ def main() -> None:
     
     try:
         if args.setup:
+            from setup.search_area_setup import run_search_area_setup
+
             run_search_area_setup(_pipeline_frame_reader(pipeline, target_fps=target_fps))
         else:
             run_with_pipeline(pipeline, target_fps=target_fps)
