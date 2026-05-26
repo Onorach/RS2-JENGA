@@ -215,6 +215,68 @@ def colour_mean_xy_in_cell(
     depth_frame: np.ndarray | None = None,
     target_depth_mm: float | None = None,
     depth_tolerance_mm: float = 40.0,
+) -> dict[str, tuple[float, float]]:
+    """
+    Mean image-space centroid (x, y) per colour inside cell.
+
+    Uses the same mask/depth-gating logic as colour_mean_x_in_cell so centroid
+    markers match the pixels used for depth/offset estimates.
+    """
+    ih, iw = bgr_frame.shape[:2]
+    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
+    quad = _quad_mask((ih, iw), cell["corners"])
+    if int(quad.sum()) == 0:
+        return {}
+
+    if depth_frame is not None and target_depth_mm is not None:
+        df = depth_frame.astype(np.float32)
+        depth_gate: np.ndarray | None = (
+            (df > 0)
+            & np.isfinite(df)
+            & (np.abs(df - target_depth_mm) <= depth_tolerance_mm)
+        )
+    else:
+        depth_gate = None
+
+    return _colour_mean_xy_in_region(hsv, quad, depth_gate)
+
+
+def colour_mean_xy_per_lane_in_cell(
+    bgr_frame: np.ndarray,
+    cell: dict,
+    depth_frame: np.ndarray | None = None,
+    target_depth_mm: float | None = None,
+    depth_tolerance_mm: float = 40.0,
+) -> list[dict[str, tuple[float, float]]]:
+    """
+    Per-lane colour blob centroids: mean (x, y) of all pixels of each colour
+    inside each front/mid/back lane strip of the end-on cell.
+    """
+    ih, iw = bgr_frame.shape[:2]
+    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
+    lane_masks = _lane_strip_masks((ih, iw), cell)
+    if not any(int(m.sum()) > 0 for m in lane_masks):
+        return [{}, {}, {}]
+
+    if depth_frame is not None and target_depth_mm is not None:
+        df = depth_frame.astype(np.float32)
+        depth_gate: np.ndarray | None = (
+            (df > 0)
+            & np.isfinite(df)
+            & (np.abs(df - target_depth_mm) <= depth_tolerance_mm)
+        )
+    else:
+        depth_gate = None
+
+    return [_colour_mean_xy_in_region(hsv, lane_mask, depth_gate) for lane_mask in lane_masks]
+
+
+def colour_mean_xy_in_cell(
+    bgr_frame: np.ndarray,
+    cell: dict,
+    depth_frame: np.ndarray | None = None,
+    target_depth_mm: float | None = None,
+    depth_tolerance_mm: float = 40.0,
     orientation: str | None = None,
     use_outside_of_split: bool = False,
     robust_stat: str = "mean",

@@ -70,6 +70,11 @@ from probe_response import (
     block_id_for_pick_slot,
     parse_selected_goal_pick,
 )
+from probe_response import (
+    ProbeResponseMonitor,
+    block_id_for_pick_slot,
+    parse_selected_goal_pick,
+)
 from block_identity_tracker import BlockIdentityTracker
 
 import rclpy
