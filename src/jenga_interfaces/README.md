@@ -72,7 +72,7 @@ MTC-relevant launch arguments:
 | `planner` | `mtc` | Must be `mtc` to start MTC servers and `jenga_blocks_scene` |
 | `mtc_server_mode` | `paired_pose` | Pick/place server only: `paired_pose` (two `/goal_pose` = pick then place) or `single_pose` (MoveGroup to each pose) |
 | `jenga_blocks_startup_layout` | `none` | `none`, `stock`, or `tower` — publish all block collision objects at startup |
-| `jenga_blocks_layout_path` | package `jenga_tower_mtc_layout.yaml` | YAML layout for block poses |
+| `jenga_blocks_layout_path` | package `jenga_tower_mtc_layout.yaml` | YAML layout for block poses; use `parametric.platform_offset` `{x,y}` for per-hardware XY calibration |
 | `jenga_blocks_frame_id` | `world` | TF frame for block collision objects |
 | `max_velocity_scaling_factor` | `0.1` | Overrides YAML for all MTC servers |
 | `max_acceleration_scaling_factor` | `0.1` | Same |

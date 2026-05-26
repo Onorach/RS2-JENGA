@@ -40,6 +40,7 @@ setup(
             "mtc_action_client = motion_planning.mtc_action_client:main",
             "jenga_tower_mtc_sequencer = motion_planning.jenga_tower_mtc_sequencer:main",
             "jenga_extract_middle_to_top_sequencer = motion_planning.jenga_extract_middle_to_top_sequencer:main",
+            "verify_jenga_block_ids = motion_planning.tests.verify_jenga_block_ids:main",
             "robot_gui = motion_planning.robot_gui:main",
             "robot_state_bridge_node = motion_planning.robot_state_bridge_node:main",
         ],

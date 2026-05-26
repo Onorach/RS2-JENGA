@@ -74,7 +74,28 @@ def _load_yaml(path: str) -> dict[str, Any]:
         return yaml.safe_load(f) or {}
 
 
-def _stock_pick_xyz_list(stock: dict[str, Any], *, n_tower: int) -> list[tuple[float, float, float]]:
+def parametric_platform_offset(data: dict[str, Any]) -> tuple[float, float, float]:
+    """XYZ shift (metres) applied to all parametric stock picks and tower places."""
+    p = data.get("parametric", {})
+    off = p.get("platform_offset", {})
+    if isinstance(off, dict):
+        ox = float(off.get("x", 0.0))
+        oy = float(off.get("y", 0.0))
+        oz = float(off.get("z", 0.0))
+    else:
+        ox = oy = oz = 0.0
+    ox += float(p.get("platform_offset_x", 0.0))
+    oy += float(p.get("platform_offset_y", 0.0))
+    oz += float(p.get("platform_offset_z", 0.0))
+    return (ox, oy, oz)
+
+
+def _stock_pick_xyz_list(
+    stock: dict[str, Any],
+    *,
+    n_tower: int,
+    xyz_offset: tuple[float, float, float] = (0.0, 0.0, 0.0),
+) -> list[tuple[float, float, float]]:
     """Ordered (x, y, z) for each stock pick: rows in YAML order (optional dz per row), y low -> high per row."""
     if "rows" in stock:
         rows = stock["rows"]
@@ -98,16 +119,19 @@ def _stock_pick_xyz_list(stock: dict[str, Any], *, n_tower: int) -> list[tuple[f
                 f"{n_tower} (blocks_per_layer * layers).",
                 stacklevel=2,
             )
-        return out[:n_tower] if n_stock > n_tower else out
+        trimmed = out[:n_tower] if n_stock > n_tower else out
+        ox, oy, oz = xyz_offset
+        return [(x + ox, y + oy, z + oz) for x, y, z in trimmed]
 
     # Legacy: single row along -x from first_block
     s0 = stock.get("first_block", {"x": 0.3, "y": 0.297, "z": 0.0138})
     step = float(stock.get("step_along_x", 0.0251))
+    ox, oy, oz = xyz_offset
     return [
         (
-            float(s0.get("x", 0.0)) - i * step,
-            float(s0.get("y", 0.0)),
-            float(s0.get("z", 0.0)),
+            float(s0.get("x", 0.0)) - i * step + ox,
+            float(s0.get("y", 0.0)) + oy,
+            float(s0.get("z", 0.0)) + oz,
         )
         for i in range(n_tower)
     ]
@@ -116,6 +140,7 @@ def _stock_pick_xyz_list(stock: dict[str, Any], *, n_tower: int) -> list[tuple[f
 def _parametric_tower_poses(data: dict[str, Any]) -> list[Pose]:
     """Place poses for a parametric tower only (no stock / pick layout required)."""
     p = data.get("parametric", {})
+    ox, oy, oz = parametric_platform_offset(data)
     t = p.get("tower", {})
     bpl = int(t.get("blocks_per_layer", 3))
     layers = int(t.get("layers", 6))
@@ -148,9 +173,9 @@ def _parametric_tower_poses(data: dict[str, Any]) -> list[Pose]:
         out.append(
             Pose(
                 position=Point(
-                    x=float(t0.get("x", 0.0)) + off_x,
-                    y=float(t0.get("y", 0.0)) + off_y,
-                    z=float(t0.get("z", 0.0)) + layer * layer_dz,
+                    x=float(t0.get("x", 0.0)) + off_x + ox,
+                    y=float(t0.get("y", 0.0)) + off_y + oy,
+                    z=float(t0.get("z", 0.0)) + layer * layer_dz + oz,
                 ),
                 orientation=Quaternion(x=qx, y=qy, z=qz, w=qw),
             )
@@ -176,7 +201,7 @@ def _parametric_steps(data: dict[str, Any]) -> list[tuple[Pose, Pose]]:
     layers = int(t.get("layers", 6))
     n = bpl * layers
     q_pick = _qdict_to_msg(p.get("orientation_pick", {"x": 0.0, "y": 0.0, "z": 0.0, "w": 1.0}))
-    pick_xyz = _stock_pick_xyz_list(g, n_tower=n)
+    pick_xyz = _stock_pick_xyz_list(g, n_tower=n, xyz_offset=parametric_platform_offset(data))
     if len(pick_xyz) < n:
         raise ValueError(
             f"Not enough stock pick positions ({len(pick_xyz)}) for tower ({n} blocks). "
