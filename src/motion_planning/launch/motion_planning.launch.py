@@ -353,6 +353,27 @@ def generate_launch_description():
             "If true, skip JengaBlockStates when header.frame_id != jenga_blocks_frame_id."
         ),
     )
+    jenga_extract_listen_selected_goal_arg = DeclareLaunchArgument(
+        "jenga_extract_listen_selected_goal",
+        default_value="true",
+        description=(
+            "MTC only: if true, jenga_extract_middle_to_top_sequencer subscribes to "
+            "/selected_goal and runs extract+place per message."
+        ),
+    )
+    jenga_extract_selected_goal_topic_arg = DeclareLaunchArgument(
+        "jenga_extract_selected_goal_topic",
+        default_value="/selected_goal",
+        description=(
+            "Topic for 6-value Int8MultiArray: "
+            "[pick_layer, pick_pos, pick_block_index, place_layer, place_pos, 0]."
+        ),
+    )
+    jenga_extract_goal_frame_arg = DeclareLaunchArgument(
+        "jenga_extract_goal_frame",
+        default_value="world",
+        description="TF frame for extract-middle-to-top sequencer poses (match jenga_blocks_frame_id).",
+    )
     joint_secondary_pref_clip_arg = DeclareLaunchArgument(
         "joint_secondary_pref_clip",
         default_value="0.45",
@@ -662,6 +683,22 @@ def generate_launch_description():
         parameters=mtc_common_parameters,
     )
 
+    jenga_extract_middle_to_top_sequencer_node = Node(
+        package=pkg_planning,
+        executable="jenga_extract_middle_to_top_sequencer",
+        name="jenga_extract_middle_to_top_sequencer",
+        output="screen",
+        condition=mtc_planner_condition,
+        parameters=[
+            {
+                "listen_selected_goal": LaunchConfiguration("jenga_extract_listen_selected_goal"),
+                "selected_goal_topic": LaunchConfiguration("jenga_extract_selected_goal_topic"),
+                "layout_path": LaunchConfiguration("jenga_blocks_layout_path"),
+                "goal_frame": LaunchConfiguration("jenga_extract_goal_frame"),
+            }
+        ],
+    )
+
     jenga_blocks_scene_node = Node(
         package=pkg_planning,
         executable="jenga_blocks_scene",
@@ -752,6 +789,9 @@ def generate_launch_description():
         jenga_blocks_states_topic_arg,
         jenga_blocks_max_update_rate_hz_arg,
         jenga_blocks_require_frame_match_arg,
+        jenga_extract_listen_selected_goal_arg,
+        jenga_extract_selected_goal_topic_arg,
+        jenga_extract_goal_frame_arg,
         max_step_arg,
         jump_threshold_arg,
         cartesian_fraction_threshold_arg,
@@ -796,6 +836,7 @@ def generate_launch_description():
         mtc_extract_middle_block_server_node,
         mtc_probe_block_server_node,
         mtc_arm_ready_server_node,
+        jenga_extract_middle_to_top_sequencer_node,
         exclusion_zones_node,
         estop_node,
         robot_state_bridge_node,

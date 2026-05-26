@@ -29,14 +29,16 @@ source install/setup.bash
 
 ## Nodes
 
+
 | Node                   | Description                                                              |
-|------------------------|--------------------------------------------------------------------------|
-| `pose_goal_node`       | MoveIt2 pose goals; plans and executes via `/move_action`               |
-| `rmrc_planning_node`   | RMRC Cartesian planner; no MoveIt; uses PyKDL Jacobian + repulsion     |
-| `exclusion_zones_node` | Loads exclusion zones from YAML into the MoveIt planning scene         |
-| `test_rmrc_pose`       | Test script that publishes sample goal poses                            |
-| `robot_gui`            | GUI for robot interaction                                               |
+| ---------------------- | ------------------------------------------------------------------------ |
+| `pose_goal_node`       | MoveIt2 pose goals; plans and executes via `/move_action`                |
+| `rmrc_planning_node`   | RMRC Cartesian planner; no MoveIt; uses PyKDL Jacobian + repulsion       |
+| `exclusion_zones_node` | Loads exclusion zones from YAML into the MoveIt planning scene           |
+| `test_rmrc_pose`       | Test script that publishes sample goal poses                             |
+| `robot_gui`            | GUI for robot interaction                                                |
 | `jenga_blocks_scene`   | Publishes Jenga block boxes to the MoveIt planning scene (MTC workflows) |
+
 
 ### `jenga_blocks_scene` services
 
@@ -44,10 +46,12 @@ Started when `motion_planning.launch.py` runs with `planner:=mtc`. Services only
 
 By default (`jenga_blocks_startup_layout:=none`), no blocks are published at startup. Use `jenga_blocks_startup_layout:=stock` or `:=tower` to spawn all blocks on launch, or call `set_jenga_blocks_layout` at runtime.
 
-| Service | Type | Effect |
-|---------|------|--------|
+
+| Service                   | Type                                        | Effect                                                                                                                      |
+| ------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | `set_jenga_blocks_layout` | `jenga_interfaces/srv/SetJengaBlocksLayout` | Republish selected `block_indices` (or all if empty) at either `target_layout: "stock"` or `"tower"` (planning scene only). |
-| `protrude_jenga_block` | `jenga_interfaces/srv/ProtrudeJengaBlock` | Move one block’s collision object along an axis by `distance_m` (planning scene only; used by extraction tests). |
+| `protrude_jenga_block`    | `jenga_interfaces/srv/ProtrudeJengaBlock`   | Move one block’s collision object along an axis by `distance_m` (planning scene only; used by extraction tests).            |
+
 
 ### Perception-driven scene updates (hybrid)
 
@@ -65,12 +69,14 @@ ros2 launch motion_planning motion_planning.launch.py planner:=mtc \
   jenga_blocks_perception_updates:=true
 ```
 
-| Launch parameter | Node parameter | Default | Description |
-|------------------|----------------|---------|-------------|
-| `jenga_blocks_perception_updates` | `perception_updates` | `false` | Subscribe to `JengaBlockStates` |
-| `jenga_blocks_states_topic` | `block_states_topic` | `/jenga/block_states` | Perception topic |
-| `jenga_blocks_max_update_rate_hz` | `max_update_rate_hz` | `2.0` | Apply cap (`0` = unlimited) |
-| `jenga_blocks_require_frame_match` | `require_frame_match` | `true` | Skip if `header.frame_id` ≠ `jenga_blocks_frame_id` |
+
+| Launch parameter                   | Node parameter        | Default               | Description                                         |
+| ---------------------------------- | --------------------- | --------------------- | --------------------------------------------------- |
+| `jenga_blocks_perception_updates`  | `perception_updates`  | `false`               | Subscribe to `JengaBlockStates`                     |
+| `jenga_blocks_states_topic`        | `block_states_topic`  | `/jenga/block_states` | Perception topic                                    |
+| `jenga_blocks_max_update_rate_hz`  | `max_update_rate_hz`  | `2.0`                 | Apply cap (`0` = unlimited)                         |
+| `jenga_blocks_require_frame_match` | `require_frame_match` | `true`                | Skip if `header.frame_id` ≠ `jenga_blocks_frame_id` |
+
 
 `block_id` in perception messages must match MTC `block_index` / planning-scene `block_XX` (bottom layer 0–2, then 3–5, …). Verify with:
 
@@ -134,28 +140,30 @@ ros2 launch motion_planning motion_planning.launch.py
 
 **Parameters:**
 
-| Parameter                 | Default                            | Description                                          |
-|---------------------------|------------------------------------|------------------------------------------------------|
-| `use_rmrc`                | `true`                             | Use RMRC instead of MoveIt pose_goal_node            |
-| `exclusion_zones_file`    | `config/ur3e_workspace.yaml`       | Path to YAML defining exclusion zones               |
-| `plan_only`               | `false`                            | Plan only, do not execute                            |
-| `execution_start_delay`   | `1.0`                              | RMRC-only: delay added before first trajectory point to avoid startup tolerance trips |
-| `goal_time_tolerance`     | `2.0`                              | RMRC-only: extra time allowed for controller to settle at goal |
-| `max_joint_velocity`      | `0.25`                             | RMRC-only: clamp generated joint velocities (rad/s) |
-| `max_joint_acceleration`  | `0.5`                              | RMRC-only: clamp generated joint acceleration (rad/s²) |
-| `execution_mode`          | `trajectory`                       | RMRC execution mode: `trajectory` or `velocity`      |
-| `kinematics_backend`      | `hybrid`                           | `pykdl` or `hybrid` (PyKDL + optional analytical IK helper) |
-| `velocity_command_topic`  | `/joint_group_velocity_controller/commands` | Topic used when `execution_mode:=velocity` |
-| `ik_seed_gain`            | `0.0`                              | Null-space bias gain toward analytical IK candidate   |
-| `publish_world_to_base_tf`| `false`                            | Publish static `world -> base_link` TF from this launch (keep false when robot launch already provides it) |
-| `base_height`             | `1.08`                             | Z offset (m) used for static `world -> base_link` TF |
-| `add_floor_plane`         | `false`                            | Add floor-plane at startup (use GUI or `:=true` + `world` frame if needed) |
-| `floor_z`                  | `0.0`                              | Floor Z height (metres)                              |
-| `jenga_blocks_startup_layout` | `none`                          | MTC only: `none` (default), `stock`, or `tower` — publish all Jenga block collision objects at startup |
-| `jenga_blocks_perception_updates` | `false`                     | MTC only: subscribe to `JengaBlockStates` for live pose updates |
-| `jenga_blocks_states_topic` | `/jenga/block_states`           | Perception topic when perception updates enabled |
-| `jenga_blocks_max_update_rate_hz` | `2.0`                     | Max rate for applying perception messages (`0` = unlimited) |
-| `jenga_blocks_require_frame_match` | `true`                   | Skip perception messages with mismatched `frame_id` |
+
+| Parameter                          | Default                                     | Description                                                                                                |
+| ---------------------------------- | ------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `use_rmrc`                         | `true`                                      | Use RMRC instead of MoveIt pose_goal_node                                                                  |
+| `exclusion_zones_file`             | `config/ur3e_workspace.yaml`                | Path to YAML defining exclusion zones                                                                      |
+| `plan_only`                        | `false`                                     | Plan only, do not execute                                                                                  |
+| `execution_start_delay`            | `1.0`                                       | RMRC-only: delay added before first trajectory point to avoid startup tolerance trips                      |
+| `goal_time_tolerance`              | `2.0`                                       | RMRC-only: extra time allowed for controller to settle at goal                                             |
+| `max_joint_velocity`               | `0.25`                                      | RMRC-only: clamp generated joint velocities (rad/s)                                                        |
+| `max_joint_acceleration`           | `0.5`                                       | RMRC-only: clamp generated joint acceleration (rad/s²)                                                     |
+| `execution_mode`                   | `trajectory`                                | RMRC execution mode: `trajectory` or `velocity`                                                            |
+| `kinematics_backend`               | `hybrid`                                    | `pykdl` or `hybrid` (PyKDL + optional analytical IK helper)                                                |
+| `velocity_command_topic`           | `/joint_group_velocity_controller/commands` | Topic used when `execution_mode:=velocity`                                                                 |
+| `ik_seed_gain`                     | `0.0`                                       | Null-space bias gain toward analytical IK candidate                                                        |
+| `publish_world_to_base_tf`         | `false`                                     | Publish static `world -> base_link` TF from this launch (keep false when robot launch already provides it) |
+| `base_height`                      | `1.08`                                      | Z offset (m) used for static `world -> base_link` TF                                                       |
+| `add_floor_plane`                  | `false`                                     | Add floor-plane at startup (use GUI or `:=true` + `world` frame if needed)                                 |
+| `floor_z`                          | `0.0`                                       | Floor Z height (metres)                                                                                    |
+| `jenga_blocks_startup_layout`      | `none`                                      | MTC only: `none` (default), `stock`, or `tower` — publish all Jenga block collision objects at startup     |
+| `jenga_blocks_perception_updates`  | `false`                                     | MTC only: subscribe to `JengaBlockStates` for live pose updates                                            |
+| `jenga_blocks_states_topic`        | `/jenga/block_states`                       | Perception topic when perception updates enabled                                                           |
+| `jenga_blocks_max_update_rate_hz`  | `2.0`                                       | Max rate for applying perception messages (`0` = unlimited)                                                |
+| `jenga_blocks_require_frame_match` | `true`                                      | Skip perception messages with mismatched `frame_id`                                                        |
+
 
 **Examples:**
 
@@ -180,7 +188,7 @@ ros2 run motion_planning exclusion_zones_node --ros-args -p exclusion_zones_file
 
 ## MoveIt Task Constructor (MTC)
 
-Integrated Jenga manipulation uses **actions** from [`jenga_interfaces`](../jenga_interfaces/README.md), implemented by C++ servers in [`mtc_jenga_servers`](../mtc_jenga_servers/README.md). Launching `motion_planning.launch.py` with `planner:=mtc` (the default) starts the MTC server nodes together with `jenga_blocks_scene`, exclusion zones, and e-stop.
+Integrated Jenga manipulation uses **actions** from `[jenga_interfaces](../jenga_interfaces/README.md)`, implemented by C++ servers in `[mtc_jenga_servers](../mtc_jenga_servers/README.md)`. Launching `motion_planning.launch.py` with `planner:=mtc` (the default) starts the MTC server nodes together with `jenga_blocks_scene`, exclusion zones, and e-stop.
 
 ```mermaid
 flowchart LR
@@ -193,13 +201,15 @@ flowchart LR
   clients --> servers
 ```
 
+
+
 ### Prerequisites
 
 - **Driver** and **robot_state_publisher** / joint states running.
-- **`move_group`** on the same `ROS_DOMAIN_ID`, with **ExecuteTaskSolutionCapability** loaded (`/execute_task_solution` must exist).
+- `**move_group`** on the same `ROS_DOMAIN_ID`, with **ExecuteTaskSolutionCapability** loaded (`/execute_task_solution` must exist).
 - Planning groups and frames match your SRDF (defaults assume ur_onrobot-style names; override via server parameters if needed).
-- **`joint_trajectory_action`** passed into `motion_planning.launch.py` must match the active arm trajectory action (e.g. scaled vs non-scaled controller) for `estop_node`.
-- Set **`publish_world_to_base_tf`**, **`base_height`**, **`base_yaw`** so `world` and collision objects align with your TF tree.
+- `**joint_trajectory_action`** passed into `motion_planning.launch.py` must match the active arm trajectory action (e.g. scaled vs non-scaled controller) for `estop_node`.
+- Set `**publish_world_to_base_tf**`, `**base_height**`, `**base_yaw**` so `world` and collision objects align with your TF tree.
 
 ### Launch (full stack node)
 
@@ -213,10 +223,12 @@ ros2 launch motion_planning motion_planning.launch.py planner:=mtc \
 
 ### `mtc_server_mode` (pick/place server only)
 
-| Value | Behavior |
-|-------|----------|
+
+| Value         | Behavior                                                                                                               |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------- |
 | `paired_pose` | **Default.** Two consecutive `/goal_pose` messages are interpreted as pick then place for the MTC pick/place pipeline. |
-| `single_pose` | Each `/goal_pose` triggers a direct MoveGroup-style move (no paired pick/place sequence). |
+| `single_pose` | Each `/goal_pose` triggers a direct MoveGroup-style move (no paired pick/place sequence).                              |
+
 
 ### Concurrency
 
@@ -224,13 +236,15 @@ Do **not** send goals to two MTC action servers at the same time. Servers share 
 
 ### Actions (interface reference)
 
-| Action server node | Action name | Message type |
-|--------------------|-------------|--------------|
-| `mtc_pick_place_server` | `jenga_pick_place` | `jenga_interfaces/action/JengaPickPlace` |
-| `mtc_arm_ready_server` | `jenga_arm_ready` | `jenga_interfaces/action/JengaArmReady` |
-| `mtc_extract_side_block_server` | `jenga_extract_side_block` | `jenga_interfaces/action/JengaExtractSideBlock` |
+
+| Action server node                | Action name                  | Message type                                      |
+| --------------------------------- | ---------------------------- | ------------------------------------------------- |
+| `mtc_pick_place_server`           | `jenga_pick_place`           | `jenga_interfaces/action/JengaPickPlace`          |
+| `mtc_arm_ready_server`            | `jenga_arm_ready`            | `jenga_interfaces/action/JengaArmReady`           |
+| `mtc_extract_side_block_server`   | `jenga_extract_side_block`   | `jenga_interfaces/action/JengaExtractSideBlock`   |
 | `mtc_extract_middle_block_server` | `jenga_extract_middle_block` | `jenga_interfaces/action/JengaExtractMiddleBlock` |
-| `mtc_probe_block_server` | `jenga_probe_block` | `jenga_interfaces/action/JengaProbeBlock` |
+| `mtc_probe_block_server`          | `jenga_probe_block`          | `jenga_interfaces/action/JengaProbeBlock`         |
+
 
 Override the advertised name with each server’s `action_name` parameter if needed.
 
@@ -248,14 +262,16 @@ Other actions require `PoseStamped` goals; use `ros2 interface show jenga_interf
 
 Run with the workspace sourced and the MTC stack (and MoveIt) running.
 
-| Command | Action exercised | Notes |
-|---------|------------------|--------|
-| `ros2 run motion_planning test_mtc_pick_place` | `JengaPickPlace` | Calls `set_jenga_blocks_layout` (blocks below `block_index` in tower, `block_index` and above in stock), then pick+place from layout YAML. Params: `block_index` (default 0), `layout_path`, `set_layout_service`, `layout_service_timeout_sec`, `action_name`, `goal_frame`, `start_with_home_joints`, `end_with_home_joints`, `joint_trajectory_action`, `joint_home_duration_sec`, … |
-| `ros2 run motion_planning test_mtc_extract_side` | `JengaExtractSideBlock` | Params: `action_name`, `goal_frame` |
-| `ros2 run motion_planning test_mtc_extract_middle` | `JengaExtractMiddleBlock` | Params: `action_name`, `goal_frame` |
-| `ros2 run motion_planning test_mtc_extract_middle_protruded` | `JengaExtractMiddleBlock` | Sets tower scene, calls `protrude_jenga_block`, then extracts. Params include `block_index`, `protrude_distance_m`, `protrude_axis`, `layout_path`, `planning_scene_topic`, `extract_axis`, … |
-| `ros2 run motion_planning test_mtc_probe_block` | `JengaProbeBlock` | Calls `set_jenga_blocks_layout` with tower layout (planning scene only), reads `block_{index}` pose from `planning_scene_topic`, sends probe goal. Params: `action_name`, `goal_frame`, `block_index`, `planning_scene_topic`, `scene_timeout_sec`, `tf_timeout_sec` |
-| `ros2 run motion_planning mtc_action_client` | `JengaPickPlace` | Minimal one-shot pick/place with built-in default poses; overlaps with `test_mtc_pick_place` |
+
+| Command                                                      | Action exercised          | Notes                                                                                                                                                                                                                                                                                                                                                                                   |
+| ------------------------------------------------------------ | ------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ros2 run motion_planning test_mtc_pick_place`               | `JengaPickPlace`          | Calls `set_jenga_blocks_layout` (blocks below `block_index` in tower, `block_index` and above in stock), then pick+place from layout YAML. Params: `block_index` (default 0), `layout_path`, `set_layout_service`, `layout_service_timeout_sec`, `action_name`, `goal_frame`, `start_with_home_joints`, `end_with_home_joints`, `joint_trajectory_action`, `joint_home_duration_sec`, … |
+| `ros2 run motion_planning test_mtc_extract_side`             | `JengaExtractSideBlock`   | Params: `action_name`, `goal_frame`                                                                                                                                                                                                                                                                                                                                                     |
+| `ros2 run motion_planning test_mtc_extract_middle`           | `JengaExtractMiddleBlock` | Params: `action_name`, `goal_frame`                                                                                                                                                                                                                                                                                                                                                     |
+| `ros2 run motion_planning test_mtc_extract_middle_protruded` | `JengaExtractMiddleBlock` | Sets tower scene, calls `protrude_jenga_block`, then extracts. Params include `block_index`, `protrude_distance_m`, `protrude_axis`, `layout_path`, `planning_scene_topic`, `extract_axis`, …                                                                                                                                                                                           |
+| `ros2 run motion_planning test_mtc_probe_block`              | `JengaProbeBlock`         | Calls `set_jenga_blocks_layout` with tower layout (planning scene only), reads `block_{index}` pose from `planning_scene_topic`, sends probe goal. Params: `action_name`, `goal_frame`, `block_index`, `planning_scene_topic`, `scene_timeout_sec`, `tf_timeout_sec`                                                                                                                    |
+| `ros2 run motion_planning mtc_action_client`                 | `JengaPickPlace`          | Minimal one-shot pick/place with built-in default poses; overlaps with `test_mtc_pick_place`                                                                                                                                                                                                                                                                                            |
+
 
 Example:
 
@@ -266,10 +282,12 @@ ros2 run motion_planning test_mtc_probe_block --ros-args -p block_index:=10 -p g
 
 ### Sequencers
 
-| Command | Description |
-|---------|-------------|
-| `ros2 run motion_planning jenga_tower_mtc_sequencer` | Sends a sequence of `JengaPickPlace` goals for a six-layer tower (parametric or YAML-driven). Calls `jenga_arm_ready` at start and end. Params: `layout_path`, `action_name`, `ready_action_name`, `goal_frame`, `pre_wait_sec`, `step_pause_sec`, `per_goal_timeout_sec`, `per_ready_timeout_sec`. Default layout: `config/jenga_tower_mtc_layout.yaml`. |
+
+| Command                                                          | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ros2 run motion_planning jenga_tower_mtc_sequencer`             | Sends a sequence of `JengaPickPlace` goals for a six-layer tower (parametric or YAML-driven). Calls `jenga_arm_ready` at start and end. Params: `layout_path`, `action_name`, `ready_action_name`, `goal_frame`, `pre_wait_sec`, `step_pause_sec`, `per_goal_timeout_sec`, `per_ready_timeout_sec`. Default layout: `config/jenga_tower_mtc_layout.yaml`.                                                                                                                                                                                  |
 | `ros2 run motion_planning jenga_extract_middle_to_top_sequencer` | Pipeline: arm ready → extract middle → pick/place to tower top. Params include `block_id` or `block_index`, `goal_frame`, `arm_ready_action_name`, `extract_action_name`, `pick_place_action_name`, `layout_path`, timeouts, `handoff_dx` / `handoff_dy` / `handoff_dz`, tower matching tolerances. Optional manual top placement: `place_top_indices` (int array `[layer, slot]`, default `[-1,-1]` for auto) or `place_top_layer` / `place_top_slot` (both `-1` for auto); slot is `0 … blocks_per_layer-1` like the auto-detector logs. |
+
 
 Example tower build:
 
@@ -328,15 +346,18 @@ from motion_planning.exclusion_zones_loader import apply_exclusion_zones_to_scen
 
 ## RMRC vs MoveIt
 
-| Aspect        | MoveIt (`use_rmrc:=false`)      | RMRC (`use_rmrc:=true`)        |
-|---------------|----------------------------------|---------------------------------|
-| GUI           | RViz + MoveIt                   | Optional; can run headless      |
-| Planning      | OMPL                            | PyKDL Jacobian + potential field |
-| Dependencies  | MoveIt2, move_group              | `ur_description` only           |
-| Use case      | Full planning pipeline          | Fast Cartesian, no MoveIt stack  |
+
+| Aspect       | MoveIt (`use_rmrc:=false`) | RMRC (`use_rmrc:=true`)          |
+| ------------ | -------------------------- | -------------------------------- |
+| GUI          | RViz + MoveIt              | Optional; can run headless       |
+| Planning     | OMPL                       | PyKDL Jacobian + potential field |
+| Dependencies | MoveIt2, move_group        | `ur_description` only            |
+| Use case     | Full planning pipeline     | Fast Cartesian, no MoveIt stack  |
+
 
 ## See also
 
 - [ur3e_controller](../ur3e_controller/README.md) – joint control, sim launch files, move client API
 - [jenga_interfaces](../jenga_interfaces/README.md) – action and service definitions
 - [mtc_jenga_servers](../mtc_jenga_servers/README.md) – MTC action server nodes and standalone launches
+

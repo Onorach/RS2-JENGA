@@ -26,6 +26,7 @@ from moveit_msgs.msg import PlanningScene
 from rclpy.action import ActionClient
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
+from std_msgs.msg import Int8MultiArray
 from tf2_geometry_msgs import do_transform_pose_stamped
 from tf2_ros import Buffer, TransformException, TransformListener
 
@@ -454,53 +455,162 @@ def _resolve_place_top_target(
     return None
 
 
-def main(args: list[str] | None = None) -> int:
-    rclpy.init(args=args)
-    node = Node("jenga_extract_middle_to_top_sequencer")
+@dataclass
+class _SequencerRuntime:
+    node: Node
+    goal_frame: str
+    tf_timeout_sec: float
+    scene_timeout_sec: float
+    per_ready_timeout_sec: float
+    per_extract_timeout_sec: float
+    per_pick_place_timeout_sec: float
+    slot_xy_tol_m: float
+    slot_z_tol_m: float
+    tower_radius_m: float
+    max_extra_layers: int
+    handoff_dx: float
+    handoff_dy: float
+    handoff_dz: float
+    place_top_layer: int
+    place_top_slot: int
+    planning_scene_topic: str
+    fallback_topic: str
+    scene_cache: _PlanningSceneCache
+    fallback_cache: _PlanningSceneCache
+    tf_buffer: Buffer
+    ready_client: ActionClient
+    extract_client: ActionClient
+    pick_place_client: ActionClient
+    tp: _TowerParams
+    max_block_index: int
 
-    block_index = _block_index_from_params(node)
+
+def _max_block_index_from_layout(data: dict[str, Any], *, default: int = 17) -> int:
+    p = data.get("parametric", {})
+    t = p.get("tower", {})
+    blocks_per_layer = int(t.get("blocks_per_layer", 3))
+    layers = int(t.get("layers", 6))
+    if blocks_per_layer > 0 and layers > 0:
+        return max(0, layers * blocks_per_layer - 1)
+    return default
+
+
+def _parse_selected_goal(
+    msg: Int8MultiArray,
+    node: Node,
+    *,
+    blocks_per_layer: int,
+    max_block_index: int,
+) -> tuple[int, list[int]] | None:
+    """Parse flattened [pick_L, pick_P, pick_bi, place_L, place_P, 0]."""
+    if len(msg.data) != 6:
+        node.get_logger().error(
+            f"/selected_goal expects 6 values, got {len(msg.data)}: {list(msg.data)}"
+        )
+        return None
+
+    pick_layer, pick_pos, pick_bi, place_layer, place_pos, reserved = (int(x) for x in msg.data)
+    if reserved != 0:
+        node.get_logger().warn(f"selected_goal reserved field (index 5) is {reserved}, expected 0")
+
+    if pick_bi < 0 or pick_bi > max_block_index:
+        node.get_logger().error(
+            f"pick block_index {pick_bi} out of range [0, {max_block_index}]"
+        )
+        return None
+    if pick_layer < 0 or place_layer < 0:
+        node.get_logger().error(
+            f"layer must be >= 0 (pick_layer={pick_layer}, place_layer={place_layer})"
+        )
+        return None
+    if pick_pos < 0 or pick_pos >= blocks_per_layer:
+        node.get_logger().error(
+            f"pick_layer_position {pick_pos} out of range [0, {blocks_per_layer - 1}]"
+        )
+        return None
+    if place_pos < 0 or place_pos >= blocks_per_layer:
+        node.get_logger().error(
+            f"place_layer_position {place_pos} out of range [0, {blocks_per_layer - 1}]"
+        )
+        return None
+
+    expected = pick_layer * blocks_per_layer + pick_pos
+    if pick_bi != expected:
+        node.get_logger().warn(
+            f"pick block_index {pick_bi} != layer*blocks_per_layer+slot ({expected}) "
+            f"for layer={pick_layer} position={pick_pos}; using block_index from message"
+        )
+
+    node.get_logger().info(
+        f"selected_goal: extract block_index{pick_bi:02d} (layer={pick_layer} pos={pick_pos}), "
+        f"place at layer={place_layer} pos={place_pos}"
+    )
+    return pick_bi, [place_layer, place_pos]
+
+
+def _build_runtime(node: Node) -> tuple[_SequencerRuntime | None, int]:
+    """Declare parameters, connect action servers, load layout. Returns (runtime, exit_code)."""
     goal_frame = str(node.declare_parameter("goal_frame", "base_link").value)
     tf_timeout_sec = float(node.declare_parameter("tf_timeout_sec", 0.5).value)
 
     arm_ready_action_name = str(node.declare_parameter("arm_ready_action_name", "jenga_arm_ready").value)
-    extract_action_name = str(node.declare_parameter("extract_action_name", "jenga_extract_middle_block").value)
-    pick_place_action_name = str(node.declare_parameter("pick_place_action_name", "jenga_pick_place").value)
+    extract_action_name = str(
+        node.declare_parameter("extract_action_name", "jenga_extract_middle_block").value
+    )
+    pick_place_action_name = str(
+        node.declare_parameter("pick_place_action_name", "jenga_pick_place").value
+    )
 
     planning_scene_topic = str(
         node.declare_parameter("planning_scene_topic", "/monitored_planning_scene").value
     )
     scene_timeout_sec = float(node.declare_parameter("scene_timeout_sec", 2.0).value)
-
     layout_path_param = str(node.declare_parameter("layout_path", "").value)
 
     per_ready_timeout_sec = float(node.declare_parameter("per_ready_timeout_sec", 600.0).value)
     per_extract_timeout_sec = float(node.declare_parameter("per_extract_timeout_sec", 900.0).value)
-    per_pick_place_timeout_sec = float(node.declare_parameter("per_pick_place_timeout_sec", 900.0).value)
+    per_pick_place_timeout_sec = float(
+        node.declare_parameter("per_pick_place_timeout_sec", 900.0).value
+    )
 
     slot_xy_tol_m = float(node.declare_parameter("slot_xy_tol_m", 0.015).value)
     slot_z_tol_m = float(node.declare_parameter("slot_z_tol_m", 0.012).value)
     tower_radius_m = float(node.declare_parameter("tower_radius_m", 0.25).value)
     max_extra_layers = int(node.declare_parameter("max_extra_layers", 6).value)
 
-    place_top_indices_raw = node.declare_parameter("place_top_indices", [-1, -1]).value
-    place_top_indices = [int(x) for x in (place_top_indices_raw or [])]
     place_top_layer = int(node.declare_parameter("place_top_layer", -1).value)
     place_top_slot = int(node.declare_parameter("place_top_slot", -1).value)
 
-    # Handoff pose relative to tower base (defaults copied from extract-middle protruded test).
     handoff_dx = float(node.declare_parameter("handoff_dx", -0.15).value)
     handoff_dy = float(node.declare_parameter("handoff_dy", -0.08).value)
     handoff_dz = float(node.declare_parameter("handoff_dz", 0.0).value)
 
+    max_block_index_param = int(node.declare_parameter("max_block_index", -1).value)
+
+    try:
+        layout_path = _resolve_layout_path(node, layout_path_param)
+        layout = _load_yaml(layout_path)
+        tp = _tower_params_from_layout(layout, frame_id=goal_frame)
+        max_block_index = (
+            max_block_index_param
+            if max_block_index_param >= 0
+            else _max_block_index_from_layout(layout)
+        )
+    except Exception as exc:
+        node.get_logger().error(f"Failed to load/parse layout YAML: {exc}")
+        return None, 17
+
+    fallback_topic = (
+        "/planning_scene"
+        if planning_scene_topic == "/monitored_planning_scene"
+        else "/monitored_planning_scene"
+    )
     scene_cache = _PlanningSceneCache(node, topic=planning_scene_topic)
-    fallback_topic = "/planning_scene" if planning_scene_topic == "/monitored_planning_scene" else "/monitored_planning_scene"
     fallback_cache = _PlanningSceneCache(node, topic=fallback_topic)
-    block_id = f"block_{int(block_index):02d}"
 
     tf_buffer = Buffer()
-    tf_listener = TransformListener(tf_buffer, node, spin_thread=False)
+    TransformListener(tf_buffer, node, spin_thread=False)
 
-    # Action clients
     ready_client = ActionClient(node, JengaArmReady, arm_ready_action_name)
     extract_client = ActionClient(node, JengaExtractMiddleBlock, extract_action_name)
     pick_place_client = ActionClient(node, JengaPickPlace, pick_place_action_name)
@@ -512,24 +622,68 @@ def main(args: list[str] | None = None) -> int:
     ]:
         if not c.wait_for_server(timeout_sec=120.0):
             node.get_logger().error(f"Action server not available: {name}")
-            rclpy.shutdown()
-            return 2
+            return None, 2
 
-    rc = _run_arm_ready_action(node, ready_client, timeout_sec=per_ready_timeout_sec, label="Sequence start")
+    runtime = _SequencerRuntime(
+        node=node,
+        goal_frame=goal_frame,
+        tf_timeout_sec=tf_timeout_sec,
+        scene_timeout_sec=scene_timeout_sec,
+        per_ready_timeout_sec=per_ready_timeout_sec,
+        per_extract_timeout_sec=per_extract_timeout_sec,
+        per_pick_place_timeout_sec=per_pick_place_timeout_sec,
+        slot_xy_tol_m=slot_xy_tol_m,
+        slot_z_tol_m=slot_z_tol_m,
+        tower_radius_m=tower_radius_m,
+        max_extra_layers=max_extra_layers,
+        handoff_dx=handoff_dx,
+        handoff_dy=handoff_dy,
+        handoff_dz=handoff_dz,
+        place_top_layer=place_top_layer,
+        place_top_slot=place_top_slot,
+        planning_scene_topic=planning_scene_topic,
+        fallback_topic=fallback_topic,
+        scene_cache=scene_cache,
+        fallback_cache=fallback_cache,
+        tf_buffer=tf_buffer,
+        ready_client=ready_client,
+        extract_client=extract_client,
+        pick_place_client=pick_place_client,
+        tp=tp,
+        max_block_index=max_block_index,
+    )
+    return runtime, 0
+
+
+def _run_sequence(
+    rt: _SequencerRuntime,
+    *,
+    block_index: int,
+    place_top_indices: Sequence[int],
+) -> int:
+    """Execute arm-ready -> extract-middle -> pick+place -> arm-ready."""
+    node = rt.node
+    block_id = f"block_{int(block_index):02d}"
+
+    rc = _run_arm_ready_action(
+        node, rt.ready_client, timeout_sec=rt.per_ready_timeout_sec, label="Sequence start"
+    )
     if rc != 0:
-        rclpy.shutdown()
         return rc
 
-    block_pose = scene_cache.wait_for_object_pose(block_id, timeout_sec=scene_timeout_sec)
+    block_pose = rt.scene_cache.wait_for_object_pose(block_id, timeout_sec=rt.scene_timeout_sec)
     if block_pose is None:
         node.get_logger().warn(
-            f"Did not observe {block_id} on {planning_scene_topic}; trying fallback topic {fallback_topic}..."
+            f"Did not observe {block_id} on {rt.planning_scene_topic}; "
+            f"trying fallback topic {rt.fallback_topic}..."
         )
-        block_pose = fallback_cache.wait_for_object_pose(block_id, timeout_sec=scene_timeout_sec)
+        block_pose = rt.fallback_cache.wait_for_object_pose(
+            block_id, timeout_sec=rt.scene_timeout_sec
+        )
     if block_pose is None:
         snap = {}
-        snap.update(fallback_cache.snapshot())
-        snap.update(scene_cache.snapshot())
+        snap.update(rt.fallback_cache.snapshot())
+        snap.update(rt.scene_cache.snapshot())
         known = sorted(snap.keys())
         hint = (
             "Tip: verify which topic carries PlanningScene in your setup; common values are "
@@ -537,117 +691,100 @@ def main(args: list[str] | None = None) -> int:
             "`--ros-args -p planning_scene_topic:=...`."
         )
         node.get_logger().error(
-            f"Failed to read pose for {block_id} from {planning_scene_topic} "
-            f"(timeout {scene_timeout_sec:.2f}s). "
+            f"Failed to read pose for {block_id} from {rt.planning_scene_topic} "
+            f"(timeout {rt.scene_timeout_sec:.2f}s). "
             f"Observed {len(known)} object id(s): {known[:10]}{'...' if len(known) > 10 else ''}. "
             f"{hint}"
         )
-        rclpy.shutdown()
         return 16
 
     block_pose.header.frame_id = _normalize_frame_id(block_pose.header.frame_id)
     block_pose = _tf_transform_pose(
         node,
-        tf_buffer,
+        rt.tf_buffer,
         block_pose,
-        target_frame=goal_frame,
-        timeout_sec=tf_timeout_sec,
+        target_frame=rt.goal_frame,
+        timeout_sec=rt.tf_timeout_sec,
     )
-
-    # Load layout and compute top-slot target.
-    try:
-        layout_path = _resolve_layout_path(node, layout_path_param)
-        layout = _load_yaml(layout_path)
-        tp = _tower_params_from_layout(layout, frame_id=goal_frame)
-    except Exception as exc:
-        node.get_logger().error(f"Failed to load/parse layout YAML: {exc}")
-        rclpy.shutdown()
-        return 17
 
     resolved = _resolve_place_top_target(
         node,
-        tp,
+        rt.tp,
         place_top_indices=place_top_indices,
-        place_top_layer=place_top_layer,
-        place_top_slot=place_top_slot,
+        place_top_layer=rt.place_top_layer,
+        place_top_slot=rt.place_top_slot,
     )
     if resolved is None:
-        rclpy.shutdown()
         return 18
 
     layer, slot, place_manual = resolved
     if place_manual:
-        top_pose = _expected_slot_pose(tp, layer=layer, slot=slot)
+        top_pose = _expected_slot_pose(rt.tp, layer=layer, slot=slot)
         node.get_logger().info(f"Top slot manual: layer={layer} slot={slot}")
     else:
         snap = {}
-        snap.update(fallback_cache.snapshot())
-        snap.update(scene_cache.snapshot())
+        snap.update(rt.fallback_cache.snapshot())
+        snap.update(rt.scene_cache.snapshot())
         layer, slot, top_pose = _detect_next_free_top_slot(
             node=node,
-            tp=tp,
+            tp=rt.tp,
             scene_poses=snap,
-            slot_xy_tol_m=slot_xy_tol_m,
-            slot_z_tol_m=slot_z_tol_m,
-            tower_radius_m=tower_radius_m,
-            max_extra_layers=max_extra_layers,
+            slot_xy_tol_m=rt.slot_xy_tol_m,
+            slot_z_tol_m=rt.slot_z_tol_m,
+            tower_radius_m=rt.tower_radius_m,
+            max_extra_layers=rt.max_extra_layers,
         )
         node.get_logger().info(f"Top slot selection: layer={layer} slot={slot}")
 
-    # Build handoff pose (extract places here).
     handoff_pose = PoseStamped()
-    handoff_pose.header.frame_id = goal_frame
+    handoff_pose.header.frame_id = rt.goal_frame
     handoff_pose.pose = Pose(
         position=Point(
-            x=float(tp.base_x) + handoff_dx,
-            y=float(tp.base_y) + handoff_dy,
-            z=float(tp.base_z) + handoff_dz,
+            x=float(rt.tp.base_x) + rt.handoff_dx,
+            y=float(rt.tp.base_y) + rt.handoff_dy,
+            z=float(rt.tp.base_z) + rt.handoff_dz,
         ),
         orientation=Quaternion(
-            x=float(tp.q_place_base[0]),
-            y=float(tp.q_place_base[1]),
-            z=float(tp.q_place_base[2]),
-            w=float(tp.q_place_base[3]),
+            x=float(rt.tp.q_place_base[0]),
+            y=float(rt.tp.q_place_base[1]),
+            z=float(rt.tp.q_place_base[2]),
+            w=float(rt.tp.q_place_base[3]),
         ),
     )
 
-    # Fresh stamps right before sending each goal.
     t = node.get_clock().now().to_msg()
     block_pose.header.stamp = t
     handoff_pose.header.stamp = t
 
-    # 1) Extract to handoff.
     extract_goal = JengaExtractMiddleBlock.Goal()
     extract_goal.block_index = int(block_index)
     extract_goal.block_pose = block_pose
     extract_goal.place_pose = handoff_pose
-    node.get_logger().info(f"Extract-middle: {block_id} -> handoff (dx={handoff_dx:.3f},dy={handoff_dy:.3f})")
-    send_f = extract_client.send_goal_async(extract_goal, feedback_callback=_fb_log(node))
+    node.get_logger().info(
+        f"Extract-middle: {block_id} -> handoff (dx={rt.handoff_dx:.3f},dy={rt.handoff_dy:.3f})"
+    )
+    send_f = rt.extract_client.send_goal_async(extract_goal, feedback_callback=_fb_log(node))
     rclpy.spin_until_future_complete(node, send_f, timeout_sec=30.0)
     gh = send_f.result()
     if not gh or not gh.accepted:
         node.get_logger().error("Extract-middle goal rejected")
-        rclpy.shutdown()
         return 3
     r_f = gh.get_result_async()
-    rclpy.spin_until_future_complete(node, r_f, timeout_sec=per_extract_timeout_sec)
+    rclpy.spin_until_future_complete(node, r_f, timeout_sec=rt.per_extract_timeout_sec)
     wr = r_f.result()
     if wr is None or not wr.result.success:
         msg = getattr(getattr(wr, "result", None), "message", "<no result>")
         code = getattr(getattr(wr, "result", None), "error_code", -1)
         node.get_logger().error(f"Extract-middle failed: {msg} (code {code})")
-        rclpy.shutdown()
         return 5
 
-    # 2) Pick pose: prefer planning-scene readback post-extract.
-    pick_pose = scene_cache.wait_for_object_pose(block_id, timeout_sec=scene_timeout_sec)
+    pick_pose = rt.scene_cache.wait_for_object_pose(block_id, timeout_sec=rt.scene_timeout_sec)
     if pick_pose is None:
         node.get_logger().warn("Pick pose readback timed out; falling back to configured handoff pose")
         pick_pose = handoff_pose
 
-    # 3) Pick+place to top slot.
     place_pose = PoseStamped()
-    place_pose.header.frame_id = goal_frame
+    place_pose.header.frame_id = rt.goal_frame
     place_pose.pose = top_pose
     t = node.get_clock().now().to_msg()
     pick_pose.header.stamp = t
@@ -658,31 +795,101 @@ def main(args: list[str] | None = None) -> int:
     pp_goal.pick_pose = pick_pose
     pp_goal.place_pose = place_pose
     node.get_logger().info(f"Pick+place: handoff -> top (layer={layer} slot={slot})")
-    send_f = pick_place_client.send_goal_async(pp_goal, feedback_callback=_fb_log(node))
+    send_f = rt.pick_place_client.send_goal_async(pp_goal, feedback_callback=_fb_log(node))
     rclpy.spin_until_future_complete(node, send_f, timeout_sec=30.0)
     gh = send_f.result()
     if not gh or not gh.accepted:
         node.get_logger().error("Pick+place goal rejected")
-        rclpy.shutdown()
         return 3
     r_f = gh.get_result_async()
-    rclpy.spin_until_future_complete(node, r_f, timeout_sec=per_pick_place_timeout_sec)
+    rclpy.spin_until_future_complete(node, r_f, timeout_sec=rt.per_pick_place_timeout_sec)
     wr = r_f.result()
     if wr is None or not wr.result.success:
         msg = getattr(getattr(wr, "result", None), "message", "<no result>")
         code = getattr(getattr(wr, "result", None), "error_code", -1)
         node.get_logger().error(f"Pick+place failed: {msg} (code {code})")
-        rclpy.shutdown()
         return 5
 
-    rc = _run_arm_ready_action(node, ready_client, timeout_sec=per_ready_timeout_sec, label="Sequence end")
+    rc = _run_arm_ready_action(
+        node, rt.ready_client, timeout_sec=rt.per_ready_timeout_sec, label="Sequence end"
+    )
     if rc != 0:
-        rclpy.shutdown()
         return rc
 
     node.get_logger().info("Sequence complete.")
-    rclpy.shutdown()
     return 0
+
+
+def main(args: list[str] | None = None) -> int:
+    rclpy.init(args=args)
+    node = Node("jenga_extract_middle_to_top_sequencer")
+
+    listen_selected_goal = bool(node.declare_parameter("listen_selected_goal", False).value)
+    selected_goal_topic = str(node.declare_parameter("selected_goal_topic", "/selected_goal").value)
+
+    rt, setup_rc = _build_runtime(node)
+    if rt is None:
+        rclpy.shutdown()
+        return setup_rc
+
+    if listen_selected_goal:
+        pending_goal: list[tuple[int, list[int]] | None] = [None]
+        busy = [False]
+
+        def _on_selected_goal(msg: Int8MultiArray) -> None:
+            if busy[0]:
+                node.get_logger().warn(
+                    "Ignoring /selected_goal: sequence already running"
+                )
+                return
+            parsed = _parse_selected_goal(
+                msg,
+                node,
+                blocks_per_layer=rt.tp.blocks_per_layer,
+                max_block_index=rt.max_block_index,
+            )
+            if parsed is not None:
+                pending_goal[0] = parsed
+
+        node.create_subscription(Int8MultiArray, selected_goal_topic, _on_selected_goal, 10)
+        node.get_logger().info(
+            f"Listening on {selected_goal_topic} for selected_goal (6-value Int8MultiArray)"
+        )
+
+        exit_code = 0
+        try:
+            while rclpy.ok():
+                rclpy.spin_once(node, timeout_sec=0.1)
+                if pending_goal[0] is None:
+                    continue
+                goal = pending_goal[0]
+                pending_goal[0] = None
+                busy[0] = True
+                block_index, place_top_indices = goal
+                rc = _run_sequence(
+                    rt,
+                    block_index=block_index,
+                    place_top_indices=place_top_indices,
+                )
+                if rc != 0:
+                    exit_code = rc
+                busy[0] = False
+        except KeyboardInterrupt:
+            pass
+        rclpy.shutdown()
+        return exit_code
+
+    block_index = _block_index_from_params(node)
+    place_top_indices_raw = node.declare_parameter("place_top_indices", [-1, -1]).value
+    place_top_indices = [int(x) for x in (place_top_indices_raw or [])]
+
+    rc = _run_sequence(
+        rt,
+        block_index=block_index,
+        place_top_indices=place_top_indices,
+    )
+    rclpy.shutdown()
+    return rc
 
 
 if __name__ == "__main__":
