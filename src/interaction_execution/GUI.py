@@ -5,7 +5,6 @@ import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 from std_msgs.msg import String, Int8MultiArray, MultiArrayDimension, MultiArrayLayout
-from std_msgs.msg import String, Int8MultiArray, MultiArrayDimension, MultiArrayLayout
 from std_srvs.srv import SetBool
 from cv_bridge import CvBridge
 import tkinter as tk
@@ -128,7 +127,6 @@ class RealSenseCameraNode(Node):
         # Publishers
         self.override_pub = self.create_publisher(Int8MultiArray, '/ee_override_array', 10)
         self.goal_pub = self.create_publisher(Int8MultiArray, '/selected_goal', 10)
-        self.goal_pub = self.create_publisher(Int8MultiArray, '/selected_goal', 10)
         
         # Services
         self.estop_client = self.create_client(SetBool, '/estop')
@@ -163,7 +161,7 @@ class RealSenseCameraNode(Node):
     def publish_goal_sequence(self, pick_layer, pick_pos, pick_block_id, place_layer, place_pos):
         # 2x3 matrix layout:
         # [ pick_layer,  pick_pos,  pick_block_id ]
-        # [ place_layer, place_pos, 0             ]
+        # [ place_layer, place_pos, 0             ]  (place slot is empty, no block ID)
         flat_data = [pick_layer, pick_pos, pick_block_id, place_layer, place_pos, 0]
 
         if flat_data != self._last_goal_state:
@@ -205,14 +203,6 @@ class JengaInterfaceApp:
         self.current_state = "WAITING_PICK"  
         self.selected_pick_coords = None
         self.selected_pick_block_id = 0
-        self.selected_pick_colour = "unknown"
-
-        # FIX: transit_blocks is a dict keyed by position index (0, 1, 2).
-        # This allows multiple blocks to be tracked on L6 simultaneously,
-        # replacing the old single-entry self.transit_block which was overwritten
-        # on every new placement.
-        self.transit_blocks = {}  # pos_idx -> {"id": str, "colour": str, "lifted": bool}
-
         self.is_estop_active = False
 
         self.setup_ui()
@@ -289,7 +279,7 @@ class JengaInterfaceApp:
             self.override_buttons[index] = btn
 
         # Section B: Physical Tower Intermediary Layout Grid
-        tk.Label(ctrl_container, text="Jenga Matrix Grid (0-2)", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=(15, 2))
+        tk.Label(ctrl_container, text="Jenga Matrix Grid", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=(15, 2))
         grid_wrapper = tk.Frame(ctrl_container, bg=COLOUR_DARK_GRAY)
         grid_wrapper.pack(pady=5)
 
@@ -345,7 +335,6 @@ class JengaInterfaceApp:
             if block is not None:
                 self.selected_pick_coords = (layer, position)
                 self.selected_pick_block_id = int(block["id"])
-                self.selected_pick_colour = block["colour"]
                 self.current_state = "WAITING_PLACE"
                 # FIX 2: Remove the transit entry for the slot being picked from
                 # so L6 correctly shows it as empty during transit.
@@ -371,10 +360,6 @@ class JengaInterfaceApp:
                     }
                 self.selected_pick_coords = (layer, position)
                 self.selected_pick_block_id = int(block["id"])
-                self.selected_pick_colour = block["colour"]
-                # Remove new pick's transit entry if it's on L6
-                if layer == 6 and position in self.transit_blocks:
-                    del self.transit_blocks[position]
                 self.goal_status_label.config(
                     text=f"Pick updated: L{layer} P{position}.\nStep 2: Choose empty slot on Layer {target_place_layer}.",
                     fg=COLOUR_WHITE
@@ -389,21 +374,12 @@ class JengaInterfaceApp:
                 return
 
             pick_l, pick_p = self.selected_pick_coords
+            
             self.ros_node.publish_goal_sequence(pick_l, pick_p, self.selected_pick_block_id, layer, position)
-
-            # FIX 3: Register the in-transit block at its destination position in
-            # transit_blocks. Using a dict keyed by position means multiple L6
-            # blocks are each tracked independently and never overwrite each other.
-            self.transit_blocks[position] = {
-                "id": str(self.selected_pick_block_id),
-                "colour": self.selected_pick_colour,
-                "lifted": False  # becomes True once block_states stops reporting this block
-            }
-
+            
             self.current_state = "WAITING_PICK"
             self.selected_pick_coords = None
             self.selected_pick_block_id = 0
-            self.selected_pick_colour = "unknown"
             self.goal_status_label.config(text="Execution target sent. Step 1: Select next block to Pick Up.", fg=COLOUR_YELLOW)
 
     def handle_estop_toggle(self):
