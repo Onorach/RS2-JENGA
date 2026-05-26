@@ -65,6 +65,11 @@ from probe_response import (
     block_id_for_pick_slot,
     parse_selected_goal_pick,
 )
+from probe_response import (
+    ProbeResponseMonitor,
+    block_id_for_pick_slot,
+    parse_selected_goal_pick,
+)
 from block_identity_tracker import BlockIdentityTracker
 
 import rclpy
@@ -114,8 +119,7 @@ _POST_LOCK_WINDOWS = (
 def _destroy_windows(names: tuple[str, ...]) -> None:
     for name in names:
         try:
-            if cv2.getWindowProperty(name, cv2.WND_PROP_AUTOSIZE) >= 0:
-                cv2.destroyWindow(name)
+            cv2.destroyWindow(name)
         except cv2.error:
             pass
     cv2.waitKey(1)
@@ -240,24 +244,10 @@ def _run_loop(
                             continue
                         cx = int(round(float(mx)))
                         cy = int(round(float(my)))
-                        split_x = block.get("depth_split_x_px")
-                        if split_x is not None:
-                            sx = int(round(float(split_x)))
-                            if 0 <= sx < live_disp.shape[1]:
-                                y0 = max(0, cy - 18)
-                                y1 = min(live_disp.shape[0] - 1, cy + 18)
-                                cv2.line(
-                                    live_disp,
-                                    (sx, y0),
-                                    (sx, y1),
-                                    (255, 255, 255),
-                                    1,
-                                    cv2.LINE_AA,
-                                )
                         if 0 <= cx < live_disp.shape[1] and 0 <= cy < live_disp.shape[0]:
                             cv2.circle(live_disp, (cx, cy), 5, (255, 255, 255), -1)
                             cv2.circle(live_disp, (cx, cy), 2, (0, 0, 0), -1)
-                if grid_frame_n >= max(1, int(GRID_LOCK_EDGE_ACCUMULATION_FRAMES)):
+                if grid_frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES)):
                     for px, py in live_valid_points_crop:
                         if 0 <= px < live_disp.shape[1] and 0 <= py < live_disp.shape[0]:
                             cv2.circle(live_disp, (int(px), int(py)), 2, (0, 0, 255), -1)
@@ -298,7 +288,7 @@ def _run_loop(
 
             # Use accumulated points from frame 0 up to lock time.
             points_for_lock = cluster_points(accumulated_grid_points)
-            if grid_frame_n >= max(1, int(GRID_LOCK_EDGE_ACCUMULATION_FRAMES)):
+            if grid_frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES)):
                 live_valid_points_crop = [
                     (int(ix + roi_x), int(iy + roi_y)) for ix, iy in points_for_lock
                 ]
@@ -309,7 +299,7 @@ def _run_loop(
         # --- Grid lock ---
         if (
             grid_detection_started
-            and grid_frame_n >= max(1, int(GRID_LOCK_EDGE_ACCUMULATION_FRAMES))
+            and grid_frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES))
             and BLOCK_ANALYSIS
             and not points_locked
             and accumulated_grid_points
@@ -494,15 +484,6 @@ def _run_loop(
                     bgr_frame=bgr,
                     depth_frame=depth_mm,
                     row_cells=row_cells,
-                )
-            if _last_tower_state:
-                monitor_min_layer = probe_monitor.active_session_min_layer()
-                annotate_depth_split_lines_for_tower(
-                    bgr,
-                    depth_mm if monitor_min_layer is not None else None,
-                    row_cells,
-                    _last_tower_state,
-                    min_layer=monitor_min_layer,
                 )
             if (
                 not probe_active

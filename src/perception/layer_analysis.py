@@ -91,17 +91,6 @@ def _blocks_from_endon(
     One centroid per colour across the full end-on layer side (all pixels of
     that colour in the cell). Assign each colour to a front/mid/back lane by
     its mean x, then reorder lanes for tower orientation.
-
-    known_colours
-    -------------
-    When provided (a list of three colour names in slot_idx order, i.e.
-    [front, mid, back]), the x-lane assignment is SKIPPED.  Instead each
-    slot is filled directly from the canonical colour.  This prevents identity
-    flips when a pushed block's colour coverage temporarily drops below the
-    detection threshold — we know which colour belongs in each slot.
-
-    A half-height percentage threshold is used so blocks with reduced coverage
-    (pushed far in depth) are still marked as present.
     """
     if known_colours is not None and any(c is not None for c in known_colours):
         LOW_PCT = BLOCK_PRESENT_MIN_PCT / 2.0
