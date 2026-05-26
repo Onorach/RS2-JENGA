@@ -74,6 +74,35 @@ def _lane_strip_masks(shape: tuple[int, int], cell: dict) -> list[np.ndarray]:
     return masks
 
 
+def endon_outside_edge_x(cell: dict, orientation: str) -> float:
+    """Image x of the tower's outside face edge on the end-on cell quad."""
+    corners = cell["corners"]
+    if orientation == "left":
+        return float(min(corners[0][0], corners[2][0]))
+    return float(max(corners[1][0], corners[3][0]))
+
+
+def _lane_strip_masks(shape: tuple[int, int], cell: dict) -> list[np.ndarray]:
+    """Three boolean masks (front/mid/back lanes, left-to-right in image space)."""
+    ih, iw = shape
+    corners = cell["corners"]
+    tl, tr, bl, br = corners
+    x_left = (tl[0] + bl[0]) / 2.0
+    x_right = (tr[0] + br[0]) / 2.0
+    lane_w = (x_right - x_left) / 3.0
+    quad = _quad_mask(shape, corners)
+    x_grid = np.broadcast_to(np.arange(iw, dtype=np.float32), (ih, iw))
+    masks: list[np.ndarray] = []
+    for lane in range(3):
+        x0 = x_left + lane * lane_w
+        x1 = x_left + (lane + 1) * lane_w
+        if lane < 2:
+            masks.append(quad & (x_grid >= x0) & (x_grid < x1))
+        else:
+            masks.append(quad & (x_grid >= x0) & (x_grid <= x1))
+    return masks
+
+
 # ---------------------------------------------------------------------------
 # Per-cell colour percentages
 # ---------------------------------------------------------------------------
@@ -209,31 +238,6 @@ def _colour_mean_xy_in_region(
     return out
 
 
-def _depth_split_x_from_closest_pixels(
-    depth_frame: np.ndarray,
-    mask: np.ndarray,
-) -> float | None:
-    """
-    Estimate split x for a colour blob using the closest (smallest) depth.
-    """
-    ys, xs = np.where(mask)
-    if len(xs) == 0:
-        return None
-
-    depths = depth_frame[ys, xs].astype(np.float32)
-    valid = (depths > 0) & np.isfinite(depths)
-    if not np.any(valid):
-        return None
-
-    xs_valid = xs[valid]
-    depths_valid = depths[valid]
-    min_depth = float(np.min(depths_valid))
-    near = depths_valid <= min_depth
-    if not np.any(near):
-        return None
-    return float(np.mean(xs_valid[near]))
-
-
 def colour_mean_xy_in_cell(
     bgr_frame: np.ndarray,
     cell: dict,
@@ -255,6 +259,7 @@ def colour_mean_xy_in_cell(
     hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
     quad = _quad_mask((ih, iw), cell["corners"])
     if int(quad.sum()) == 0:
+    if int(quad.sum()) == 0:
         return {}
 
     if depth_frame is not None and target_depth_mm is not None:
@@ -267,59 +272,37 @@ def colour_mean_xy_in_cell(
     else:
         depth_gate = None
 
-    if (
-        not use_outside_of_split
-        or orientation not in ("left", "right")
-        or depth_frame is None
-    ):
-        if use_outside_of_split and require_split_for_output:
-            return {}
-        return _colour_mean_xy_in_region(hsv, quad, depth_gate)
+    return _colour_mean_xy_in_region(hsv, quad, depth_gate)
 
-    total = int(quad.sum())
-    out: dict[str, tuple[float, float]] = {}
-    use_median = str(robust_stat).strip().lower() == "median"
-    x_grid = np.broadcast_to(np.arange(iw, dtype=np.float32), (ih, iw))
 
-    for colour in HSV_RANGES:
-        colour_mask = quad & classify_hsv(hsv, colour)
-        n_colour = int(colour_mask.sum())
-        if n_colour < MIN_COLOUR_PIXELS:
-            continue
-        if n_colour / total * 100.0 < MIN_COLOUR_PCT:
-            continue
+def colour_mean_xy_per_lane_in_cell(
+    bgr_frame: np.ndarray,
+    cell: dict,
+    depth_frame: np.ndarray | None = None,
+    target_depth_mm: float | None = None,
+    depth_tolerance_mm: float = 40.0,
+) -> list[dict[str, tuple[float, float]]]:
+    """
+    Per-lane colour blob centroids: mean (x, y) of all pixels of each colour
+    inside each front/mid/back lane strip of the end-on cell.
+    """
+    ih, iw = bgr_frame.shape[:2]
+    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
+    lane_masks = _lane_strip_masks((ih, iw), cell)
+    if not any(int(m.sum()) > 0 for m in lane_masks):
+        return [{}, {}, {}]
 
-        active_mask = colour_mask
-        if depth_gate is not None:
-            gated = colour_mask & depth_gate
-            if int(gated.sum()) >= MIN_COLOUR_PIXELS:
-                active_mask = gated
+    if depth_frame is not None and target_depth_mm is not None:
+        df = depth_frame.astype(np.float32)
+        depth_gate: np.ndarray | None = (
+            (df > 0)
+            & np.isfinite(df)
+            & (np.abs(df - target_depth_mm) <= depth_tolerance_mm)
+        )
+    else:
+        depth_gate = None
 
-        split_x = _depth_split_x_from_closest_pixels(depth_frame, active_mask)
-        if split_x is not None:
-            if orientation == "left":
-                outside_mask = active_mask & (x_grid <= float(split_x))
-            else:
-                outside_mask = active_mask & (x_grid >= float(split_x))
-            ys, xs = np.where(outside_mask)
-            if len(xs) >= max(10, MIN_COLOUR_PIXELS // 5):
-                if use_median:
-                    out[colour] = (float(np.median(xs)), float(np.median(ys)))
-                else:
-                    out[colour] = (float(np.mean(xs)), float(np.mean(ys)))
-                continue
-        if require_split_for_output:
-            continue
-
-        ys, xs = np.where(active_mask)
-        if len(xs) == 0:
-            continue
-        if use_median:
-            out[colour] = (float(np.median(xs)), float(np.median(ys)))
-        else:
-            out[colour] = (float(np.mean(xs)), float(np.mean(ys)))
-
-    return out
+    return [_colour_mean_xy_in_region(hsv, lane_mask, depth_gate) for lane_mask in lane_masks]
 
 
 def colour_depth_split_x_in_cell(
