@@ -52,7 +52,11 @@ from perception_config import (
     SEARCH_AREA_MARGIN,
     BLOCK_POSE_WORLD_FRAME,
 )
-from probe_response import ProbeResponseMonitor
+from probe_response import (
+    ProbeResponseMonitor,
+    block_id_for_pick_slot,
+    parse_selected_goal_pick,
+)
 from block_identity_tracker import BlockIdentityTracker
 
 import rclpy
@@ -84,22 +88,50 @@ EDGE_HISTORY_FRAMES         = 30
 POINTS_OVERLAY_PAUSE_FRAMES = 60
 GRID_POINTS_MAX_INPUT_LINES = 500
 
+_GRID_DETECTION_WINDOWS = (
+    "Colour mask",
+    "Canny (colour mask)",
+    "Canny (original)",
+    "Edges",
+)
+
+_POST_LOCK_WINDOWS = (
+    "Box percentages",
+    "Layer Analysis",
+)
+
 # ---------------------------------------------------------------------------
 # Main display loop
 # ---------------------------------------------------------------------------
 
-def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> None:
+def _destroy_windows(names: tuple[str, ...]) -> None:
+    for name in names:
+        try:
+            cv2.destroyWindow(name)
+        except cv2.error:
+            pass
+    cv2.waitKey(1)
+
+
+def _open_grid_detection_windows() -> None:
+    for name in _GRID_DETECTION_WINDOWS:
+        cv2.namedWindow(name, cv2.WINDOW_NORMAL)
+
+
+def _run_loop(
+    get_frame_pair,
+    on_points_locked=None,
+    publish_top_layer=None,
+    probe_monitor: ProbeResponseMonitor | None = None,
+    probe_bridge: "_ImageBridge | None" = None,
+) -> None:
     if BLOCK_ANALYSIS:
-        cv2.namedWindow("Live + grid",         cv2.WINDOW_NORMAL)
-        cv2.namedWindow("Colour mask",         cv2.WINDOW_NORMAL)
-        cv2.namedWindow("Canny (colour mask)", cv2.WINDOW_NORMAL)
-        cv2.namedWindow("Canny (original)",    cv2.WINDOW_NORMAL)
-        cv2.namedWindow("Edges",               cv2.WINDOW_NORMAL)
-        cv2.namedWindow("Box percentages",     cv2.WINDOW_NORMAL)
-        cv2.namedWindow("Layer Analysis",      cv2.WINDOW_NORMAL)
+        cv2.namedWindow("Live + grid", cv2.WINDOW_NORMAL)
     if TOWER_ANALYSIS:
         cv2.namedWindow("Tower finder", cv2.WINDOW_NORMAL)
 
+    grid_detection_started = False
+    grid_frame_n           = 0
     frame_n          = 0
     roi_margin       = SEARCH_AREA_MARGIN
     grey_line_history: deque[list[tuple]] = deque(maxlen=EDGE_HISTORY_FRAMES)
@@ -113,7 +145,8 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
     _selected_probe_block_id: int | None = None
     identity_tracker = BlockIdentityTracker()
     _last_tower_finder_print: float = 0.0
-    probe_monitor = ProbeResponseMonitor()
+    if probe_monitor is None:
+        probe_monitor = ProbeResponseMonitor()
     _cached_pts:   np.ndarray | None = None
     _hex_frame_n:  int = 0
 
@@ -122,6 +155,8 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
 
     def _on_layer_analysis_mouse(event: int, x: int, y: int, _flags: int, _userdata) -> None:
         nonlocal _selected_probe_block_id
+        if probe_monitor.is_robot_controlled():
+            return
         if event != cv2.EVENT_LBUTTONUP:
             return
         if not _last_tower_state:
@@ -138,8 +173,26 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
         probe_monitor.set_target_block_id(_selected_probe_block_id)
         print(f"[probe] selected block {_selected_probe_block_id} for probing")
 
-    if BLOCK_ANALYSIS:
-        cv2.setMouseCallback("Layer Analysis", _on_layer_analysis_mouse)
+    def _reset_grid_pipeline() -> None:
+        nonlocal grid_detection_started, grid_frame_n, points_locked
+        nonlocal locked_layer_cells, accumulated_grid_points, live_valid_points_crop
+        nonlocal _last_pct_results, _last_tower_img, _last_tower_state
+        nonlocal _selected_probe_block_id
+
+        grid_detection_started = True
+        points_locked = False
+        grid_frame_n = 0
+        locked_layer_cells.clear()
+        accumulated_grid_points.clear()
+        grey_line_history.clear()
+        live_valid_points_crop.clear()
+        _last_pct_results.clear()
+        _last_tower_img = None
+        _last_tower_state.clear()
+        _selected_probe_block_id = None
+        probe_monitor.set_target_block_id(None)
+        identity_tracker.reset()
+        _destroy_windows(_GRID_DETECTION_WINDOWS + _POST_LOCK_WINDOWS)
 
     while True:
         bgr_full, depth_mm_full = get_frame_pair()
@@ -166,37 +219,37 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
         # --- Live view (block analysis only) ---
         if BLOCK_ANALYSIS:
             live_disp = bgr.copy()
-            cv2.rectangle(live_disp, (roi_x, roi_y), (roi_x + rw, roi_y + rh), (255, 255, 0), 2)
-            # Overlay layer-analysis face centroids (when available) on live view.
-            for layer in _last_tower_state:
-                for block in layer.get("blocks", []):
-                    if not block.get("present"):
-                        continue
-                    mx = block.get("mean_x_px")
-                    my = block.get("mean_y_px")
-                    if mx is None or my is None:
-                        continue
-                    cx = int(round(float(mx)))
-                    cy = int(round(float(my)))
-                    if 0 <= cx < live_disp.shape[1] and 0 <= cy < live_disp.shape[0]:
-                        cv2.circle(live_disp, (cx, cy), 5, (255, 255, 255), -1)
-                        cv2.circle(live_disp, (cx, cy), 2, (0, 0, 0), -1)
-            if frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES)):
-                for px, py in live_valid_points_crop:
-                    if 0 <= px < live_disp.shape[1] and 0 <= py < live_disp.shape[0]:
-                        cv2.circle(live_disp, (int(px), int(py)), 2, (0, 0, 255), -1)
-            cx = int(round(camera_centre_x_crop))
-            if 0 <= cx < live_disp.shape[1]:
-                cv2.line(live_disp, (cx, 0), (cx, live_disp.shape[0] - 1), (0, 255, 255), 1, cv2.LINE_AA)
+            if grid_detection_started:
+                cv2.rectangle(live_disp, (roi_x, roi_y), (roi_x + rw, roi_y + rh), (255, 255, 0), 2)
+                # Overlay layer-analysis face centroids (when available) on live view.
+                for layer in _last_tower_state:
+                    for block in layer.get("blocks", []):
+                        if not block.get("present"):
+                            continue
+                        mx = block.get("mean_x_px")
+                        my = block.get("mean_y_px")
+                        if mx is None or my is None:
+                            continue
+                        cx = int(round(float(mx)))
+                        cy = int(round(float(my)))
+                        if 0 <= cx < live_disp.shape[1] and 0 <= cy < live_disp.shape[0]:
+                            cv2.circle(live_disp, (cx, cy), 5, (255, 255, 255), -1)
+                            cv2.circle(live_disp, (cx, cy), 2, (0, 0, 0), -1)
+                if grid_frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES)):
+                    for px, py in live_valid_points_crop:
+                        if 0 <= px < live_disp.shape[1] and 0 <= py < live_disp.shape[0]:
+                            cv2.circle(live_disp, (int(px), int(py)), 2, (0, 0, 255), -1)
+                cx = int(round(camera_centre_x_crop))
+                if 0 <= cx < live_disp.shape[1]:
+                    cv2.line(live_disp, (cx, 0), (cx, live_disp.shape[0] - 1), (0, 255, 255), 1, cv2.LINE_AA)
             cv2.imshow("Live + grid", live_disp)
 
-        # --- Colour mask (always live) ---
-        if BLOCK_ANALYSIS:
+        # --- Colour mask + edge pipeline (after SPACE, until grid lock) ---
+        if BLOCK_ANALYSIS and grid_detection_started and not points_locked:
             roi_bgr = bgr[roi_y:roi_y + rh, roi_x:roi_x + rw]
             colour_img, _ = classify_roi_bgr(roi_bgr)
             cv2.imshow("Colour mask", colour_img)
-        # --- Edge pipeline (disabled after grid lock to save compute) ---
-        if BLOCK_ANALYSIS and not points_locked:
+            grid_frame_n += 1
             disp_grey, lines_grey, edges_colour, edges_original = build_edge_display(
                 colour_img, roi_bgr,
             )
@@ -223,7 +276,7 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
 
             # Use accumulated points from frame 0 up to lock time.
             points_for_lock = cluster_points(accumulated_grid_points)
-            if frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES)):
+            if grid_frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES)):
                 live_valid_points_crop = [
                     (int(ix + roi_x), int(iy + roi_y)) for ix, iy in points_for_lock
                 ]
@@ -233,7 +286,8 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
 
         # --- Grid lock ---
         if (
-            frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES))
+            grid_detection_started
+            and grid_frame_n >= max(1, int(POINTS_OVERLAY_PAUSE_FRAMES))
             and BLOCK_ANALYSIS
             and not points_locked
             and accumulated_grid_points
@@ -244,6 +298,7 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
             )
             if locked_layer_cells:
                 points_locked = True
+                _destroy_windows(_GRID_DETECTION_WINDOWS)
                 if on_points_locked is not None:
                     on_points_locked()
 
@@ -392,10 +447,16 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
                     tower_bottom_up = sorted(tower, key=lambda layer: layer["layer"])
                     publish_top_layer(tower_bottom_up)
 
-            probe_monitor.update(
-                _last_tower_state,
-                frame_shape=bgr.shape[:2],
-            )
+            if probe_bridge is not None:
+                probe_bridge.sync_probe_from_robot(_last_tower_state)
+            if probe_active or _last_tower_state:
+                _last_tower_state = probe_monitor.update(
+                    _last_tower_state,
+                    frame_shape=bgr.shape[:2],
+                    bgr_frame=bgr,
+                    depth_frame=depth_mm,
+                    row_cells=row_cells,
+                )
             if (
                 not probe_active
                 and _last_tower_state
@@ -403,7 +464,10 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
             ):
                 print_tower_state(_last_tower_state)
                 _last_layer_print_time_s = time.monotonic()
-            if not probe_monitor.is_active():
+            robot_target = probe_monitor.robot_target_block_id()
+            if robot_target is not None:
+                _selected_probe_block_id = int(robot_target)
+            elif not probe_monitor.is_active():
                 _selected_probe_block_id = None
             if _last_tower_state:
                 _last_tower_img = build_tower_image(
@@ -428,9 +492,19 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
                 )
             if _last_tower_img is not None:
                 _ensure_window_open("Layer Analysis")
+                cv2.setMouseCallback("Layer Analysis", _on_layer_analysis_mouse)
                 cv2.imshow("Layer Analysis", _last_tower_img)
 
-        if (cv2.waitKey(1) & 0xFF) == ord("q"):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord(" ") and BLOCK_ANALYSIS:
+            first_start = not grid_detection_started
+            _reset_grid_pipeline()
+            _open_grid_detection_windows()
+            if first_start:
+                print("[play] grid detection started (colour + edge windows open)")
+            else:
+                print("[play] grid recalculation started")
+        elif key == ord("q"):
             break
 
 
@@ -439,7 +513,12 @@ def _run_loop(get_frame_pair, on_points_locked=None, publish_top_layer=None) -> 
 # ---------------------------------------------------------------------------
 
 class _ImageBridge(Node):
-    def __init__(self, color_topic: str, depth_topic: str) -> None:
+    def __init__(
+        self,
+        color_topic: str,
+        depth_topic: str,
+        probe_monitor: ProbeResponseMonitor | None = None,
+    ) -> None:
         super().__init__("play_image_bridge")
         self._bridge = CvBridge()
         self._lock   = threading.Lock()
@@ -447,14 +526,78 @@ class _ImageBridge(Node):
         self._depth_mm = None
         self._depth_shape_warned = False
         self._depth_enc_warned = False
+        self._probe_monitor = probe_monitor
+        self._robot_state_label = "STANDBY"
+        self._goal_pick: tuple[int, int] | None = None
+        self._blocks_by_slot: dict[tuple[int, int], int] = {}
         self.create_subscription(Image, color_topic, self._cb, 10)
         self.create_subscription(Image, depth_topic, self._depth_cb, 10)
+        self.create_subscription(String, "/robot_state", self._cb_robot_state, 10)
+        self.create_subscription(String, "/selected_goal", self._cb_selected_goal, 10)
+        self.create_subscription(
+            JengaBlockStates, "/jenga/block_states", self._cb_block_states, 10,
+        )
         self.top_layer_pub = self.create_publisher(String, "/top_layer_state", 10)
         self.block_states_pub = self.create_publisher(
             JengaBlockStates, "/jenga/block_states", 10
         )
+        self.topple_status_pub = self.create_publisher(
+            String, "/tower_topple_status", 10
+        )
         self.get_logger().info(f"Colour topic: {color_topic}")
         self.get_logger().info(f"Depth topic:  {depth_topic}")
+        self.get_logger().info(
+            "Subscribed to /robot_state and /selected_goal for probe monitoring"
+        )
+
+    def publish_topple_status(
+        self,
+        block_id: int,
+        status: str,
+        reason: str | None = None,
+    ) -> None:
+        """Publish final topple monitoring decision."""
+        msg = String()
+        payload: dict[str, object] = {
+            "block_id": int(block_id),
+            "status": str(status),
+        }
+        msg.data = json.dumps(payload)
+        self.topple_status_pub.publish(msg)
+
+    def _resolve_goal_block_id(self, tower: list[dict] | None = None) -> int | None:
+        if self._goal_pick is None:
+            return None
+        layer, position = self._goal_pick
+        block_id = self._blocks_by_slot.get((layer, position))
+        if block_id is not None:
+            return int(block_id)
+        if tower:
+            return block_id_for_pick_slot(tower, layer, position)
+        return None
+
+    def sync_probe_from_robot(self, tower: list[dict] | None = None) -> None:
+        if self._probe_monitor is None:
+            return
+        self._probe_monitor.sync_from_robot(
+            self._robot_state_label,
+            self._resolve_goal_block_id(tower),
+        )
+
+    def _cb_robot_state(self, msg: String) -> None:
+        self._robot_state_label = (msg.data or "").strip().upper()
+        self.sync_probe_from_robot()
+
+    def _cb_selected_goal(self, msg: String) -> None:
+        self._goal_pick = parse_selected_goal_pick(msg.data)
+        self.sync_probe_from_robot()
+
+    def _cb_block_states(self, msg: JengaBlockStates) -> None:
+        self._blocks_by_slot = {
+            (int(b.layer), int(b.layer_position)): int(b.block_id)
+            for b in msg.blocks
+        }
+        self.sync_probe_from_robot()
 
     def publish_top_layer(self, tower_data) -> None:
         """Publish full tower state (list of layer dicts) on /top_layer_state."""
@@ -462,6 +605,7 @@ class _ImageBridge(Node):
         msg.data = json.dumps(tower_data)
         self.top_layer_pub.publish(msg)
         self.block_states_pub.publish(self._build_block_states_msg(tower_data))
+        self.sync_probe_from_robot(tower_data)
 
     def _build_block_states_msg(self, tower_data) -> JengaBlockStates:
         """Build typed block-state message from tower JSON-like layer dicts."""
@@ -502,6 +646,10 @@ class _ImageBridge(Node):
 
         blocks.sort(key=lambda item: item.block_id)
         out.blocks = blocks
+        self._blocks_by_slot = {
+            (int(b.layer), int(b.layer_position)): int(b.block_id)
+            for b in blocks
+        }
         return out
 
     def _cb(self, msg: Image) -> None:
@@ -691,7 +839,9 @@ def run_with_pipeline(pipeline, target_fps: float | None = None) -> None:
 def run_subscribe(color_topic: str, depth_topic: str) -> None:
     """Run the display loop subscribed to ROS topics."""
     rclpy.init()
-    bridge = _ImageBridge(color_topic, depth_topic)
+    probe_monitor = ProbeResponseMonitor()
+    bridge = _ImageBridge(color_topic, depth_topic, probe_monitor=probe_monitor)
+    probe_monitor.set_on_final_decision(bridge.publish_topple_status)
     nodes: list = [bridge]
     executor = _start_executor(nodes)
 
@@ -699,6 +849,8 @@ def run_subscribe(color_topic: str, depth_topic: str) -> None:
         _run_loop(
             bridge.get_frame_pair,
             publish_top_layer=bridge.publish_top_layer,
+            probe_monitor=probe_monitor,
+            probe_bridge=bridge,
         )
     finally:
         _shutdown_executor(executor, nodes)
