@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 
 import threading
-import json
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
-from std_msgs.msg import String, Int8MultiArray
+from std_msgs.msg import String, Int8MultiArray, MultiArrayDimension, MultiArrayLayout
 from std_srvs.srv import SetBool
 from cv_bridge import CvBridge
 import tkinter as tk
@@ -123,7 +122,7 @@ class RealSenseCameraNode(Node):
 
         # Publishers
         self.override_pub = self.create_publisher(Int8MultiArray, '/ee_override_array', 10)
-        self.goal_pub = self.create_publisher(String, '/selected_goal', 10)
+        self.goal_pub = self.create_publisher(Int8MultiArray, '/selected_goal', 10)
         
         # Services
         self.estop_client = self.create_client(SetBool, '/estop')
@@ -155,17 +154,25 @@ class RealSenseCameraNode(Node):
             
         self.override_pub.publish(Int8MultiArray(data=array))
 
-    def publish_goal_sequence(self, pick_layer, pick_pos, place_layer, place_pos):
-        goal_payload = {
-            "pick": {"layer": pick_layer, "position": pick_pos},
-            "place": {"layer": place_layer, "position": place_pos}
-        }
-        
-        if goal_payload != self._last_goal_state:
-            self._last_goal_state = goal_payload
-            print(f"[TERMINAL LOG] Goal Matrix Coordinates Updated -> {json.dumps(goal_payload, indent=2)}")
+    def publish_goal_sequence(self, pick_layer, pick_pos, pick_block_id, place_layer, place_pos):
+        # 2x3 matrix layout:
+        # [ pick_layer,  pick_pos,  pick_block_id ]
+        # [ place_layer, place_pos, 0             ]  (place slot is empty, no block ID)
+        flat_data = [pick_layer, pick_pos, pick_block_id, place_layer, place_pos, 0]
 
-        self.goal_pub.publish(String(data=json.dumps(goal_payload)))
+        if flat_data != self._last_goal_state:
+            self._last_goal_state = flat_data
+            print(f"[TERMINAL LOG] Goal Matrix Coordinates Updated -> "
+                  f"[[{pick_layer}, {pick_pos}, {pick_block_id}], [{place_layer}, {place_pos}, 0]]")
+
+        layout = MultiArrayLayout(
+            dim=[
+                MultiArrayDimension(label="rows", size=2, stride=6),
+                MultiArrayDimension(label="cols", size=3, stride=3),
+            ],
+            data_offset=0
+        )
+        self.goal_pub.publish(Int8MultiArray(layout=layout, data=flat_data))
 
     def call_estop(self, state: bool):
         if state != self._last_estop_state:
@@ -190,7 +197,8 @@ class JengaInterfaceApp:
         self.override_buttons = {}
         
         self.current_state = "WAITING_PICK"  
-        self.selected_pick_coords = None     
+        self.selected_pick_coords = None
+        self.selected_pick_block_id = 0
         self.is_estop_active = False
 
         self.setup_ui()
@@ -261,7 +269,7 @@ class JengaInterfaceApp:
             self.override_buttons[index] = btn
 
         # Section B: Physical Tower Intermediary Layout Grid
-        tk.Label(ctrl_container, text="Jenga Matrix Grid (0-2)", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=(15, 2))
+        tk.Label(ctrl_container, text="Jenga Matrix Grid", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=(15, 2))
         grid_wrapper = tk.Frame(ctrl_container, bg=COLOUR_DARK_GRAY)
         grid_wrapper.pack(pady=5)
 
@@ -300,6 +308,7 @@ class JengaInterfaceApp:
         if self.current_state == "WAITING_PICK":
             if block is not None:
                 self.selected_pick_coords = (layer, position)
+                self.selected_pick_block_id = int(block["id"])
                 self.current_state = "WAITING_PLACE"
                 self.goal_status_label.config(
                     text=f"Pick selected: L{layer} P{position}.\nStep 2: Choose empty slot on Layer {target_place_layer}.",
@@ -311,6 +320,7 @@ class JengaInterfaceApp:
         elif self.current_state == "WAITING_PLACE":
             if block is not None:
                 self.selected_pick_coords = (layer, position)
+                self.selected_pick_block_id = int(block["id"])
                 self.goal_status_label.config(
                     text=f"Pick updated: L{layer} P{position}.\nStep 2: Choose empty slot on Layer {target_place_layer}.",
                     fg=COLOUR_WHITE
@@ -326,10 +336,11 @@ class JengaInterfaceApp:
 
             pick_l, pick_p = self.selected_pick_coords
             
-            self.ros_node.publish_goal_sequence(pick_l, pick_p, layer, position)
+            self.ros_node.publish_goal_sequence(pick_l, pick_p, self.selected_pick_block_id, layer, position)
             
             self.current_state = "WAITING_PICK"
             self.selected_pick_coords = None
+            self.selected_pick_block_id = 0
             self.goal_status_label.config(text="Execution target sent. Step 1: Select next block to Pick Up.", fg=COLOUR_YELLOW)
 
     def handle_estop_toggle(self):
