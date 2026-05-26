@@ -219,7 +219,7 @@ class JengaInterfaceApp:
             
             # 2. Define the path to your workspace setup file
             # Update this path if your workspace is located elsewhere
-            ws_setup = os.path.join(os.path.expanduser("~"), "ros2_ws", "src", "RS2-JENGA", "install", "setup.bash")
+            ws_setup = os.path.join(os.path.expanduser("~"), "RS2-JENGA", "install", "setup.bash")
             
             # 3. Create a command string that sources the setup and then launches
             # This is the most robust way to ensure the environment is loaded for the subprocess
