@@ -20,6 +20,7 @@ from perception_config import PROBE_TARGET_BLOCK_ID_PLACEHOLDER, CENTROID_ABORT_
 PROBE_PRINT_INTERVAL_S = 0.2
 
 ROBOT_STATE_PROBING = "PROBING"
+ROBOT_STATE_PLACING = "PICKING AND PLACING"
 
 
 def parse_selected_goal_pick(data: str) -> tuple[int, int] | None:
@@ -124,6 +125,7 @@ def update_tower_centroids_for_probe(
     """
     tower_out    = copy.deepcopy(tower)
     target_layer = _to_int_or_none(baseline.get("layer"))
+    min_recompute_layer = None if target_layer is None else max(0, int(target_layer) - 1)
     n_layers     = len(row_cells)
     # Baseline centroid positions keyed by block_id — used to freeze layers
     # below the probe target so the shift comparison never sees jitter from
@@ -137,7 +139,7 @@ def update_tower_centroids_for_probe(
         # Write baseline centroid values back so _build_probe_snapshot always
         # compares against frozen positions rather than freshly recomputed
         # (possibly depth-free, jittery) colour-blob means.
-        if target_layer is not None and layer_idx < int(target_layer):
+        if min_recompute_layer is not None and layer_idx < int(min_recompute_layer):
             for block in layer.get("blocks", []):
                 if not block.get("present"):
                     continue
@@ -162,6 +164,58 @@ def update_tower_centroids_for_probe(
         # High-accuracy centroids: median of near-face pixels, split required.
         # Both cells searched internally by compute_layer_centroids so the
         # front-block opposite-cell fallback is always applied.
+        centroids = compute_layer_centroids(
+            bgr_frame,
+            depth_frame,
+            left_cell,
+            right_cell,
+            orientation,
+            robust_stat="median",
+            require_split=True,
+        )
+
+        for block in layer.get("blocks", []):
+            if not block.get("present"):
+                continue
+            colour = str(block.get("colour", ""))
+            if colour in centroids:
+                block["mean_x_px"] = float(centroids[colour][0])
+                block["mean_y_px"] = float(centroids[colour][1])
+
+    return tower_out
+
+
+def recompute_tower_centroids_strict(
+    bgr_frame,
+    depth_frame,
+    row_cells: list[tuple[dict, dict]],
+    tower: list[dict],
+    min_layer: int = 0,
+) -> list[dict]:
+    """
+    Recompute centroids using probe-style strict centroiding for tower layers.
+
+    Used by PICKING AND PLACING mode to refresh all centroids without engaging
+    probe monitoring/decision side effects.
+    """
+    tower_out = copy.deepcopy(tower)
+    n_layers = len(row_cells)
+    min_layer_idx = int(min_layer)
+
+    for layer in tower_out:
+        layer_idx = int(layer.get("layer", -1))
+        if layer_idx < min_layer_idx:
+            continue
+
+        orientation = str(layer.get("orientation", ""))
+        if orientation not in ("left", "right"):
+            continue
+
+        row_idx = (n_layers - 1) - layer_idx
+        if row_idx < 0 or row_idx >= n_layers:
+            continue
+        left_cell, right_cell = row_cells[row_idx]
+
         centroids = compute_layer_centroids(
             bgr_frame,
             depth_frame,
@@ -415,6 +469,11 @@ class ProbeResponseMonitor:
         self._last_eval: dict | None = None
         self._last_print_time: float = 0.0
         self._centroid_shift_avg_window = deque(maxlen=3)
+        self._robot_state_label: str = "STANDBY"
+        # When an abort is raised while robot-controlled probing is active,
+        # suppress immediate auto-restart on the same block until robot state
+        # changes away from PROBING (or target block changes).
+        self._aborted_robot_block_latch: int | None = None
 
     def _target_block_id(self) -> int | None:
         if self._robot_control_enabled:
@@ -437,10 +496,22 @@ class ProbeResponseMonitor:
         Monitoring runs when the label is PROBING and block_id is set.
         """
         label = (robot_state_label or "").strip().upper()
+        self._robot_state_label = label
         bid = _to_int_or_none(block_id)
 
         if label == ROBOT_STATE_PROBING:
             if bid is not None:
+                if (
+                    self._aborted_robot_block_latch is not None
+                    and int(bid) == int(self._aborted_robot_block_latch)
+                ):
+                    # Stay stopped after abort for this target until state/goal changes.
+                    self._robot_control_enabled = False
+                    self._robot_target_block_id = None
+                    return
+                # New target clears abort latch.
+                if self._aborted_robot_block_latch is not None:
+                    self._aborted_robot_block_latch = None
                 if (
                     not self._robot_control_enabled
                     or self._robot_target_block_id != bid
@@ -457,6 +528,12 @@ class ProbeResponseMonitor:
             print(f"[probe] robot {label or 'IDLE'} — stopping monitoring")
         self._robot_control_enabled = False
         self._robot_target_block_id = None
+        if self._aborted_robot_block_latch is not None:
+            self._aborted_robot_block_latch = None
+
+    def is_robot_placing(self) -> bool:
+        """True when /robot_state reports PICKING AND PLACING."""
+        return self._robot_state_label == ROBOT_STATE_PLACING
 
     def set_target_block_id(self, block_id: int | None) -> None:
         """Set active probe target from Layer Analysis clicks (ignored while robot probes)."""
@@ -502,21 +579,29 @@ class ProbeResponseMonitor:
         """
         Minimum layer index for monitoring overlays.
 
-        Returns target block layer while in monitoring mode, else None.
+        Returns one layer below the target block (clamped to 0) while in
+        monitoring mode, else None.
         """
         if not self.is_monitoring_mode() or self._baseline is None:
             return None
-        return _to_int_or_none(self._baseline.get("layer"))
+        target_layer = _to_int_or_none(self._baseline.get("layer"))
+        if target_layer is None:
+            return None
+        return max(0, int(target_layer) - 1)
 
     def active_session_min_layer(self) -> int | None:
         """
         Minimum layer index for active topple-monitoring session overlays.
 
-        Returns target block layer whenever a probe session has a valid baseline.
+        Returns one layer below the target block (clamped to 0) whenever a
+        probe session has a valid baseline.
         """
         if self._active_block_id is None or self._baseline is None:
             return None
-        return _to_int_or_none(self._baseline.get("layer"))
+        target_layer = _to_int_or_none(self._baseline.get("layer"))
+        if target_layer is None:
+            return None
+        return max(0, int(target_layer) - 1)
 
     def set_on_final_decision(self, cb) -> None:
         """Set callback called once per monitoring session."""
@@ -555,6 +640,18 @@ class ProbeResponseMonitor:
         # Any other end state: treat as abort for external signalling.
         self._emit_final_decision(block_id, "abort", label)
         print(f"[probe] final block={self._active_block_id} decision=INCONCLUSIVE ({label})")
+
+    def _stop_monitoring_after_abort(self) -> None:
+        """Stop active monitoring immediately after an abort decision."""
+        if self._active_block_id is not None and self._robot_control_enabled:
+            self._aborted_robot_block_latch = int(self._active_block_id)
+        self._active_block_id = None
+        self._baseline = None
+        self._last_status = None
+        self._last_eval = None
+        self._centroid_shift_avg_window.clear()
+        self._robot_control_enabled = False
+        self._robot_target_block_id = None
 
     def update(
         self,
@@ -685,6 +782,8 @@ class ProbeResponseMonitor:
             if label == "ABORT_TOWER_MOVED":
                 print(f"[probe] decision block={self._active_block_id}: ABORT (tower moved)")
                 self._emit_final_decision(int(self._active_block_id), "abort", label)
+                self._stop_monitoring_after_abort()
+                return tower_for_eval
             elif label == "ABORT_INVALID_TARGET_NOT_MIDDLE":
                 print(
                     f"[probe] decision block={self._active_block_id}: "
@@ -695,6 +794,8 @@ class ProbeResponseMonitor:
                     "abort",
                     label,
                 )
+                self._stop_monitoring_after_abort()
+                return tower_for_eval
         self._last_status = eval_result["status"]
         self._last_eval = eval_result
         return tower_for_eval
