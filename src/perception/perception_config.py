@@ -10,7 +10,7 @@ TOWER_ANALYSIS = False
 BLOCK_ANALYSIS = True
 
 # Search area centre and fraction of the full frame
-SEARCH_AREA = (0.519, 0.557, 0.298, 0.474)
+SEARCH_AREA = (0.512, 0.637, 0.284, 0.435)
 
 # Crop margin around the search area
 SEARCH_AREA_MARGIN     = 0.10
@@ -50,6 +50,10 @@ PROBE_STABLE_DELTA_MAX_PCT = 3.0
 # Increase threshold on above-layer front/mid colours indicating tower shift.
 PROBE_ABOVE_LAYER_GAIN_MIN_PCT = 3.0
 
+# Centroid shift threshold (percentage of tower-width normalisation) used to
+# decide that the tower moved and the probe result should abort.
+CENTROID_ABORT_SHIFT_PCT = 6.0
+
 # ---------------------------------------------------------------------------
 # Colour Settings
 # ---------------------------------------------------------------------------
@@ -57,32 +61,32 @@ PROBE_ABOVE_LAYER_GAIN_MIN_PCT = 3.0
 # HSV ranges for colour identification
 HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
     "red": [
-        ((  0,   0,   1), ( 12, 255, 255)),
-        ((171,   0,   1), (179, 255, 255)),
+        ((  0, 101,  93), ( 12, 255, 255)),
+        ((171, 101,  93), (179, 255, 255)),
     ],
     "yellow": [
-        (( 18, 168, 159), ( 39, 255, 255)),
+        (( 15,   0, 250), ( 54, 255, 255)),
     ],
     "green": [
-        (( 39,  60,  49), ( 85, 255, 255)),
+        (( 40,  62,  54), ( 85, 255, 255)),
     ],
     "blue": [
-        (( 99, 171, 105), (108, 255, 255)),
+        (( 82, 163, 121), (104, 255, 255)),
     ],
     "purple": [
-        ((106, 202,  54), (125, 255, 255)),
+        ((106,  68,  29), (146, 255, 255)),
     ],
 }
 
 # Minimum connected-component area (in ROI pixels) kept per colour mask.
 # Higher values reject more tiny blobs/noise before the mask is used elsewhere.
 # Set to 0 to disable size filtering.
-COLOUR_MIN_BLOB_AREA_PX = 270
+COLOUR_MIN_BLOB_AREA_PX = 103
 
 # Colour-mask smoothing (tuned in colour mask setup).
 COLOUR_MASK_MEDIAN_PX      = 0   # Median blur on HSV before inRange; 0 = disabled.
-COLOUR_MASK_MORPH_CLOSE_PX = 5   # Close kernel — fills small holes. 0 = disabled.
-COLOUR_MASK_MORPH_OPEN_PX  = 14   # Open kernel — removes specks. 0 = disabled.
+COLOUR_MASK_MORPH_CLOSE_PX = 6   # Close kernel — fills small holes. 0 = disabled.
+COLOUR_MASK_MORPH_OPEN_PX  = 10   # Open kernel — removes specks. 0 = disabled.
 
 # BGR colours for visualisation
 COLOUR_BGR: dict[str, tuple[int, int, int]] = {
@@ -116,14 +120,14 @@ CANNY_MASK_LOW   = 0   # Lower = more edges.
 CANNY_MASK_HIGH  = 0  # Higher = fewer, stronger edges only.
 
 # Canny thresholds used on the original BGR image.
-CANNY_ORIGINAL_LOW  = 42   # Lower = more edges.
-CANNY_ORIGINAL_HIGH = 116  # Higher = fewer, stronger edges only.
+CANNY_ORIGINAL_LOW  = 65   # Lower = more edges.
+CANNY_ORIGINAL_HIGH = 138  # Higher = fewer, stronger edges only.
 
 # Width of the horizontal band (centred on the ROI) where Canny edges are
 # kept, as a percentage of ROI width. Edges outside this strip are zeroed
 # before Hough line detection, so both visualisation and grid-point search
 # are restricted to the middle slice. Set to 100.0 to disable.
-CANNY_CENTRE_BAND_PCT = 11.0   # Centre band width (% of ROI) for original Canny / Hough.
+CANNY_CENTRE_BAND_PCT = 18.0   # Centre band width (% of ROI) for original Canny / Hough.
 
 # Hough settings used for lines extracted from colour-mask edges.
 HOUGH_MASK_THRESHOLD  = 10  # Min Hough votes to accept a line.
@@ -135,7 +139,7 @@ HOUGH_ORIGINAL_THRESHOLD  = 20
 HOUGH_ORIGINAL_MIN_LENGTH = 40
 HOUGH_ORIGINAL_MAX_GAP    = 5
 
-MAX_HORIZ_DEG    = 15.0  # Max angle from horizontal to classify as horizontal.
+MAX_HORIZ_DEG    = 12.0  # Max angle from horizontal to classify as horizontal.
 MAX_VERT_DEG     = 5.0   # Max deviation from 90° to classify as vertical.
 
 

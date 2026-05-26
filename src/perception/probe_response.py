@@ -9,12 +9,63 @@ on frame orchestration and publishing.
 
 from __future__ import annotations
 
+import copy
+import json
 import time
+from collections import deque
 
-from perception_config import PROBE_TARGET_BLOCK_ID_PLACEHOLDER
-
-CENTROID_ABORT_SHIFT_PCT = 40.0
+from box_percentages import (
+    colour_mean_xy_in_cell,
+    colour_mean_depth_in_cell,
+    endon_outside_edge_x,
+)
+from perception_config import PROBE_TARGET_BLOCK_ID_PLACEHOLDER, CENTROID_ABORT_SHIFT_PCT
 PROBE_PRINT_INTERVAL_S = 0.2
+
+ROBOT_STATE_PROBING = "PROBING"
+
+
+def parse_selected_goal_pick(data: str) -> tuple[int, int] | None:
+    """
+    Parse /selected_goal JSON from the GUI.
+
+    Returns (layer, position) for the pick target, or None if unavailable.
+    """
+    text = (data or "").strip()
+    if not text:
+        return None
+    try:
+        payload = json.loads(text)
+        pick = payload.get("pick")
+        if not isinstance(pick, dict):
+            return None
+        layer = _to_int_or_none(pick.get("layer"))
+        position = _to_int_or_none(pick.get("position"))
+        if layer is None or position is None:
+            return None
+        return int(layer), int(position)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def block_id_for_pick_slot(
+    tower: list[dict],
+    pick_layer: int,
+    pick_position: int,
+) -> int | None:
+    """Resolve block_index from tower state using GUI layer + slot (0–2)."""
+    for layer in tower:
+        if int(layer.get("layer", -1)) != int(pick_layer):
+            continue
+        blocks = layer.get("blocks", [])
+        if pick_position < 0 or pick_position >= len(blocks):
+            return None
+        block = blocks[pick_position]
+        if not block.get("present"):
+            return None
+        return _to_int_or_none(block.get("block_index"))
+    return None
+
 
 def _to_int_or_none(value) -> int | None:
     if value is None:
@@ -25,10 +76,100 @@ def _to_int_or_none(value) -> int | None:
         return None
 
 
+def _endon_cell_for_layer(
+    row_cells: list[tuple[dict, dict]],
+    layer_idx: int,
+    orientation: str,
+) -> dict | None:
+    n_layers = len(row_cells)
+    if layer_idx < 0 or layer_idx >= n_layers:
+        return None
+    row_idx = (n_layers - 1) - layer_idx
+    left_cell, right_cell = row_cells[row_idx]
+    return left_cell if orientation == "left" else right_cell
+
+
+def _layer_outside_edge_x(
+    row_cells: list[tuple[dict, dict]] | None,
+    layer_idx: int,
+    orientation: str,
+    fallback_centroid_xs: list[float],
+) -> float | None:
+    if row_cells is not None:
+        cell = _endon_cell_for_layer(row_cells, layer_idx, orientation)
+        if cell is not None:
+            return endon_outside_edge_x(cell, orientation)
+    if not fallback_centroid_xs:
+        return None
+    return (
+        min(fallback_centroid_xs) if orientation == "left" else max(fallback_centroid_xs)
+    )
+
+
+def update_tower_centroids_for_probe(
+    bgr_frame,
+    depth_frame,
+    row_cells: list[tuple[dict, dict]],
+    tower: list[dict],
+    baseline: dict,
+) -> list[dict]:
+    """
+    During probe monitoring: keep each block's x at its baseline offset from
+    the outside edge; refresh y from the live mean of that colour on the layer side.
+    """
+    tower_out = copy.deepcopy(tower)
+    offsets = baseline.get("block_edge_offset_x", {})
+
+    for layer in tower_out:
+        layer_idx = int(layer.get("layer", -1))
+        orientation = str(layer.get("orientation", ""))
+        if orientation not in ("left", "right"):
+            continue
+
+        endon_cell = _endon_cell_for_layer(row_cells, layer_idx, orientation)
+        if endon_cell is None:
+            continue
+
+        edge_x = endon_outside_edge_x(endon_cell, orientation)
+
+        target_depth_mm = None
+        if depth_frame is not None:
+            mean_depth = colour_mean_depth_in_cell(bgr_frame, depth_frame, endon_cell)
+            if mean_depth:
+                target_depth_mm = float(sum(mean_depth.values()) / len(mean_depth))
+
+        side_mean_xy = colour_mean_xy_in_cell(
+            bgr_frame,
+            endon_cell,
+            depth_frame=depth_frame,
+            target_depth_mm=target_depth_mm,
+            depth_tolerance_mm=40.0,
+        )
+
+        for block in layer.get("blocks", []):
+            if not block.get("present"):
+                continue
+            bid = _to_int_or_none(block.get("block_index"))
+            if bid is None or bid < 0:
+                continue
+            offset_x = offsets.get(bid)
+            if offset_x is None:
+                continue
+
+            block["mean_x_px"] = float(edge_x) + float(offset_x)
+
+            colour = str(block.get("colour", ""))
+            if colour in side_mean_xy:
+                block["mean_y_px"] = float(side_mean_xy[colour][1])
+
+    return tower_out
+
+
 def _build_probe_snapshot(
     tower: list[dict],
     block_id: int,
     frame_shape: tuple[int, int] | None = None,
+    row_cells: list[tuple[dict, dict]] | None = None,
 ) -> dict | None:
     target_layer = None
     target_pos = None
@@ -78,7 +219,7 @@ def _build_probe_snapshot(
             all_centroids_px[bid] = (float(mx), float(my))
             block_layer_by_id[bid] = layer_idx
 
-    # Per-layer outside-edge x (for centroid anchoring).
+    # Per-layer outside-edge x (geometric end-on cell edge when row_cells known).
     layer_edge_x_by_layer: dict[int, float] = {}
     for layer_idx, orientation in layer_orientation_by_idx.items():
         layer_xs = [
@@ -86,11 +227,9 @@ def _build_probe_snapshot(
             for bid, xy in all_centroids_px.items()
             if block_layer_by_id.get(bid) == layer_idx
         ]
-        if not layer_xs:
-            continue
-        layer_edge_x_by_layer[layer_idx] = (
-            min(layer_xs) if orientation == "left" else max(layer_xs)
-        )
+        edge_x = _layer_outside_edge_x(row_cells, layer_idx, orientation, layer_xs)
+        if edge_x is not None:
+            layer_edge_x_by_layer[layer_idx] = float(edge_x)
 
     # Baseline outside-edge offset per block: block_x - layer_outside_edge_x.
     block_edge_offset_x: dict[int, float] = {}
@@ -135,11 +274,12 @@ def _build_probe_snapshot(
         for bid, lyr in block_layer_by_id.items()
         if lyr == int(target_layer) and bid in all_centroids_px
     ]
-    target_layer_outside_edge_x = None
-    if target_layer_xs:
-        target_layer_outside_edge_x = (
-            min(target_layer_xs) if target_orientation == "left" else max(target_layer_xs)
-        )
+    target_layer_outside_edge_x = _layer_outside_edge_x(
+        row_cells,
+        int(target_layer),
+        target_orientation,
+        target_layer_xs,
+    )
 
     # Normalize centroid shifts by in-image block width (px), not frame size.
     target_layer_centroids = []
@@ -195,19 +335,10 @@ def _assess_probe_response(baseline: dict, current: dict) -> dict:
         if bxy is None or cxy is None:
             continue
 
-        # Stabilize all monitored centroids using baseline edge-anchor offset.
-        layer_idx = baseline.get("block_layer_by_id", {}).get(bid)
-        offset_x = baseline.get("block_edge_offset_x", {}).get(bid)
-        current_edge_x = (
-            None
-            if layer_idx is None
-            else current.get("layer_edge_x_by_layer", {}).get(layer_idx)
+        # Tower centroids during monitoring already use anchored x + blob mean y.
+        shift_px = float(
+            ((float(cxy[0]) - float(bxy[0])) ** 2 + (float(cxy[1]) - float(bxy[1])) ** 2) ** 0.5
         )
-        if offset_x is not None and current_edge_x is not None:
-            stabilized_cx = float(current_edge_x) + float(offset_x)
-        else:
-            stabilized_cx = float(cxy[0])
-        shift_px = float(((stabilized_cx - float(bxy[0])) ** 2 + (float(cxy[1]) - float(bxy[1])) ** 2) ** 0.5)
         centroid_shift_pcts.append((shift_px / norm_px) * 100.0)
     avg_other_centroid_shift_pct = (
         float(sum(centroid_shift_pcts) / len(centroid_shift_pcts))
@@ -220,19 +351,7 @@ def _assess_probe_response(baseline: dict, current: dict) -> dict:
     target_dx_px = None
     target_dy_px = None
     if base_target_xy is not None and now_target_xy is not None:
-        layer_idx = baseline.get("block_layer_by_id", {}).get(target_id)
-        offset_x = baseline.get("block_edge_offset_x", {}).get(target_id)
-        now_edge_x = (
-            None
-            if layer_idx is None
-            else current.get("layer_edge_x_by_layer", {}).get(layer_idx)
-        )
-        if offset_x is not None and now_edge_x is not None:
-            # Keep selected-block centroid at a fixed offset from the outside edge.
-            stabilized_now_x = float(now_edge_x) + float(offset_x)
-        else:
-            stabilized_now_x = float(now_target_xy[0])
-        target_dx_px = stabilized_now_x - float(base_target_xy[0])
+        target_dx_px = float(now_target_xy[0]) - float(base_target_xy[0])
         target_dy_px = float(now_target_xy[1]) - float(base_target_xy[1])
 
     target_shift_pct = None
@@ -266,6 +385,10 @@ class ProbeResponseMonitor:
     """Tracks probe-response state across frames and prints status updates."""
 
     def __init__(self) -> None:
+        self._on_final_decision = None
+        self._final_decision_sent: bool = False
+        self._robot_control_enabled: bool = False
+        self._robot_target_block_id: int | None = None
         self._manual_override_enabled: bool = False
         self._manual_target_block_id: int | None = None
         self._active_block_id: int | None = None
@@ -273,15 +396,54 @@ class ProbeResponseMonitor:
         self._last_status: str | None = None
         self._last_eval: dict | None = None
         self._last_print_time: float = 0.0
+        self._centroid_shift_avg_window = deque(maxlen=3)
 
     def _target_block_id(self) -> int | None:
-        """Placeholder probe trigger source. Replace with topic/service later."""
+        if self._robot_control_enabled:
+            return self._robot_target_block_id
         if self._manual_override_enabled:
             return self._manual_target_block_id
         return PROBE_TARGET_BLOCK_ID_PLACEHOLDER
 
+    def is_robot_controlled(self) -> bool:
+        """True when /robot_state is PROBING and a goal block is known."""
+        return self._robot_control_enabled
+
+    def robot_target_block_id(self) -> int | None:
+        return self._robot_target_block_id if self._robot_control_enabled else None
+
+    def sync_from_robot(self, robot_state_label: str | None, block_id: int | None) -> None:
+        """
+        Start/stop monitoring from /robot_state and a resolved goal block id.
+
+        Monitoring runs when the label is PROBING and block_id is set.
+        """
+        label = (robot_state_label or "").strip().upper()
+        bid = _to_int_or_none(block_id)
+
+        if label == ROBOT_STATE_PROBING:
+            if bid is not None:
+                if (
+                    not self._robot_control_enabled
+                    or self._robot_target_block_id != bid
+                ):
+                    print(f"[probe] robot PROBING — monitoring block {bid}")
+                self._robot_control_enabled = True
+                self._robot_target_block_id = int(bid)
+                self._manual_override_enabled = False
+                self._manual_target_block_id = None
+            # PROBING but goal not resolved yet: do not clear an active session.
+            return
+
+        if self._robot_control_enabled:
+            print(f"[probe] robot {label or 'IDLE'} — stopping monitoring")
+        self._robot_control_enabled = False
+        self._robot_target_block_id = None
+
     def set_target_block_id(self, block_id: int | None) -> None:
-        """Set active probe target from UI/runtime input."""
+        """Set active probe target from Layer Analysis clicks (ignored while robot probes)."""
+        if self._robot_control_enabled:
+            return
         self._manual_override_enabled = True
         self._manual_target_block_id = None if block_id is None else int(block_id)
 
@@ -306,23 +468,62 @@ class ProbeResponseMonitor:
         """True when a probe target is currently selected/active."""
         return self._target_block_id() is not None
 
+    def baseline_snapshot(self) -> dict | None:
+        """Baseline probe snapshot (blob centroids at monitoring start), if any."""
+        return self._baseline
+
+    def set_on_final_decision(self, cb) -> None:
+        """Set callback called once per monitoring session."""
+        self._on_final_decision = cb
+
+    def _emit_final_decision(
+        self,
+        block_id: int,
+        status: str,
+        reason: str | None = None,
+    ) -> None:
+        if self._final_decision_sent:
+            return
+        self._final_decision_sent = True
+        if self._on_final_decision is None:
+            return
+        try:
+            self._on_final_decision(block_id, status, reason)
+        except Exception:
+            # Never break perception loop due to a notification failure.
+            pass
+
     def _print_final_decision(self) -> None:
         if self._active_block_id is None:
             return
         label = self._status_label(self._last_status)
+        block_id = int(self._active_block_id)
         if label == "SAFE_TO_REMOVE":
+            self._emit_final_decision(block_id, "safe", label)
             print(f"[probe] final block={self._active_block_id} decision=SAFE (safe to remove)")
             return
         if label.startswith("ABORT_"):
+            self._emit_final_decision(block_id, "abort", label)
             print(f"[probe] final block={self._active_block_id} decision=ABORT ({label})")
             return
+        # Any other end state: treat as abort for external signalling.
+        self._emit_final_decision(block_id, "abort", label)
         print(f"[probe] final block={self._active_block_id} decision=INCONCLUSIVE ({label})")
 
     def update(
         self,
         tower_state: list[dict],
         frame_shape: tuple[int, int] | None = None,
-    ) -> None:
+        *,
+        bgr_frame=None,
+        depth_frame=None,
+        row_cells: list[tuple[dict, dict]] | None = None,
+    ) -> list[dict]:
+        """
+        Run probe logic on tower_state (raw blob centroids from layer analysis).
+
+        Returns tower_state with monitoring centroids applied when a baseline exists.
+        """
         probe_target_block_id = self._target_block_id()
         if probe_target_block_id is None:
             if self._active_block_id is not None:
@@ -331,20 +532,24 @@ class ProbeResponseMonitor:
             self._baseline = None
             self._last_status = None
             self._last_eval = None
-            return
+            self._centroid_shift_avg_window.clear()
+            return tower_state
 
         if not tower_state:
-            return
+            return tower_state
 
         if self._active_block_id != int(probe_target_block_id):
             self._active_block_id = int(probe_target_block_id)
+            self._final_decision_sent = False
             self._baseline = _build_probe_snapshot(
                 tower_state,
                 block_id=self._active_block_id,
                 frame_shape=frame_shape,
+                row_cells=row_cells,
             )
             self._last_status = None
             self._last_eval = None
+            self._centroid_shift_avg_window.clear()
             if self._baseline is not None:
                 print(
                     f"[probe] started for block {self._active_block_id} "
@@ -354,52 +559,96 @@ class ProbeResponseMonitor:
             else:
                 print(f"[probe] waiting for valid snapshot for block {self._active_block_id}")
 
+        tower_for_eval = tower_state
+        if (
+            self._baseline is not None
+            and bgr_frame is not None
+            and row_cells is not None
+        ):
+            tower_for_eval = update_tower_centroids_for_probe(
+                bgr_frame,
+                depth_frame,
+                row_cells,
+                tower_state,
+                self._baseline,
+            )
+
         current_snapshot = _build_probe_snapshot(
-            tower_state,
+            tower_for_eval,
             block_id=self._active_block_id,
             frame_shape=frame_shape,
+            row_cells=row_cells,
         )
 
         if self._baseline is None or current_snapshot is None:
-            return
+            return tower_for_eval
 
         eval_result = _assess_probe_response(self._baseline, current_snapshot)
+
+        # Smooth tower-motion metric over 3 checks (rolling average).
+        raw_centroid_shift_avg = float(eval_result.get("avg_other_centroid_shift_pct", 0.0))
+        self._centroid_shift_avg_window.append(raw_centroid_shift_avg)
+        centroid_shift_avg_smoothed = (
+            float(sum(self._centroid_shift_avg_window) / len(self._centroid_shift_avg_window))
+            if self._centroid_shift_avg_window
+            else 0.0
+        )
+
+        # Use the smoothed tower-motion metric for the "safe vs abort" decision.
+        is_middle = bool(current_snapshot.get("is_middle", False))
+        dx = eval_result.get("target_dx_px")
+        dy = eval_result.get("target_dy_px")
+        target_moved = (
+            dx is not None
+            and dy is not None
+            and ((float(dx) ** 2 + float(dy) ** 2) ** 0.5) > 0.0
+        )
+        if not is_middle:
+            eval_result["status"] = "invalid_target_not_middle"
+        elif centroid_shift_avg_smoothed > float(CENTROID_ABORT_SHIFT_PCT):
+            eval_result["status"] = "tower_shifting"
+        elif target_moved:
+            eval_result["status"] = "safe_to_remove"
+        else:
+            eval_result["status"] = "monitoring"
+        eval_result["avg_other_centroid_shift_pct"] = centroid_shift_avg_smoothed
+
         now = time.monotonic()
         should_print = (
             eval_result["status"] != self._last_status
             or (now - self._last_print_time) >= PROBE_PRINT_INTERVAL_S
         )
         if should_print:
-            dx = eval_result.get("target_dx_px")
-            dy = eval_result.get("target_dy_px")
+            # Only print once the smoothed value is a true "3 checks" average.
+            if len(self._centroid_shift_avg_window) < 3:
+                should_print = False
             if dx is None or dy is None:
                 movement_xy = "(n/a,n/a)"
             else:
                 movement_xy = f"({dx:+.1f},{dy:+.1f})"
-            print(
-                "[probe] "
-                f"block={self._active_block_id} status={eval_result['status']}  "
-                f"centroid_shift_avg={eval_result['avg_other_centroid_shift_pct']:.2f}%  "
-                f"centroid_movement_px={movement_xy}"
-            )
-            self._last_print_time = now
+            if should_print:
+                print(
+                    "[probe] "
+                    f"block={self._active_block_id} status={eval_result['status']}  "
+                    f"centroid_shift_avg={eval_result['avg_other_centroid_shift_pct']:.2f}%  "
+                    f"centroid_movement_px={movement_xy}"
+                )
+                self._last_print_time = now
         if eval_result["status"] != self._last_status:
             label = self._status_label(eval_result["status"])
             if label == "ABORT_TOWER_MOVED":
                 print(f"[probe] decision block={self._active_block_id}: ABORT (tower moved)")
-                # End monitoring immediately after tower-shift abort.
-                ended_block = self._active_block_id
-                self.set_target_block_id(None)
-                self._active_block_id = None
-                self._baseline = None
-                self._last_status = None
-                self._last_eval = None
-                print(f"[probe] monitoring ended for block={ended_block} after ABORT")
-                return
+                self._emit_final_decision(int(self._active_block_id), "abort", label)
             elif label == "ABORT_INVALID_TARGET_NOT_MIDDLE":
                 print(
                     f"[probe] decision block={self._active_block_id}: "
                     "ABORT (selected block is not a middle block)"
                 )
+                self._emit_final_decision(
+                    int(self._active_block_id),
+                    "abort",
+                    label,
+                )
         self._last_status = eval_result["status"]
         self._last_eval = eval_result
+        return tower_for_eval

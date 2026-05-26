@@ -125,13 +125,21 @@ class MtcProbeBlockServer : public rclcpp::Node {
     std::ostringstream o;
     o << "{\"state\":\"" << phase << "\",\"busy\":" << (busy_.load() ? "true" : "false")
       << ",\"executions_completed\":" << executions_completed_.load()
-      << ",\"estop_active\":" << (estop_.load() ? "true" : "false") << "}";
+      << ",\"estop_active\":" << (estop_.load() ? "true" : "false");
+    const int block_idx = active_block_index_.load();
+    if (block_idx >= 0) {
+      o << ",\"block_index\":" << block_idx;
+    }
+    o << "}";
     m.data = o.str();
     pub_status_->publish(m);
   }
 
   void setBusy(const bool b) {
     busy_.store(b);
+    if (!b) {
+      active_block_index_.store(-1);
+    }
     publishStatus(b ? "running" : "idle");
   }
 
@@ -546,7 +554,6 @@ class MtcProbeBlockServer : public rclcpp::Node {
   }
 
   void executeAction(const std::shared_ptr<ServerGoalHandle> goal_handle) {
-    setBusy(true);
     auto res = std::make_shared<JengaProbeBlock::Result>();
     if (estop_.load()) {
       res->score = 0.0F;
@@ -557,6 +564,8 @@ class MtcProbeBlockServer : public rclcpp::Node {
     }
 
     const auto goal = goal_handle->get_goal();
+    active_block_index_.store(static_cast<int>(goal->block_index));
+    setBusy(true);
     auto fb = std::make_shared<JengaProbeBlock::Feedback>();
     auto send_fb = [goal_handle, &fb](const char* s, const float p) {
       fb->current_stage = s;
@@ -650,6 +659,7 @@ class MtcProbeBlockServer : public rclcpp::Node {
   bool use_sim_block_attach_{true};
 
   std::atomic<bool> busy_{false};
+  std::atomic<int> active_block_index_{-1};
   std::atomic<int> executions_completed_{0};
   std::atomic<bool> estop_{false};
 };

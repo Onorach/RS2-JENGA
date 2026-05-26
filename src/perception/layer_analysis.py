@@ -86,8 +86,9 @@ def _blocks_from_endon(
     orientation: str = "left",
 ) -> list[dict]:
     """
-    Assign each detected colour to one of three left-to-right lanes in the
-    end-on cell, then reorder lanes front-to-back based on orientation.
+    One centroid per colour across the full end-on layer side (all pixels of
+    that colour in the cell). Assign each colour to a front/mid/back lane by
+    its mean x, then reorder lanes for tower orientation.
     """
     corners = cell["corners"]
     x_left_bound  = (corners[0][0] + corners[2][0]) / 2.0
@@ -97,22 +98,20 @@ def _blocks_from_endon(
     res = [{"colour": "unknown", "present": False, "depth_mm": None} for _ in range(3)]
 
     for colour, (mx, my) in mean_xy.items():
-        pct  = pcts.get(colour, 0.0)
-        lane = max(0, min(2, int((mx - x_left_bound) // lane_w)))
-
+        pct = pcts.get(colour, 0.0)
         if pct < BLOCK_PRESENT_MIN_PCT:
             continue
 
+        lane = max(0, min(2, int((mx - x_left_bound) // lane_w)))
         existing_pct = pcts.get(res[lane]["colour"], 0.0) if res[lane]["present"] else 0.0
         if not res[lane]["present"] or pct > existing_pct:
             res[lane] = {
-                "colour":       colour,
-                "present":      True,
-                "mean_x_px":    mx,
-                "mean_y_px":    my,
+                "colour":    colour,
+                "present":   True,
+                "mean_x_px": mx,
+                "mean_y_px": my,
             }
 
-    # Reorder lanes from left-to-right into front-to-back.
     if orientation == "left":
         res = res[::-1]
 
