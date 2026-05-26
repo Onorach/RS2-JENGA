@@ -169,14 +169,6 @@ def analyse_layer(
         else (right_pcts, right_cell)
     )
 
-    # Build the required_colours set so compute_layer_centroids always
-    # searches for canonical block colours even at low pixel coverage.
-    required_colours: set[str] | None = None
-    if known_block_colours is not None:
-        rc = {c for c in known_block_colours if c not in (None, "unknown", "")}
-        if rc:
-            required_colours = rc
-
     # Compute near-face centroids for all colours in this layer.
     # Searches both cells so the front block's split (which may fall in the
     # opposite/side-on cell) is always found. Falls back to depth-gated mean
@@ -189,13 +181,8 @@ def analyse_layer(
         orientation,
         robust_stat="mean",
         require_split=False,
-        required_colours=required_colours,
     )
-    endon_blocks = _blocks_from_endon(
-        endon_pcts, mean_xy, endon_cell,
-        orientation=orientation,
-        known_colours=known_block_colours,
-    )
+    endon_blocks = _blocks_from_endon(endon_pcts, mean_xy, endon_cell, orientation=orientation)
 
     frame_width    = float(frame_width_px) if frame_width_px is not None else float(bgr_frame.shape[1])
     frame_centre_x = float(frame_centre_x_px) if frame_centre_x_px is not None else (frame_width / 2.0)
@@ -322,7 +309,6 @@ def analyse_tower(
     frame_width_px: float | None = None,
     print_enabled: bool = True,
     min_centroid_layer: int | None = None,
-    identity_tracker=None,
 ) -> list[dict]:
     """
     Analyse the full tower layer by layer.
@@ -349,17 +335,6 @@ def analyse_tower(
             min_centroid_layer is not None
             and layer_idx < int(min_centroid_layer)
         )
-
-        # Fetch canonical colour assignments for this layer when available.
-        # On the first frame (tracker not yet initialized) this returns all
-        # None and _blocks_from_endon falls back to x-lane detection.
-        known_colours: list[str | None] | None = None
-        if identity_tracker is not None and identity_tracker.is_initialized():
-            known_colours = identity_tracker.canonical_colours_for_layer(layer_idx)
-            # If all None (e.g. layer not yet seen), fall back to free detection.
-            if not any(c is not None for c in known_colours):
-                known_colours = None
-
         layer = analyse_layer(
             bgr_frame,
             depth_frame if not skip_centroid else None,

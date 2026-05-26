@@ -149,80 +149,6 @@ def _split_x_from_closest_pixels(
     return sx
 
 
-def _enforce_centroid_face_side(cx: float, split_x: float, orientation: str) -> float:
-    """
-    Clamp a centroid x so it always sits on the near-face side of the split line.
-
-    For a right-facing layer the near face is at HIGH x (cx >= split_x).
-    For a left-facing layer the near face is at LOW x  (cx <= split_x).
-
-    This must be applied to every path that returns a centroid so the position
-    never drifts to the far-face side regardless of which fallback path ran.
-    """
-    if orientation == "left":
-        return min(cx, float(split_x))
-    else:
-        return max(cx, float(split_x))
-
-
-def _combined_split_info_per_colour(
-    bgr: np.ndarray,
-    depth: np.ndarray,
-    endon_cell: dict,
-    opposite_cell: dict,
-    endon_target_mm: float | None,
-    opposite_target_mm: float | None,
-) -> dict[str, tuple[float, float]]:
-    """
-    Find split_x per colour by searching each cell independently and picking
-    the one whose minimum depth is shallower (closer to the camera).
-
-    WHY the depth gate is intentionally omitted here
-    ------------------------------------------------
-    Applying a ±40 mm depth gate before the min-depth search defeats the
-    purpose: if the block has been pushed more than 40 mm from the cell
-    median (forward or backward), its colour pixels are filtered out and the
-    split_x search finds nothing.  The minimum-depth search is inherently
-    self-discriminating — it looks for the shallowest pixels in the colour
-    blob, which are always on the near face — so no gate is needed at this
-    stage.  The depth gate is still used later in _compute_combined_centroid
-    to keep same-colour pixels from adjacent layers out of the centroid.
-    """
-    ih, iw = bgr.shape[:2]
-    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-
-    endon_quad    = _quad_mask((ih, iw), endon_cell["corners"])
-    opposite_quad = _quad_mask((ih, iw), opposite_cell["corners"])
-
-    result: dict[str, tuple[float, float]] = {}
-    for colour in HSV_RANGES:
-        colour_hsv = classify_hsv(hsv, colour)
-
-        # Raw colour masks — NO depth gate here (see docstring).
-        endon_mask    = endon_quad & colour_hsv
-        opposite_mask = opposite_quad & colour_hsv
-
-        # Search each cell independently.
-        sx_endon,    min_d_endon    = _split_x_and_min_depth(depth, endon_mask)
-        sx_opposite, min_d_opposite = _split_x_and_min_depth(depth, opposite_mask)
-
-        if sx_endon is None and sx_opposite is None:
-            continue
-        elif sx_endon is None:
-            result[colour] = (float(sx_opposite), float(min_d_opposite))  # type: ignore[arg-type]
-        elif sx_opposite is None:
-            result[colour] = (float(sx_endon), float(min_d_endon))  # type: ignore[arg-type]
-        else:
-            # Both cells see this colour — the cell with the smaller (closer)
-            # minimum depth is looking at the near face; use its split_x.
-            if min_d_endon <= min_d_opposite:
-                result[colour] = (float(sx_endon), float(min_d_endon))
-            else:
-                result[colour] = (float(sx_opposite), float(min_d_opposite))
-
-    return result
-
-
 def _combined_split_x_per_colour(
     bgr: np.ndarray,
     depth: np.ndarray,
@@ -231,15 +157,61 @@ def _combined_split_x_per_colour(
     endon_target_mm: float | None,
     opposite_target_mm: float | None,
 ) -> dict[str, float]:
-    info = _combined_split_info_per_colour(
-        bgr,
-        depth,
-        endon_cell,
-        opposite_cell,
-        endon_target_mm,
-        opposite_target_mm,
-    )
-    return {colour: values[0] for colour, values in info.items()}
+    """
+    Find split_x per colour by searching each cell independently and picking
+    the one whose minimum depth is shallower (closer to the camera).
+
+    WHY: The front block's near face can straddle the cell boundary as it is
+    pushed.  The previous approach combined both cell masks before searching,
+    which caused the minimum-depth cluster to land at the boundary — the
+    split_x would get stuck there.
+
+    By comparing per-cell minimum depths independently, the cell that is
+    actually seeing the near face (lower depth) naturally takes over as the
+    block moves, so the split_x tracks smoothly from one side to the other.
+    """
+    ih, iw = bgr.shape[:2]
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+
+    endon_quad    = _quad_mask((ih, iw), endon_cell["corners"])
+    opposite_quad = _quad_mask((ih, iw), opposite_cell["corners"])
+    endon_gate    = _depth_gate(depth, endon_target_mm)
+    opposite_gate = _depth_gate(depth, opposite_target_mm)
+
+    result: dict[str, float] = {}
+    for colour in HSV_RANGES:
+        colour_hsv = classify_hsv(hsv, colour)
+
+        # End-on cell mask with its own depth gate.
+        endon_mask = endon_quad & colour_hsv
+        if endon_gate is not None:
+            gated = endon_mask & endon_gate
+            if int(gated.sum()) >= MIN_COLOUR_PIXELS:
+                endon_mask = gated
+
+        # Opposite cell mask with its own depth gate.
+        opposite_mask = opposite_quad & colour_hsv
+        if opposite_gate is not None:
+            gated = opposite_mask & opposite_gate
+            if int(gated.sum()) >= MIN_COLOUR_PIXELS:
+                opposite_mask = gated
+
+        # Search each cell independently.
+        sx_endon,    min_d_endon    = _split_x_and_min_depth(depth, endon_mask)
+        sx_opposite, min_d_opposite = _split_x_and_min_depth(depth, opposite_mask)
+
+        if sx_endon is None and sx_opposite is None:
+            continue
+        elif sx_endon is None:
+            result[colour] = sx_opposite  # type: ignore[assignment]
+        elif sx_opposite is None:
+            result[colour] = sx_endon
+        else:
+            # Both cells see this colour — the cell with the smaller (closer)
+            # minimum depth is looking at the near face; use its split_x.
+            result[colour] = sx_endon if min_d_endon <= min_d_opposite else sx_opposite
+
+    return result
 
 
 def _compute_combined_centroid(
@@ -276,15 +248,13 @@ def _compute_combined_centroid(
     opposite_mask = opposite_quad & colour_hsv
 
     # Depth-gate each cell independently.
-    # Use a wider tolerance (80 mm) here so pushed blocks — whose centroid
-    # depth may deviate substantially from the layer median — are not lost.
-    endon_gate = _depth_gate(depth, endon_target_mm, tolerance_mm=80.0)
+    endon_gate = _depth_gate(depth, endon_target_mm)
     if endon_gate is not None:
         gated = endon_mask & endon_gate
         if int(gated.sum()) >= MIN_COLOUR_PIXELS:
             endon_mask = gated
 
-    opposite_gate = _depth_gate(depth, opposite_target_mm, tolerance_mm=80.0)
+    opposite_gate = _depth_gate(depth, opposite_target_mm)
     if opposite_gate is not None:
         gated = opposite_mask & opposite_gate
         if int(gated.sum()) >= MIN_COLOUR_PIXELS:
@@ -296,55 +266,38 @@ def _compute_combined_centroid(
     if endon_n < MIN_COLOUR_PIXELS and opposite_n < MIN_COLOUR_PIXELS:
         return None
 
-    fn     = np.median if str(robust_stat).strip().lower() == "median" else np.mean
-    x_grid = np.broadcast_to(np.arange(iw, dtype=np.float32), (ih, iw))
+    fn = np.median if str(robust_stat).strip().lower() == "median" else np.mean
 
-    def _masked_centroid(mask: np.ndarray) -> tuple[float, float] | None:
-        """Return (cx, cy) with face-side enforcement, or None if too few pixels."""
-        ys, xs = np.where(mask)
-        if len(xs) < max(10, MIN_COLOUR_PIXELS // 5):
-            return None
-        cx = float(fn(xs))
-        cy = float(fn(ys))
-        # Always clamp to the near-face side of the split line so the centroid
-        # never drifts to the far-face side regardless of how few pixels remain.
-        cx = _enforce_centroid_face_side(cx, split_x, orientation)
-        return cx, cy
-
+    # If the opposite cell has no significant pixels for this colour, the
+    # front block's side face isn't contributing — the end-on cell alone
+    # gives the near-face centroid directly without any face mask.
+    # Applying the face mask here would halve the pixel set and can push the
+    # centroid to the wrong side of split_x, so skip it.
     if opposite_n < MIN_COLOUR_PIXELS:
-        # No side-face pixels — use the end-on cell with face-side mask.
         source = endon_mask if endon_n >= MIN_COLOUR_PIXELS else opposite_mask
-        if orientation == "left":
-            face_mask = source & (x_grid <= float(split_x))
-        else:
-            face_mask = source & (x_grid >= float(split_x))
-        result = _masked_centroid(face_mask)
-        if result is not None:
-            return result
-        # Face mask too sparse (block at cell boundary): use full source with
-        # clamping so the centroid is still on the correct side.
         ys, xs = np.where(source)
-        if len(xs) == 0:
-            return None
-        cx = _enforce_centroid_face_side(float(fn(xs)), split_x, orientation)
-        return cx, float(fn(ys))
+        return float(fn(xs)), float(fn(ys))
 
-    # Both cells have significant pixels: apply face mask to the union.
+    # Both cells have significant pixels: the front block's side face is
+    # visible in the opposite cell and would bias the centroid away from the
+    # near-face position.  Apply the face mask to isolate near-face pixels.
     combined = endon_mask | opposite_mask
+    x_grid   = np.broadcast_to(np.arange(iw, dtype=np.float32), (ih, iw))
     if orientation == "left":
         face_mask = combined & (x_grid <= float(split_x))
     else:
         face_mask = combined & (x_grid >= float(split_x))
-    result = _masked_centroid(face_mask)
-    if result is not None:
-        return result
 
-    # Face mask too sparse: fall back to end-on only with clamping.
+    ys, xs = np.where(face_mask)
+    if len(xs) >= max(10, MIN_COLOUR_PIXELS // 5):
+        return float(fn(xs)), float(fn(ys))
+
+    # Face mask yielded too few pixels (split_x edge case): fall back to
+    # the end-on cell pixels only — they are always the near face.
     ys, xs = np.where(endon_mask)
     if len(xs) == 0:
         return None
-    cx = _enforce_centroid_face_side(float(fn(xs)), split_x, orientation)
-    return cx, float(fn(ys))
+    return float(fn(xs)), float(fn(ys))
 
 
 def _centroids_in_one_cell(
@@ -432,88 +385,6 @@ def _centroids_in_one_cell(
     return out
 
 
-def _search_colour_low_threshold(
-    bgr: np.ndarray,
-    depth: np.ndarray | None,
-    endon_cell: dict,
-    opposite_cell: dict,
-    colour: str,
-    endon_target_mm: float | None,
-    opposite_target_mm: float | None,
-    orientation: str,
-    robust_stat: str,
-) -> tuple[float, float] | None:
-    """
-    Low-threshold centroid search for a colour that was not found by the
-    normal pipeline.  Used for canonical (known) block colours that may
-    have low pixel coverage because the block has been pushed far in depth.
-
-    Differences from the normal path:
-      - No MIN_COLOUR_PCT area check — just raw pixel count >= MIN_COLOUR_PIXELS/2.
-      - Wide depth gate (120 mm) so pushed blocks are not excluded.
-      - Face-side enforcement applied on all return paths.
-    """
-    MIN_PIX = max(10, MIN_COLOUR_PIXELS // 2)
-
-    ih, iw = bgr.shape[:2]
-    hsv        = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    colour_hsv = classify_hsv(hsv, colour)
-
-    endon_quad    = _quad_mask((ih, iw), endon_cell["corners"])
-    opposite_quad = _quad_mask((ih, iw), opposite_cell["corners"])
-
-    endon_mask    = endon_quad & colour_hsv
-    opposite_mask = opposite_quad & colour_hsv
-
-    # Wide gate for pushed blocks.
-    gate_e = _depth_gate(depth, endon_target_mm, tolerance_mm=120.0) if depth is not None else None
-    gate_o = _depth_gate(depth, opposite_target_mm, tolerance_mm=120.0) if depth is not None else None
-    if gate_e is not None:
-        g = endon_mask & gate_e
-        if int(g.sum()) >= MIN_PIX:
-            endon_mask = g
-    if gate_o is not None:
-        g = opposite_mask & gate_o
-        if int(g.sum()) >= MIN_PIX:
-            opposite_mask = g
-
-    combined = endon_mask | opposite_mask
-    if int(combined.sum()) < MIN_PIX:
-        return None
-
-    fn = np.median if str(robust_stat).strip().lower() == "median" else np.mean
-
-    # Try to get split_x for face-side accuracy.
-    split_x: float | None = None
-    if depth is not None:
-        info = _combined_split_info_per_colour(
-            bgr, depth, endon_cell, opposite_cell,
-            endon_target_mm, opposite_target_mm,
-        )
-        entry = info.get(colour)
-        if entry is not None:
-            split_x = entry[0]
-
-    if split_x is not None:
-        centroid = _compute_combined_centroid(
-            bgr, depth, endon_cell, opposite_cell, colour,
-            endon_target_mm, opposite_target_mm,
-            split_x, orientation, robust_stat,
-        )
-        if centroid is not None:
-            return centroid
-
-    # No split found: mean of combined mask, clamped to correct side.
-    ys, xs = np.where(combined)
-    if len(xs) == 0:
-        return None
-    cx = float(fn(xs))
-    cy = float(fn(ys))
-    if split_x is not None:
-        cx = _enforce_centroid_face_side(cx, split_x, orientation)
-    return cx, cy
-
-
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -526,7 +397,6 @@ def compute_layer_centroids(
     orientation: str,
     robust_stat: str = "mean",
     require_split: bool = False,
-    required_colours: set[str] | None = None,
 ) -> dict[str, tuple[float, float]]:
     """
     Compute near-face centroid (x_px, y_px) per colour for one layer.
@@ -538,18 +408,14 @@ def compute_layer_centroids(
 
     Parameters
     ----------
-    bgr              : full-resolution BGR colour frame
-    depth            : aligned depth frame (uint16 mm or None)
-    left_cell        : left lane cell definition dict (corners key)
-    right_cell       : right lane cell definition dict
-    orientation      : "left" (end-on = left cell) or "right" (end-on = right cell)
-    robust_stat      : "mean" (normal analysis) or "median" (probe monitoring)
-    require_split    : True → only return centroids found via a depth split line
-                       False → fall back to depth-gated mean when no split
-    required_colours : set of colour names that MUST be returned even at low
-                       coverage (canonical/known block colours). When a colour
-                       in this set is not found by the normal path, a wide-gate
-                       low-threshold search is run as a last resort.
+    bgr         : full-resolution BGR colour frame
+    depth       : aligned depth frame (uint16 mm or None)
+    left_cell   : left lane cell definition dict (corners key)
+    right_cell  : right lane cell definition dict
+    orientation : "left" (end-on = left cell) or "right" (end-on = right cell)
+    robust_stat : "mean" (normal analysis) or "median" (probe monitoring)
+    require_split : True → only return centroids found via a depth split line
+                   False → fall back to depth-gated mean when no split
 
     Returns
     -------
@@ -591,20 +457,6 @@ def compute_layer_centroids(
 
         if require_split:
             # Probe mode: only return centroids found via a depth split line.
-            # Still check required colours with the low-threshold path so
-            # canonical blocks pushed far aren't silently dropped.
-            if required_colours:
-                for colour in required_colours:
-                    if colour in out:
-                        continue
-                    fallback = _search_colour_low_threshold(
-                        bgr, depth,
-                        endon_cell, opposite_cell, colour,
-                        endon_target_mm, opposite_target_mm,
-                        orientation, robust_stat,
-                    )
-                    if fallback is not None:
-                        out[colour] = fallback
             return out
 
         # ── Step 3 (normal mode): depth-gated mean fallback ────────────────
@@ -626,23 +478,6 @@ def compute_layer_centroids(
         merged: dict[str, tuple[float, float]] = dict(opposite_fallback)
         merged.update(endon_fallback)
         merged.update(out)
-
-        # ── Required-colours fallback ──────────────────────────────────────
-        # For canonical blocks not found by any path above (very low coverage
-        # due to the block being pushed far), do a last-resort wide-gate search.
-        if required_colours:
-            for colour in required_colours:
-                if colour in merged:
-                    continue
-                fallback = _search_colour_low_threshold(
-                    bgr, depth,
-                    endon_cell, opposite_cell, colour,
-                    endon_target_mm, opposite_target_mm,
-                    orientation, robust_stat,
-                )
-                if fallback is not None:
-                    merged[colour] = fallback
-
         return merged
 
     # ── No depth available: plain per-cell colour means ────────────────────
@@ -656,23 +491,6 @@ def compute_layer_centroids(
     )
     merged = dict(opposite_centroids)
     merged.update(endon_centroids)
-
-    # ── Required-colours fallback (canonical blocks not found by normal path) ─
-    # Run last regardless of depth availability so canonical blocks are always
-    # returned with a centroid even when coverage is low (block pushed far).
-    if required_colours:
-        for colour in required_colours:
-            if colour in merged:
-                continue
-            fallback = _search_colour_low_threshold(
-                bgr, depth,
-                endon_cell, opposite_cell, colour,
-                endon_target_mm, opposite_target_mm,
-                orientation, robust_stat,
-            )
-            if fallback is not None:
-                merged[colour] = fallback
-
     return merged
 
 
@@ -704,33 +522,3 @@ def compute_split_x_per_colour(
         endon_cell, opposite_cell,
         endon_target_mm, opposite_target_mm,
     )
-
-
-def compute_split_depth_mm_per_colour(
-    bgr: np.ndarray,
-    depth: np.ndarray | None,
-    left_cell: dict,
-    right_cell: dict,
-    orientation: str,
-) -> dict[str, float]:
-    """
-    Return the minimum (closest) depth in mm used for each colour split line.
-    """
-    if depth is None:
-        return {}
-
-    endon_cell = left_cell if orientation == "left" else right_cell
-    opposite_cell = right_cell if orientation == "left" else left_cell
-
-    endon_target_mm = _median_depth_in_cell(bgr, depth, endon_cell)
-    opposite_target_mm = _median_depth_in_cell(bgr, depth, opposite_cell)
-
-    info = _combined_split_info_per_colour(
-        bgr,
-        depth,
-        endon_cell,
-        opposite_cell,
-        endon_target_mm,
-        opposite_target_mm,
-    )
-    return {colour: values[1] for colour, values in info.items()}
