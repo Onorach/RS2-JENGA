@@ -58,6 +58,7 @@ from probe_response import (
     ProbeResponseMonitor,
     block_id_for_pick_slot,
     parse_selected_goal_pick,
+    recompute_tower_centroids_strict,
 )
 from block_identity_tracker import BlockIdentityTracker
 
@@ -462,6 +463,7 @@ def _run_loop(
                     frame_width_px=float(iw),
                     print_enabled=False,
                     min_centroid_layer=probe_min_layer,
+                    identity_tracker=identity_tracker,
                 )
                 if placing_active and not probe_active:
                     tower = recompute_tower_centroids_strict(
