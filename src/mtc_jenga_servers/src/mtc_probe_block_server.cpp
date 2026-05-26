@@ -125,21 +125,13 @@ class MtcProbeBlockServer : public rclcpp::Node {
     std::ostringstream o;
     o << "{\"state\":\"" << phase << "\",\"busy\":" << (busy_.load() ? "true" : "false")
       << ",\"executions_completed\":" << executions_completed_.load()
-      << ",\"estop_active\":" << (estop_.load() ? "true" : "false");
-    const int block_idx = active_block_index_.load();
-    if (block_idx >= 0) {
-      o << ",\"block_index\":" << block_idx;
-    }
-    o << "}";
+      << ",\"estop_active\":" << (estop_.load() ? "true" : "false") << "}";
     m.data = o.str();
     pub_status_->publish(m);
   }
 
   void setBusy(const bool b) {
     busy_.store(b);
-    if (!b) {
-      active_block_index_.store(-1);
-    }
     publishStatus(b ? "running" : "idle");
   }
 
