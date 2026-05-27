@@ -55,9 +55,6 @@ class JengaTowerModel:
         with self._lock:
             self._block_data.clear()
             for block in msg_blocks:
-                # Map incoming layer position to 0-indexed if it comes from a 1-indexed publisher,
-                # or pass it through if your perception pipeline is updated to 0-2.
-                # Assuming the ROS topic provides 0, 1, or 2:
                 pos = block.layer_position
                 self._block_data[(block.layer, pos)] = {
                     "id": str(block.block_id),
@@ -162,7 +159,7 @@ class RealSenseCameraNode(Node):
     def publish_goal_sequence(self, pick_layer, pick_pos, pick_block_id, place_layer, place_pos):
         # 2x3 matrix layout:
         # [ pick_layer,  pick_pos,  pick_block_id ]
-        # [ place_layer, place_pos, 0             ]  (place slot is empty, no block ID)
+        # [ place_layer, place_pos, 0             ]
         flat_data = [pick_layer, pick_pos, pick_block_id, place_layer, place_pos, 0]
 
         if flat_data != self._last_goal_state:
@@ -205,7 +202,13 @@ class JengaInterfaceApp:
         self.selected_pick_coords = None
         self.selected_pick_block_id = 0
         self.selected_pick_colour = "unknown"
-        self.transit_block = None  # {"id": str, "colour": str, "place_pos": int}
+
+        # FIX: transit_blocks is a dict keyed by position index (0, 1, 2).
+        # This allows multiple blocks to be tracked on L6 simultaneously,
+        # replacing the old single-entry self.transit_block which was overwritten
+        # on every new placement.
+        self.transit_blocks = {}  # pos_idx -> {"id": str, "colour": str, "lifted": bool}
+
         self.is_estop_active = False
 
         self.setup_ui()
@@ -214,20 +217,10 @@ class JengaInterfaceApp:
     def launch_rviz_simulation(self):
         """Launches RViz as an independent process with proper ROS environment sourcing."""
         try:
-            # 1. Get the current environment
             my_env = os.environ.copy()
-            
-            # 2. Define the path to your workspace setup file
-            # Update this path if your workspace is located elsewhere
             ws_setup = os.path.join(os.path.expanduser("~"), "ros2_ws", "src", "RS2-JENGA", "install", "setup.bash")
-            
-            # 3. Create a command string that sources the setup and then launches
-            # This is the most robust way to ensure the environment is loaded for the subprocess
             cmd = f"source {ws_setup} && ros2 launch ur_onrobot_moveit_config ur_onrobot_moveit.launch.py ur_type:=ur3e onrobot_type:=rg2 launch_rviz:=true launch_servo:=false"
-            
-            # 4. Use shell=True to allow the 'source' command to execute
             subprocess.Popen(cmd, shell=True, executable="/bin/bash", preexec_fn=os.setsid)
-            
             print("[TERMINAL LOG] Simulation visualization launched in external window.")
         except Exception as e:
             print(f"[ERROR] Failed to launch RViz: {e}")
@@ -284,16 +277,11 @@ class JengaInterfaceApp:
             row_frame = tk.Frame(grid_wrapper, bg=COLOUR_DARK_GRAY)
             row_frame.pack(pady=1)
 
-            if layer == 6:
-                label_text = "L6"
-                label_fg = COLOUR_LIGHT_GRAY
-            else:
-                label_text = f"L{layer}"
-                label_fg = COLOUR_LIGHT_GRAY
+            label_text = f"L{layer}"
+            label_fg = COLOUR_LIGHT_GRAY
 
             tk.Label(row_frame, text=label_text, bg=COLOUR_DARK_GRAY, fg=label_fg, font=("Arial", 9, "bold"), width=4).pack(side=tk.LEFT)
 
-            # Positions are now 0-indexed: 0 = left, 1 = middle, 2 = right
             for pos_idx in range(3):
                 btn = tk.Button(row_frame, text="---" if layer == 6 else "000",
                                 bg=COLOUR_DARK_GRAY if layer == 6 else COLOUR_WHITE,
@@ -321,6 +309,16 @@ class JengaInterfaceApp:
 
     def handle_matrix_click(self, layer, position):
         block = self.model.get_block(layer, position)
+
+        # FIX 1: Synthesise an L6 block from transit_blocks so the pick/place
+        # logic treats it identically to a block reported by block_states.
+        # The 'lifted' guard ensures the block only becomes selectable once it
+        # has physically left layers 0-5.
+        if block is None and layer == 6 and position in self.transit_blocks:
+            tb = self.transit_blocks[position]
+            if tb.get("lifted"):
+                block = {"id": tb["id"], "colour": tb["colour"]}
+
         target_place_layer = self.model.calculate_valid_placement_layer()
 
         if self.current_state == "WAITING_PICK":
@@ -329,6 +327,10 @@ class JengaInterfaceApp:
                 self.selected_pick_block_id = int(block["id"])
                 self.selected_pick_colour = block["colour"]
                 self.current_state = "WAITING_PLACE"
+                # FIX 2: Remove the transit entry for the slot being picked from
+                # so L6 correctly shows it as empty during transit.
+                if layer == 6 and position in self.transit_blocks:
+                    del self.transit_blocks[position]
                 self.goal_status_label.config(
                     text=f"Pick selected: L{layer} P{position}.\nStep 2: Choose empty slot on Layer {target_place_layer}.",
                     fg=COLOUR_WHITE
@@ -338,9 +340,21 @@ class JengaInterfaceApp:
 
         elif self.current_state == "WAITING_PLACE":
             if block is not None:
+                # User is changing their pick selection. If the previous pick was
+                # from L6, restore that slot's transit entry so it renders again.
+                if self.selected_pick_coords and self.selected_pick_coords[0] == 6:
+                    prev_pos = self.selected_pick_coords[1]
+                    self.transit_blocks[prev_pos] = {
+                        "id": str(self.selected_pick_block_id),
+                        "colour": self.selected_pick_colour,
+                        "lifted": True
+                    }
                 self.selected_pick_coords = (layer, position)
                 self.selected_pick_block_id = int(block["id"])
                 self.selected_pick_colour = block["colour"]
+                # Remove new pick's transit entry if it's on L6
+                if layer == 6 and position in self.transit_blocks:
+                    del self.transit_blocks[position]
                 self.goal_status_label.config(
                     text=f"Pick updated: L{layer} P{position}.\nStep 2: Choose empty slot on Layer {target_place_layer}.",
                     fg=COLOUR_WHITE
@@ -355,15 +369,15 @@ class JengaInterfaceApp:
                 return
 
             pick_l, pick_p = self.selected_pick_coords
-
             self.ros_node.publish_goal_sequence(pick_l, pick_p, self.selected_pick_block_id, layer, position)
 
-            # Record the in-transit block so layer 6 (TOP) can display it once it leaves layers 0-5
-            self.transit_block = {
+            # FIX 3: Register the in-transit block at its destination position in
+            # transit_blocks. Using a dict keyed by position means multiple L6
+            # blocks are each tracked independently and never overwrite each other.
+            self.transit_blocks[position] = {
                 "id": str(self.selected_pick_block_id),
                 "colour": self.selected_pick_colour,
-                "place_pos": position,
-                "lifted": False   # becomes True once block_states stops reporting this block
+                "lifted": False  # becomes True once block_states stops reporting this block
             }
 
             self.current_state = "WAITING_PICK"
@@ -397,8 +411,8 @@ class JengaInterfaceApp:
         self.state_label.config(text=self.model.get_robot_state())
         target_place_layer = self.model.calculate_valid_placement_layer()
         
+        # Render layers 0-5 from the live data model
         for layer in range(6):
-            # Layers 0-5 driven by block_states
             for pos_idx in range(3):
                 btn = self.goal_buttons.get((layer, pos_idx))
                 if not btn:
@@ -420,34 +434,32 @@ class JengaInterfaceApp:
                 if btn.cget("text") != btn_text or btn.cget("bg") != bg_color:
                     btn.config(text=btn_text, bg=bg_color, fg=fg_color, activebackground=bg_color, relief=relief_type)
 
-        # --- Layer 6 (TOP): merges in-transit display with normal placement highlight ---
-        # Resolve transit state once before the position loop
-        in_transit = False
-        if self.transit_block is not None:
-            block_gone = not self.model.block_id_in_layers(self.transit_block["id"])
-            if block_gone:
-                # Block has left layers 0-5 — mark as lifted and show on layer 6
-                self.transit_block["lifted"] = True
-                in_transit = True
-            elif self.transit_block["lifted"]:
-                # Block was gone and has now reappeared — placement confirmed by perception
-                self.transit_block = None
-            # else: goal published but robot hasn't lifted yet — wait, don't show yet
+        # --- Layer 6 (TOP): update lift state and render from transit_blocks ---
+        # Iterate over a snapshot of keys so we can safely delete during iteration
+        for pos_idx in list(self.transit_blocks.keys()):
+            tb = self.transit_blocks[pos_idx]
+            block_gone = not self.model.block_id_in_layers(tb["id"])
+
+            if block_gone and not tb["lifted"]:
+                # Block has left layers 0-5 — mark as lifted so it shows on L6
+                tb["lifted"] = True
+            elif tb["lifted"] and not block_gone:
+                # Block has reappeared in layers 0-5 — placement confirmed by perception
+                del self.transit_blocks[pos_idx]
 
         for pos_idx in range(3):
             btn = self.goal_buttons.get((6, pos_idx))
             if not btn:
                 continue
 
-            if in_transit and pos_idx == self.transit_block["place_pos"]:
-                # Show the in-transit block with its colour and ID
-                colour = self.transit_block["colour"]
+            tb = self.transit_blocks.get(pos_idx)
+            if tb and tb.get("lifted"):
+                colour = tb["colour"]
                 bg_color = BLOCK_COLOURS.get(colour, COLOUR_WHITE)
                 fg_color = COLOUR_WHITE if colour in ["black", "blue"] else COLOUR_BLACK
-                btn.config(text=self.transit_block["id"], bg=bg_color, fg=fg_color,
+                btn.config(text=tb["id"], bg=bg_color, fg=fg_color,
                            activebackground=bg_color, relief="raised")
             else:
-                # Empty slot — highlight green if layer 6 is the valid placement target
                 bg_color = "#334433" if (target_place_layer == 6 and self.current_state == "WAITING_PLACE") else COLOUR_DARK_GRAY
                 btn.config(text="---", bg=bg_color, fg="#666666",
                            activebackground=bg_color, relief="flat")
