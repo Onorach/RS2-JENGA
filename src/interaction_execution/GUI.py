@@ -161,7 +161,7 @@ class RealSenseCameraNode(Node):
     def publish_goal_sequence(self, pick_layer, pick_pos, pick_block_id, place_layer, place_pos):
         # 2x3 matrix layout:
         # [ pick_layer,  pick_pos,  pick_block_id ]
-        # [ place_layer, place_pos, 0             ]  (place slot is empty, no block ID)
+        # [ place_layer, place_pos, 0             ]
         flat_data = [pick_layer, pick_pos, pick_block_id, place_layer, place_pos, 0]
 
         if flat_data != self._last_goal_state:
@@ -204,7 +204,13 @@ class JengaInterfaceApp:
         self.selected_pick_coords = None
         self.selected_pick_block_id = 0
         self.selected_pick_colour = "unknown"
-        self.transit_block = None  # {"id": str, "colour": str, "place_pos": int}
+
+        # FIX: transit_blocks is a dict keyed by position index (0, 1, 2).
+        # This allows multiple blocks to be tracked on L6 simultaneously,
+        # replacing the old single-entry self.transit_block which was overwritten
+        # on every new placement.
+        self.transit_blocks = {}  # pos_idx -> {"id": str, "colour": str, "lifted": bool}
+
         self.is_estop_active = False
 
         self.setup_ui()
@@ -213,20 +219,10 @@ class JengaInterfaceApp:
     def launch_rviz_simulation(self):
         """Launches RViz as an independent process with proper ROS environment sourcing."""
         try:
-            # 1. Get the current environment
             my_env = os.environ.copy()
-            
-            # 2. Define the path to your workspace setup file
-            # Update this path if your workspace is located elsewhere
             ws_setup = os.path.join(os.path.expanduser("~"), "ros2_ws", "src", "RS2-JENGA", "install", "setup.bash")
-            
-            # 3. Create a command string that sources the setup and then launches
-            # This is the most robust way to ensure the environment is loaded for the subprocess
             cmd = f"source {ws_setup} && ros2 launch ur_onrobot_moveit_config ur_onrobot_moveit.launch.py ur_type:=ur3e onrobot_type:=rg2 launch_rviz:=true launch_servo:=false"
-            
-            # 4. Use shell=True to allow the 'source' command to execute
             subprocess.Popen(cmd, shell=True, executable="/bin/bash", preexec_fn=os.setsid)
-            
             print("[TERMINAL LOG] Simulation visualization launched in external window.")
         except Exception as e:
             print(f"[ERROR] Failed to launch RViz: {e}")
@@ -369,6 +365,9 @@ class JengaInterfaceApp:
                 self.selected_pick_coords = (layer, position)
                 self.selected_pick_block_id = int(block["id"])
                 self.selected_pick_colour = block["colour"]
+                # Remove new pick's transit entry if it's on L6
+                if layer == 6 and position in self.transit_blocks:
+                    del self.transit_blocks[position]
                 self.goal_status_label.config(
                     text=f"Pick updated: L{layer} P{position}.\nStep 2: Choose empty slot on Layer {target_place_layer}.",
                     fg=COLOUR_WHITE
@@ -383,15 +382,15 @@ class JengaInterfaceApp:
                 return
 
             pick_l, pick_p = self.selected_pick_coords
-
             self.ros_node.publish_goal_sequence(pick_l, pick_p, self.selected_pick_block_id, layer, position)
 
-            # Record the in-transit block so layer 6 (TOP) can display it once it leaves layers 0-5
-            self.transit_block = {
+            # FIX 3: Register the in-transit block at its destination position in
+            # transit_blocks. Using a dict keyed by position means multiple L6
+            # blocks are each tracked independently and never overwrite each other.
+            self.transit_blocks[position] = {
                 "id": str(self.selected_pick_block_id),
                 "colour": self.selected_pick_colour,
-                "place_pos": position,
-                "lifted": False   # becomes True once block_states stops reporting this block
+                "lifted": False  # becomes True once block_states stops reporting this block
             }
 
             self.current_state = "WAITING_PICK"
