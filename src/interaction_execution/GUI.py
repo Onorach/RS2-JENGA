@@ -203,6 +203,8 @@ class JengaInterfaceApp:
         self.current_state = "WAITING_PICK"  
         self.selected_pick_coords = None
         self.selected_pick_block_id = 0
+        self.selected_pick_colour = "unknown"
+        self.transit_block = None  # {"id": str, "colour": str, "place_pos": int}
         self.is_estop_active = False
 
         self.setup_ui()
@@ -216,7 +218,7 @@ class JengaInterfaceApp:
             
             # 2. Define the path to your workspace setup file
             # Update this path if your workspace is located elsewhere
-            ws_setup = os.path.join(os.path.expanduser("~"), "RS2-JENGA", "install", "setup.bash")
+            ws_setup = os.path.join(os.path.expanduser("~"), "ros2_ws", "src", "RS2-JENGA", "install", "setup.bash")
             
             # 3. Create a command string that sources the setup and then launches
             # This is the most robust way to ensure the environment is loaded for the subprocess
@@ -340,6 +342,7 @@ class JengaInterfaceApp:
             if block is not None:
                 self.selected_pick_coords = (layer, position)
                 self.selected_pick_block_id = int(block["id"])
+                self.selected_pick_colour = block["colour"]
                 self.current_state = "WAITING_PLACE"
                 # FIX 2: Remove the transit entry for the slot being picked from
                 # so L6 correctly shows it as empty during transit.
@@ -365,6 +368,7 @@ class JengaInterfaceApp:
                     }
                 self.selected_pick_coords = (layer, position)
                 self.selected_pick_block_id = int(block["id"])
+                self.selected_pick_colour = block["colour"]
                 self.goal_status_label.config(
                     text=f"Pick updated: L{layer} P{position}.\nStep 2: Choose empty slot on Layer {target_place_layer}.",
                     fg=COLOUR_WHITE
@@ -379,12 +383,21 @@ class JengaInterfaceApp:
                 return
 
             pick_l, pick_p = self.selected_pick_coords
-            
+
             self.ros_node.publish_goal_sequence(pick_l, pick_p, self.selected_pick_block_id, layer, position)
-            
+
+            # Record the in-transit block so layer 6 (TOP) can display it once it leaves layers 0-5
+            self.transit_block = {
+                "id": str(self.selected_pick_block_id),
+                "colour": self.selected_pick_colour,
+                "place_pos": position,
+                "lifted": False   # becomes True once block_states stops reporting this block
+            }
+
             self.current_state = "WAITING_PICK"
             self.selected_pick_coords = None
             self.selected_pick_block_id = 0
+            self.selected_pick_colour = "unknown"
             self.goal_status_label.config(text="Execution target sent. Step 1: Select next block to Pick Up.", fg=COLOUR_YELLOW)
 
     def handle_estop_toggle(self):
