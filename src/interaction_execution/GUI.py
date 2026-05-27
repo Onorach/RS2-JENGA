@@ -276,7 +276,7 @@ class JengaInterfaceApp:
             self.override_buttons[index] = btn
 
         # Section B: Physical Tower Intermediary Layout Grid
-        tk.Label(ctrl_container, text="Jenga Matrix Grid", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=(15, 2))
+        tk.Label(ctrl_container, text="Next Goal", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=(15, 2))
         grid_wrapper = tk.Frame(ctrl_container, bg=COLOUR_DARK_GRAY)
         grid_wrapper.pack(pady=5)
 
@@ -303,14 +303,14 @@ class JengaInterfaceApp:
                 btn.pack(side=tk.LEFT, padx=2)
                 self.goal_buttons[(layer, pos_idx)] = btn
 
-        # Section C: Simulation Utilities
-        tk.Label(ctrl_container, text="Simulation Utilities", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=(15, 2))
+        # Section C: Simulation
+        tk.Label(ctrl_container, text="Simulation", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=(15, 2))
         tk.Button(ctrl_container, text="Launch RViz Simulation", bg=COLOUR_WHITE, fg=COLOUR_BLACK, 
                   font=("Arial", 10, "bold"), width=24, height=2, command=self.launch_rviz_simulation).pack(pady=5)
 
         # Section D: Safety Utilities
-        tk.Label(ctrl_container, text="Safety Utilities", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=(10, 2))
-        self.estop_button = tk.Button(ctrl_container, text="SYSTEM ENGAGED", bg=COLOUR_GREEN, fg=COLOUR_WHITE, 
+        tk.Label(ctrl_container, text="Emergency Stop", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=(10, 2))
+        self.estop_button = tk.Button(ctrl_container, text="SYSTEM RUNNING", bg=COLOUR_GREEN, fg=COLOUR_WHITE, 
                                       font=("Arial", 11, "bold"), width=24, height=2, command=self.handle_estop_toggle)
         self.estop_button.pack(pady=5)
 
