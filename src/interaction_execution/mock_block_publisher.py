@@ -20,28 +20,35 @@ class JengaMockPublisher(Node):
         # Shifted position values from 1-3 to 0-2 (0=Left, 1=Middle, 2=Right)
         mock_tower_layout = [
             # Layer 0: Missing position 2
-            {"layer": 0, "pos": 0, "id": 1, "colour": "red"},
-            {"layer": 0, "pos": 1, "id": 2, "colour": "green"},
+            {"layer": 0, "pos": 0, "id": 0, "colour": "red"},
+            {"layer": 0, "pos": 1, "id": 1, "colour": "green"},
+            {"layer": 0, "pos": 2, "id": 2, "colour": "purple"},
             
             # Layer 1: Missing positions 0 and 2
-            {"layer": 1, "pos": 1, "id": 3, "colour": "blue"},
+            {"layer": 1, "pos": 0, "id": 3, "colour": "green"},
+            {"layer": 1, "pos": 1, "id": 4, "colour": "blue"},
+            {"layer": 1, "pos": 2, "id": 5, "colour": "purple"},
             
             # Layer 2: Missing position 1
-            {"layer": 2, "pos": 0, "id": 4, "colour": "yellow"},
-            {"layer": 2, "pos": 2, "id": 5, "colour": "natural"},
-            
+            {"layer": 2, "pos": 0, "id": 6, "colour": "yellow"},
+            {"layer": 2, "pos": 1, "id": 7, "colour": "natural"},
+            {"layer": 2, "pos": 2, "id": 8, "colour": "purple"},
+
             # Layer 3: Missing position 0
             
-            {"layer": 3, "pos": 2, "id": 7, "colour": "black"},
-            
+            {"layer": 3, "pos": 0, "id": 9, "colour": "blue"},
+            {"layer": 3, "pos": 1, "id": 10, "colour": "purple"},
+            {"layer": 3, "pos": 2, "id": 11, "colour": "yellow"},
+        
             # Layer 4: Missing positions 1 and 2
-            {"layer": 4, "pos": 0, "id": 8, "colour": "red"},
-            {"layer": 4, "pos": 1, "id": 6, "colour": "purple"},
-            #{"layer": 4, "pos": 2, "id": 10, "colour": "blue"},
-         
+            {"layer": 4, "pos": 0, "id": 12, "colour": "red"},
+            {"layer": 4, "pos": 1, "id": 13, "colour": "purple"},
+            {"layer": 4, "pos": 2, "id": 14, "colour": "green"},         
             
             # Layer 5 (Topmost Layer): Missing position 1
-            {"layer": 5, "pos": 0, "id": 9, "colour": "green"}
+            {"layer": 5, "pos": 0, "id": 15, "colour": "green"},
+            {"layer": 5, "pos": 1, "id": 16, "colour": "red"},
+            {"layer": 5, "pos": 2, "id": 17, "colour": "yellow"}
                
         ]
 
