@@ -11,6 +11,7 @@ Topics subscribed
 -----------------
 /estop_active               std_msgs/Bool
 /ee_override_array          std_msgs/Int8MultiArray  [close, open, release]
+/robot_state_override       std_msgs/String  (manual /robot_state label; see below)
 mtc_status                  std_msgs/String  (pick-place server)
 mtc_probe_status            std_msgs/String  (probe-block server)
 mtc_extract_side_status     std_msgs/String  (extract-side server)
@@ -32,6 +33,7 @@ move_action             (str)   MoveGroup action name    default: /move_action
 gripper_joint_name      (str)   gripper width joint      default: finger_width
 gripper_open_position   (float) open gap in metres       default: 0.100
 gripper_closed_position (float) closed gap in metres     default: 0.0
+manual_robot_state      (str)   latched /robot_state label; "" = automatic
 
 Gripper override behaviour
 --------------------------
@@ -42,6 +44,16 @@ idle, preventing any race with execute_task_solution.  If MTC is busy when the
 button is pressed the override is queued; it fires automatically once the last
 busy server reports idle.  Pressing Release Override at any time cancels any
 in-flight goal and clears the desired state.
+
+Manual /robot_state override
+----------------------------
+Publish a non-empty label on /robot_state_override (e.g. "PROBING") or set the
+manual_robot_state parameter to force that string on /robot_state until cleared.
+Clear with "", "CLEAR", or "NONE" (STANDBY is a valid forced label, not a clear).
+Priority: ESTOP > override > gripper override > MTC busy > STANDBY.
+Does not set MTC busy flags (unlike faking mtc_probe_status).
+Probe busy is debounced so idle status must be reported several times before
+PROBING clears when not using a manual override.
 """
 
 from __future__ import annotations
@@ -54,6 +66,8 @@ from rclpy.action import ActionClient
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
+from rclpy.parameter import Parameter
+from rcl_interfaces.msg import SetParametersResult
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import (
     Constraints,
@@ -90,6 +104,12 @@ _MTC_TOPICS: dict[str, str] = {
     "mtc_probe_status":           "PROBING",
 }
 
+# Values on /robot_state_override / manual_robot_state that clear a latched label.
+_CLEAR_OVERRIDE_LABELS = frozenset({"", "CLEAR", "NONE"})
+
+# Consecutive idle mtc_probe_status messages before clearing probe busy.
+_PROBE_BUSY_IDLE_STREAK_TO_CLEAR = 3
+
 
 class RobotStateBridgeNode(Node):
     """
@@ -122,6 +142,7 @@ class RobotStateBridgeNode(Node):
         self._closed_pos: float = self.declare_parameter(
             "gripper_closed_position", 0.0
         ).value
+        self.declare_parameter("manual_robot_state", "")
 
         # ── Internal state ──────────────────────────────────────────────────
         self._lock = threading.Lock()
@@ -133,6 +154,9 @@ class RobotStateBridgeNode(Node):
         # True while a MoveGroup gripper goal is in the air.
         self._override_in_flight: bool = False
         self._gripper_goal_handle = None
+        # Manual /robot_state label (None = use automatic MTC-derived state).
+        self._state_override: str | None = None
+        self._probe_idle_streak: int = 0
 
         # ── Callback group (reentrant so async action callbacks can fire) ───
         self._cbg = ReentrantCallbackGroup()
@@ -147,6 +171,14 @@ class RobotStateBridgeNode(Node):
 
         self.create_subscription(
             Int8MultiArray, "/ee_override_array", self._cb_override, 10
+        )
+        self.create_subscription(
+            String, "/robot_state_override", self._cb_state_override, 10
+        )
+        self.add_on_set_parameters_callback(self._on_set_parameters)
+
+        self._apply_manual_robot_state_param(
+            str(self.get_parameter("manual_robot_state").value)
         )
 
         # ── Publisher ───────────────────────────────────────────────────────
@@ -184,6 +216,60 @@ class RobotStateBridgeNode(Node):
         with self._lock:
             self._estop = msg.data
 
+    @staticmethod
+    def _parse_mtc_busy(msg: String) -> bool:
+        try:
+            data = json.loads(msg.data)
+            return bool(data.get("busy", False))
+        except (json.JSONDecodeError, TypeError):
+            return False
+
+    @staticmethod
+    def _normalize_override_label(raw: str | None) -> str | None:
+        label = (raw or "").strip().upper()
+        if label in _CLEAR_OVERRIDE_LABELS:
+            return None
+        return label or None
+
+    def _set_state_override_locked(self, label: str | None) -> None:
+        """Update latched manual label. Caller must hold ``_lock``."""
+        if label == self._state_override:
+            return
+        if label is None:
+            if self._state_override is not None:
+                self.get_logger().info(
+                    f"Robot state override cleared (was '{self._state_override}')"
+                )
+        else:
+            self.get_logger().info(f"Robot state override set to '{label}'")
+        self._state_override = label
+
+    def _apply_manual_robot_state_param(self, raw: str) -> None:
+        label = self._normalize_override_label(raw)
+        with self._lock:
+            self._set_state_override_locked(label)
+
+    def _on_set_parameters(self, params: list[Parameter]) -> SetParametersResult:
+        for param in params:
+            if param.name == "manual_robot_state":
+                self._apply_manual_robot_state_param(
+                    str(param.value) if param.value is not None else ""
+                )
+        return SetParametersResult(successful=True)
+
+    def _update_probe_busy_locked(self, busy: bool) -> bool:
+        """Update debounced probe busy. Caller must hold ``_lock``. Returns new busy."""
+        topic = "mtc_probe_status"
+        if busy:
+            self._probe_idle_streak = 0
+            self._server_busy[topic] = True
+            return True
+        self._probe_idle_streak += 1
+        if self._probe_idle_streak >= _PROBE_BUSY_IDLE_STREAK_TO_CLEAR:
+            self._server_busy[topic] = False
+            return False
+        return self._server_busy[topic]
+
     def _make_status_cb(self, topic: str):
         """Return a closure that updates the busy flag for *topic*.
 
@@ -191,14 +277,13 @@ class RobotStateBridgeNode(Node):
         queued gripper override that was blocked while MTC was running.
         """
         def _cb(msg: String) -> None:
-            try:
-                data = json.loads(msg.data)
-                busy = bool(data.get("busy", False))
-            except (json.JSONDecodeError, TypeError):
-                busy = False
+            busy = self._parse_mtc_busy(msg)
             with self._lock:
                 was_busy = self._server_busy[topic]
-                self._server_busy[topic] = busy
+                if topic == "mtc_probe_status":
+                    busy = self._update_probe_busy_locked(busy)
+                else:
+                    self._server_busy[topic] = busy
                 became_idle = was_busy and not busy
             if became_idle:
                 self._try_apply_override()
@@ -228,6 +313,16 @@ class RobotStateBridgeNode(Node):
         else:
             self._try_apply_override()
 
+    def _cb_state_override(self, msg: String) -> None:
+        """Latch or clear a manual /robot_state label (also syncs manual_robot_state param)."""
+        label = self._normalize_override_label(msg.data)
+        with self._lock:
+            self._set_state_override_locked(label)
+        param_val = "" if label is None else label
+        self.set_parameters(
+            [Parameter("manual_robot_state", Parameter.Type.STRING, param_val)]
+        )
+
     # ── State publishing ────────────────────────────────────────────────────
 
     def _publish_state(self) -> None:
@@ -240,6 +335,8 @@ class RobotStateBridgeNode(Node):
         with self._lock:
             if self._estop:
                 return "ESTOP ACTIVE"
+            if self._state_override is not None:
+                return self._state_override
             mtc_busy = any(self._server_busy.values())
             if self._desired_override != "none":
                 base = (

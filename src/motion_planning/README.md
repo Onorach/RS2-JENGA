@@ -37,6 +37,7 @@ source install/setup.bash
 | `exclusion_zones_node` | Loads exclusion zones from YAML into the MoveIt planning scene           |
 | `test_rmrc_pose`       | Test script that publishes sample goal poses                             |
 | `robot_gui`            | GUI for robot interaction                                                |
+| `robot_state_bridge_node` | Publishes `/robot_state` from MTC busy flags; gripper override via `/ee_override_array` |
 | `jenga_blocks_scene`   | Publishes Jenga block boxes to the MoveIt planning scene (MTC workflows) |
 
 
@@ -233,6 +234,36 @@ ros2 launch motion_planning motion_planning.launch.py planner:=mtc \
 ### Concurrency
 
 Do **not** send goals to two MTC action servers at the same time. Servers share execution through `move_group`; overlapping goals can race on `/execute_task_solution`.
+
+### Manual `/robot_state` override
+
+`robot_state_bridge_node` publishes `/robot_state` at 5 Hz from MTC server `busy` flags (e.g. `PROBING` when `mtc_probe_status` reports busy). Publishing directly to `/robot_state` has no effect — the bridge overwrites it.
+
+To force a label while debugging (e.g. probe action broken but perception/GUI need `PROBING`):
+
+```bash
+# Preferred: parameter latch (survives a missed one-shot topic message)
+ros2 param set /robot_state_bridge_node manual_robot_state PROBING
+
+# Or one-shot topic (also updates the parameter)
+ros2 topic pub --once /robot_state_override std_msgs/msg/String "{data: 'PROBING'}"
+
+# Force STANDBY on the GUI (valid override label — does not clear the latch)
+ros2 param set /robot_state_bridge_node manual_robot_state STANDBY
+
+# Clear override (resume automatic state from MTC)
+ros2 param set /robot_state_bridge_node manual_robot_state ""
+# or: ros2 topic pub --once /robot_state_override std_msgs/msg/String "{data: CLEAR}"
+
+# Verify
+ros2 topic echo /robot_state --once
+```
+
+Clear values: empty string, `CLEAR`, or `NONE` only (`STANDBY` is a forced label, not a clear). Priority: ESTOP > override > gripper override > MTC busy > STANDBY. Override does not set MTC `busy` flags. Without a manual override, probe `busy` is debounced so brief idle status messages do not flicker the GUI between `STANDBY` and `PROBING`.
+
+Do not publish to `/robot_state` while the bridge is running — a second publisher will make the GUI oscillate.
+
+With perception, select the probe target via Layer Analysis click before or after enabling override; robot-controlled probe targeting from `/selected_goal` requires a resolved block id separately.
 
 ### Actions (interface reference)
 
