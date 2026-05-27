@@ -286,7 +286,7 @@ class JengaInterfaceApp:
             self.override_buttons[index] = btn
 
         # Section B: Physical Tower Intermediary Layout Grid
-        tk.Label(ctrl_container, text="Jenga Matrix Grid", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=(15, 2))
+        tk.Label(ctrl_container, text="Next Goal", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=(15, 2))
         grid_wrapper = tk.Frame(ctrl_container, bg=COLOUR_DARK_GRAY)
         grid_wrapper.pack(pady=5)
 
