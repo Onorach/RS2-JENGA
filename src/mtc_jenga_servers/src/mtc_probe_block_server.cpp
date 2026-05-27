@@ -69,7 +69,7 @@ class MtcProbeBlockServer : public rclcpp::Node {
     retreat_distance_ = mtc_jenga::param<double>(this, "retreat_distance", 0.02);
 
     probe_r_ = mtc_jenga::param<double>(this, "probe_frame_roll", 0.0);
-    probe_p_ = mtc_jenga::param<double>(this, "probe_frame_pitch", -M_PI / 1.0);
+    probe_p_ = mtc_jenga::param<double>(this, "probe_frame_pitch", M_PI / 1.0);
     probe_y_ = mtc_jenga::param<double>(this, "probe_frame_yaw", 0.0);
 
     ft_sensor_topic_ = mtc_jenga::param<std::string>(this, "ft_topic", "force_torque_sensor_broadcaster/wrench");
