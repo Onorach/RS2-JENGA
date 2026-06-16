@@ -58,6 +58,7 @@ import numpy as np
 import cv2
 
 from colour_identification import classify_hsv
+from centre_seam import closest_depth_column
 from perception_config import HSV_RANGES
 
 # Minimum pixels for a colour blob to be considered valid.
@@ -118,26 +119,17 @@ def _split_x_and_min_depth(
 
     Strategy: the near face of the block contains the closest (shallowest)
     depth pixels.  We find the minimum depth in the blob, collect all pixels
-    at that depth (within 1 mm tolerance) and return their mean x.  That x
-    is the near-face edge — pixels outside this line belong to the near face.
+    within 1 mm of it (sensor quantisation noise) and return their mean x.  That
+    x is the near-face edge — pixels outside this line belong to the near face.
+
+    Delegates to centre_seam.closest_depth_column, the single shared
+    closest-to-camera-column primitive also used for the grid centre seam.
 
     Returns (split_x, min_depth_mm).  Both are None when no valid pixels exist.
     min_depth_mm is exposed so callers can compare across cells to decide which
     cell is seeing the true near face (see _combined_split_x_per_colour).
     """
-    ys, xs = np.where(mask)
-    if len(xs) == 0:
-        return None, None
-    depths = depth[ys, xs].astype(np.float32)
-    valid  = (depths > 0) & np.isfinite(depths)
-    if not np.any(valid):
-        return None, None
-    dv    = depths[valid]
-    xv    = xs[valid]
-    min_d = float(np.min(dv))
-    # Accept pixels within 1 mm of the minimum (sensor quantisation noise).
-    near = dv <= (min_d + 1.0)
-    return float(np.mean(xv[near])), min_d
+    return closest_depth_column(depth, mask, depth_tol_mm=1.0, stat="mean")
 
 
 def _split_x_from_closest_pixels(

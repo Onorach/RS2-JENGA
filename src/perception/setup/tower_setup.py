@@ -110,29 +110,12 @@ def _action_button_at(panel_x: int, panel_y: int, panel_w: int) -> str | None:
     return None
 
 
-def _draw_control_strip(
-    panel: np.ndarray,
-    sat_min: int,
-    brightness_min: int,
-    fill_gaps: int,
-    reduce_noise: int,
-) -> None:
+def _draw_control_strip(panel: np.ndarray) -> None:
     panel[:] = (42, 42, 42)
     cv2.putText(
         panel,
-        f"S min {sat_min}  |  V min {brightness_min}  |  "
-        f"fill gaps {fill_gaps}  |  reduce noise {reduce_noise}  (0 = off)",
-        (12, 22),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.48,
-        (220, 220, 220),
-        1,
-        cv2.LINE_AA,
-    )
-    cv2.putText(
-        panel,
         "Left: tower overlay   Right: B&W mask (Tower finder)  |  b=Back  n=Next  f=Finish",
-        (12, 44),
+        (12, 26),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.42,
         (150, 150, 150),
@@ -306,7 +289,7 @@ def run_tower_setup(
                 )
 
             panel = np.zeros((_PANEL_H, layout_w, 3), dtype=np.uint8)
-            _draw_control_strip(panel, sat_min, brightness_min, fill_gaps, reduce_noise)
+            _draw_control_strip(panel)
             composite = np.vstack([view_disp, panel])
             view_h = view_disp.shape[0]
             cv2.setMouseCallback(_WINDOW, _on_mouse, (view_h, layout_w))

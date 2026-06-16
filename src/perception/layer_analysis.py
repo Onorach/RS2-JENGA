@@ -467,25 +467,15 @@ def annotate_depth_split_lines_for_tower(
             right_cell,
             orientation,
         )
-        # Only annotate the NEAREST (front) block per layer.
-        # Multiple blocks can have split lines computed, but displaying all of
-        # them clutters the overlay.  The front block (smallest face_depth_mm)
-        # is the only one whose split line is meaningful for monitoring.
-        nearest_block = None
-        nearest_depth = float("inf")
+        # Annotate every present block whose colour has a computed split line,
+        # so the white seam is drawn for any block, not just the front one.
         for block in layer.get("blocks", []):
             if not block.get("present"):
                 continue
-            d = block.get("face_depth_mm") or block.get("depth_mm")
-            if d is not None and float(d) < nearest_depth:
-                nearest_depth = float(d)
-                nearest_block = block
-
-        if nearest_block is not None:
-            colour   = str(nearest_block.get("colour", ""))
-            split_x  = split_x_by_colour.get(colour)
+            colour  = str(block.get("colour", ""))
+            split_x = split_x_by_colour.get(colour)
             if split_x is not None:
-                nearest_block["depth_split_x_px"] = float(split_x)
+                block["depth_split_x_px"] = float(split_x)
 
     return tower
 

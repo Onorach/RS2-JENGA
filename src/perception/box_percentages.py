@@ -26,6 +26,7 @@ except ImportError:
     Node = object
 
 from colour_identification import classify_hsv
+from centre_seam import closest_depth_column
 from perception_config import HSV_RANGES, COLOUR_BGR
 
 DOMINANT_PCT      = 55.0   # Above this → side-on face.
@@ -215,23 +216,14 @@ def _depth_split_x_from_closest_pixels(
 ) -> float | None:
     """
     Estimate split x for a colour blob using the closest (smallest) depth.
+
+    Delegates to centre_seam.closest_depth_column, the single shared
+    closest-to-camera-column primitive (here gated to exactly the minimum depth).
     """
-    ys, xs = np.where(mask)
-    if len(xs) == 0:
-        return None
-
-    depths = depth_frame[ys, xs].astype(np.float32)
-    valid = (depths > 0) & np.isfinite(depths)
-    if not np.any(valid):
-        return None
-
-    xs_valid = xs[valid]
-    depths_valid = depths[valid]
-    min_depth = float(np.min(depths_valid))
-    near = depths_valid <= min_depth
-    if not np.any(near):
-        return None
-    return float(np.mean(xs_valid[near]))
+    split_x, _ = closest_depth_column(
+        depth_frame, mask, depth_tol_mm=0.0, stat="mean",
+    )
+    return split_x
 
 
 def colour_mean_xy_in_cell(

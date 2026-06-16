@@ -78,22 +78,12 @@ def _action_button_at(panel_x: int, panel_y: int, panel_w: int) -> str | None:
     return None
 
 
-def _draw_control_strip(panel: np.ndarray, canny_low: int, canny_high: int) -> None:
+def _draw_control_strip(panel: np.ndarray) -> None:
     panel[:] = (42, 42, 42)
     cv2.putText(
         panel,
-        f"Canny low {canny_low}  |  Canny high {canny_high}",
-        (12, 22),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
-        (220, 220, 220),
-        1,
-        cv2.LINE_AA,
-    )
-    cv2.putText(
-        panel,
         "Canny on colour mask image  |  b=Back  n=Next  f=Finish",
-        (12, 44),
+        (12, 26),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.4,
         (150, 150, 150),
@@ -253,7 +243,7 @@ def run_mask_canny_setup(
 
             view_disp = _build_preview(colour_img, low, high)
             panel = np.zeros((_PANEL_H, view_disp.shape[1], 3), dtype=np.uint8)
-            _draw_control_strip(panel, low, high)
+            _draw_control_strip(panel)
             composite = np.vstack([view_disp, panel])
             view_h = view_disp.shape[0]
             cv2.setMouseCallback(_WINDOW, _on_mouse, (view_h, view_disp.shape[1]))

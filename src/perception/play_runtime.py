@@ -93,7 +93,7 @@ GRID_POINTS_MAX_INPUT_LINES = 500
 _GRID_DETECTION_WINDOWS = (
     "Colour mask",
     "Canny (colour mask)",
-    "Canny (original)",
+    "Centre seam (depth)",
     "Edges",
 )
 
@@ -267,11 +267,16 @@ def _run_loop(
             colour_img, _ = classify_roi_bgr(roi_bgr)
             cv2.imshow("Colour mask", colour_img)
             grid_frame_n += 1
-            disp_grey, lines_grey, edges_colour, edges_original = build_edge_display(
-                colour_img, roi_bgr,
+            depth_roi = (
+                None
+                if depth_mm is None
+                else depth_mm[roi_y:roi_y + rh, roi_x:roi_x + rw]
+            )
+            disp_grey, lines_grey, edges_colour, edges_seam = build_edge_display(
+                colour_img, depth_roi=depth_roi,
             )
             cv2.imshow("Canny (colour mask)", edges_colour)
-            cv2.imshow("Canny (original)",    edges_original)
+            cv2.imshow("Centre seam (depth)", edges_seam)
 
             grey_line_history.append(lines_grey)
             line_cap = max(1, int(GRID_POINTS_MAX_INPUT_LINES))
