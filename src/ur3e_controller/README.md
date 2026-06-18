@@ -98,7 +98,7 @@ This package can plan **collision-free Cartesian motions** and handle **inverse 
 2. Start the motion planning stack (from the `motion_planning` package):
 
 ```bash
-ros2 launch motion_planning motion_planning.launch.py
+ros2 launch motion_planning motion_planning_bringup.launch.py
 ```
 
 3. Send a goal pose (frame_id must match your planning frame, e.g. `base_link`):
@@ -125,12 +125,12 @@ To keep the robot (or any part of it) out of certain regions (sim or hardware), 
 - **From YAML at startup:** copy `config/exclusion_zones_example.yaml`, edit boxes/spheres (frame, position, size/radius), then:
 
 ```bash
-ros2 launch motion_planning motion_planning.launch.py exclusion_zones_file:=/path/to/your/exclusion_zones.yaml
+ros2 launch motion_planning motion_planning_bringup.launch.py exclusion_zones_file:=/path/to/your/exclusion_zones.yaml
 ```
 
 - **From code:** use `MoveItPlanningInterface.add_exclusion_zone_box()` and `add_exclusion_zone_sphere()`, or the helper in `exclusion_zones_loader.py` (`apply_exclusion_zones_to_scene()`).
 
-Standalone loader node (e.g. if you don’t use `motion_planning.launch.py`):
+Standalone loader node (e.g. if you don’t use `motion_planning_bringup.launch.py`):
 
 ```bash
 ros2 run motion_planning exclusion_zones_node --ros-args -p exclusion_zones_file:=/path/to/zones.yaml
@@ -153,7 +153,7 @@ Or start sim separately, then motion planning with RMRC:
 ros2 launch ur3e_controller ur3e_sim_control.launch.py launch_rviz:=false
 
 # Terminal 2: motion planning with RMRC (no MoveIt needed)
-ros2 launch motion_planning motion_planning.launch.py use_rmrc:=true
+ros2 launch motion_planning motion_planning_bringup.launch.py use_rmrc:=true
 ```
 
 **Send goal poses via CLI:**

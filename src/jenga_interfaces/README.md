@@ -62,7 +62,7 @@ Before sending action goals:
 Starts all five MTC action servers plus `jenga_blocks_scene` (planning-scene services). Start **after** MoveIt and the robot are running:
 
 ```bash
-ros2 launch motion_planning motion_planning.launch.py planner:=mtc
+ros2 launch motion_planning motion_planning_bringup.launch.py planner:=mtc
 ```
 
 MTC-relevant launch arguments:
@@ -80,7 +80,7 @@ MTC-relevant launch arguments:
 Example with common overrides:
 
 ```bash
-ros2 launch motion_planning motion_planning.launch.py planner:=mtc \
+ros2 launch motion_planning motion_planning_bringup.launch.py planner:=mtc \
   jenga_blocks_startup_layout:=tower \
   max_velocity_scaling_factor:=0.2
 ```
@@ -161,7 +161,7 @@ Resolved names are typically absolute (e.g. `/jenga_pick_place`). Override with 
 
 ```mermaid
 flowchart TB
-  subgraph integrated [motion_planning.launch.py planner_mtc]
+  subgraph integrated [motion_planning_bringup.launch.py planner_mtc]
     scene[jenga_blocks_scene]
     pp[mtc_pick_place_server]
     ar[mtc_arm_ready_server]
@@ -186,7 +186,7 @@ flowchart TB
 
 ## Calling services
 
-Services are provided by **`jenga_blocks_scene`**, not by `jenga_interfaces` itself. They are available when `motion_planning.launch.py` runs with `planner:=mtc`, or when you run `jenga_blocks_scene` manually.
+Services are provided by **`jenga_blocks_scene`**, not by `jenga_interfaces` itself. They are available when `motion_planning_bringup.launch.py` runs with `planner:=mtc`, or when you run `jenga_blocks_scene` manually.
 
 | Service name | Type | When available |
 |--------------|------|----------------|

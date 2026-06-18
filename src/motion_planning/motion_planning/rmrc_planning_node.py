@@ -397,7 +397,7 @@ class RMRCPlanningNode(Node):
         if not rd or not isinstance(rd, str):
             self.get_logger().error(
                 "robot_description parameter not set. Pass it via the launch file "
-                "(e.g. planner:=rmrc with motion_planning.launch)."
+                "(e.g. planner:=rmrc with motion_planning_bringup.launch)."
             )
             return None
         try:

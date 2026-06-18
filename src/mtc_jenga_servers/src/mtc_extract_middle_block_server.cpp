@@ -348,7 +348,7 @@ class MtcExtractMiddleBlockServer : public rclcpp::Node {
         stage->setPose(place_in_world);
         stage->setMonitoredStage(attach_object_stage);
         auto w = std::make_unique<mtc::stages::ComputeIK>("place IK", std::move(stage));
-        w->setMaxIKSolutions(4);
+        w->setMaxIKSolutions(2);
         w->setMinSolutionDistance(0.5);
         w->setIKFrame(block_id);
         w->properties().configureInitFrom(mtc::Stage::PARENT, {"eef", "group"});

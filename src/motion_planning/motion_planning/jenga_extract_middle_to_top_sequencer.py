@@ -582,7 +582,7 @@ def _build_runtime(node: Node) -> tuple[_SequencerRuntime | None, int]:
     place_top_slot = int(node.declare_parameter("place_top_slot", -1).value)
 
     handoff_dx = float(node.declare_parameter("handoff_dx", -0.15).value)
-    handoff_dy = float(node.declare_parameter("handoff_dy", -0.08).value)
+    handoff_dy = float(node.declare_parameter("handoff_dy", -0.10).value)
     handoff_dz = float(node.declare_parameter("handoff_dz", 0.0).value)
 
     max_block_index_param = int(node.declare_parameter("max_block_index", -1).value)
