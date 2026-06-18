@@ -1,4 +1,3 @@
-
 """
 Launch Motion Planning and Control: pose goal node, exclusion zones, and e-stop node.
 Start this after MoveIt2 and the robot (sim or hardware) are running.
@@ -841,3 +840,4 @@ def generate_launch_description():
         estop_node,
         robot_state_bridge_node,
     ])
+

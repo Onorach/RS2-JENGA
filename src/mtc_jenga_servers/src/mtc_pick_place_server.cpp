@@ -66,10 +66,10 @@ class MtcPickPlaceServer : public rclcpp::Node {
     open_state_ = mtc_jenga::param<std::string>(this, "gripper_open_state", "open");
     closed_state_ = mtc_jenga::param<std::string>(this, "gripper_closed_state", "grip_block_length");
     plan_max_attempts_ = static_cast<uint32_t>(mtc_jenga::param<int>(this, "plan_max_attempts", 1));
-    plan_time_ = mtc_jenga::param<double>(this, "plan_time", 1.0);
+    plan_time_ = mtc_jenga::param<double>(this, "plan_time", 0.25);
     status_topic_ = mtc_jenga::param<std::string>(this, "status_topic", "mtc_status");
     const std::string goal_topic = mtc_jenga::param<std::string>(this, "goal_topic", "goal_pose");
-    (void)mtc_jenga::param<int>(this, "action_timeout_sec", 5);
+    (void)mtc_jenga::param<int>(this, "action_timeout_sec", plan_time_ + 1);
     vel_scale_ = mtc_jenga::param<double>(this, "max_velocity_scaling_factor", 0.1);
     acc_scale_ = mtc_jenga::param<double>(this, "max_acceleration_scaling_factor", 0.1);
     grasp_r_ = mtc_jenga::param<double>(this, "grasp_frame_roll", 0.0);
@@ -223,7 +223,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
     {
       auto stage_mtp = std::make_unique<mtc::stages::Connect>(
           "move to pick", mtc::stages::Connect::GroupPlannerVector{{arm_group_name, sampling_planner}});
-      stage_mtp->setTimeout(plan_time_);
+      stage_mtp->setTimeout(plan_time_ * 2.0 + 0.5);
       stage_mtp->properties().configureInitFrom(mtc::Stage::PARENT);
       task.add(std::move(stage_mtp));
     }
@@ -264,8 +264,8 @@ class MtcPickPlaceServer : public rclcpp::Node {
                             * Eigen::AngleAxisd(grasp_p_, Eigen::Vector3d::UnitY())
                             * Eigen::AngleAxisd(grasp_y_, Eigen::Vector3d::UnitZ());
         auto w = std::make_unique<mtc::stages::ComputeIK>("grasp pose IK", std::move(stage));
-        w->setMaxIKSolutions(4);
-        w->setMinSolutionDistance(0.5);
+        w->setMaxIKSolutions(2);
+        // w->setMinSolutionDistance(0.5);
         w->setIKFrame(grasp_ft, hand_frame);
         w->properties().configureInitFrom(mtc::Stage::PARENT, {"eef", "group"});
         w->properties().configureInitFrom(mtc::Stage::INTERFACE, {"target_pose"});
@@ -305,7 +305,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
     {
       auto c = std::make_unique<mtc::stages::Connect>(
           "move to place", mtc::stages::Connect::GroupPlannerVector{{arm_group_name, sampling_planner}});
-      c->setTimeout(plan_time_);
+      c->setTimeout(plan_time_ + 0.5);
       c->properties().configureInitFrom(mtc::Stage::PARENT);
       task.add(std::move(c));
     }
@@ -340,7 +340,7 @@ class MtcPickPlaceServer : public rclcpp::Node {
         stage->setPose(target);
         stage->setMonitoredStage(attach_object_stage);
         auto w = std::make_unique<mtc::stages::ComputeIK>("place pose IK", std::move(stage));
-        w->setMaxIKSolutions(4);
+        w->setMaxIKSolutions(1);
         w->setMinSolutionDistance(0.5);
         w->setIKFrame(block_id);
         w->properties().configureInitFrom(mtc::Stage::PARENT, {"eef", "group"});

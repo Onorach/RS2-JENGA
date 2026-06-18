@@ -8,7 +8,7 @@ ROS2 package for motion planning with a UR3e: pose goals, RMRC (Resolved Motion 
 - **RMRC planner** – Jacobian-based Cartesian planning with potential-field collision avoidance (no MoveIt GUI)
 - **Exclusion zones** – No-go regions (boxes, spheres) loaded from YAML or added in code
 - **E-stop integration** – Works with `ur3e_controller` estop node to cancel trajectories
-- **MoveIt Task Constructor (MTC)** – Jenga pick/place, extract, probe, and arm-ready actions via `mtc_jenga_servers` when `planner:=mtc` (default in `motion_planning.launch.py`)
+- **MoveIt Task Constructor (MTC)** – Jenga pick/place, extract, probe, and arm-ready actions via `mtc_jenga_servers` when `planner:=mtc` (default in `motion_planning_bringup.launch.py`)
 
 ## Requirements
 
@@ -43,7 +43,7 @@ source install/setup.bash
 
 ### `jenga_blocks_scene` services
 
-Started when `motion_planning.launch.py` runs with `planner:=mtc`. Services only update the **MoveIt planning scene**; they do not move Gazebo models or real blocks.
+Started when `motion_planning_bringup.launch.py` runs with `planner:=mtc`. Services only update the **MoveIt planning scene**; they do not move Gazebo models or real blocks.
 
 By default (`jenga_blocks_startup_layout:=none`), no blocks are published at startup. Use `jenga_blocks_startup_layout:=stock` or `:=tower` to spawn all blocks on launch, or call `set_jenga_blocks_layout` at runtime.
 
@@ -66,7 +66,7 @@ ros2 service call /set_jenga_blocks_layout jenga_interfaces/srv/SetJengaBlocksLa
   "{block_indices: [], target_layout: 'tower'}"
 
 # 2) Enable perception updates (restart launch, or set at startup)
-ros2 launch motion_planning motion_planning.launch.py planner:=mtc \
+ros2 launch motion_planning motion_planning_bringup.launch.py planner:=mtc \
   jenga_blocks_perception_updates:=true
 ```
 
@@ -116,7 +116,7 @@ parametric:
 **Per-machine file:** copy the YAML (e.g. `jenga_tower_mtc_layout_lab2.yaml`), change only `platform_offset`, and pass it at launch:
 
 ```bash
-ros2 launch motion_planning motion_planning.launch.py planner:=mtc \
+ros2 launch motion_planning motion_planning_bringup.launch.py planner:=mtc \
   jenga_blocks_layout_path:=/path/to/jenga_tower_mtc_layout_lab2.yaml
 ```
 
@@ -136,7 +136,7 @@ Restart MTC sequencers/tests after YAML changes (they load the file once at star
 Start this **after** the robot and (optionally) MoveIt2 are running:
 
 ```bash
-ros2 launch motion_planning motion_planning.launch.py
+ros2 launch motion_planning motion_planning_bringup.launch.py
 ```
 
 **Parameters:**
@@ -170,13 +170,13 @@ ros2 launch motion_planning motion_planning.launch.py
 
 ```bash
 # With custom exclusion zones
-ros2 launch motion_planning motion_planning.launch.py exclusion_zones_file:=/path/to/zones.yaml
+ros2 launch motion_planning motion_planning_bringup.launch.py exclusion_zones_file:=/path/to/zones.yaml
 
 # RMRC planning (no MoveIt GUI)
-ros2 launch motion_planning motion_planning.launch.py use_rmrc:=true
+ros2 launch motion_planning motion_planning_bringup.launch.py use_rmrc:=true
 
 # RMRC local velocity servo mode (for fine manipulation/contact tasks)
-ros2 launch motion_planning motion_planning.launch.py use_rmrc:=true execution_mode:=velocity
+ros2 launch motion_planning motion_planning_bringup.launch.py use_rmrc:=true execution_mode:=velocity
 ```
 
 ### Standalone exclusion zones loader
@@ -189,11 +189,11 @@ ros2 run motion_planning exclusion_zones_node --ros-args -p exclusion_zones_file
 
 ## MoveIt Task Constructor (MTC)
 
-Integrated Jenga manipulation uses **actions** from `[jenga_interfaces](../jenga_interfaces/README.md)`, implemented by C++ servers in `[mtc_jenga_servers](../mtc_jenga_servers/README.md)`. Launching `motion_planning.launch.py` with `planner:=mtc` (the default) starts the MTC server nodes together with `jenga_blocks_scene`, exclusion zones, and e-stop.
+Integrated Jenga manipulation uses **actions** from `[jenga_interfaces](../jenga_interfaces/README.md)`, implemented by C++ servers in `[mtc_jenga_servers](../mtc_jenga_servers/README.md)`. Launching `motion_planning_bringup.launch.py` with `planner:=mtc` (the default) starts the MTC server nodes together with `jenga_blocks_scene`, exclusion zones, and e-stop.
 
 ```mermaid
 flowchart LR
-  bringup[motion_planning.launch.py planner_mtc]
+  bringup[motion_planning_bringup.launch.py planner_mtc]
   servers[mtc_jenga_servers nodes]
   clients[Python tests and sequencers]
   mg[move_group plus execute_task_solution]
@@ -209,7 +209,7 @@ flowchart LR
 - **Driver** and **robot_state_publisher** / joint states running.
 - `**move_group`** on the same `ROS_DOMAIN_ID`, with **ExecuteTaskSolutionCapability** loaded (`/execute_task_solution` must exist).
 - Planning groups and frames match your SRDF (defaults assume ur_onrobot-style names; override via server parameters if needed).
-- `**joint_trajectory_action`** passed into `motion_planning.launch.py` must match the active arm trajectory action (e.g. scaled vs non-scaled controller) for `estop_node`.
+- `**joint_trajectory_action`** passed into `motion_planning_bringup.launch.py` must match the active arm trajectory action (e.g. scaled vs non-scaled controller) for `estop_node`.
 - Set `**publish_world_to_base_tf**`, `**base_height**`, `**base_yaw**` so `world` and collision objects align with your TF tree.
 
 ### Launch (full stack node)
@@ -217,7 +217,7 @@ flowchart LR
 Start **after** MoveIt and the robot are up (or use `ur_onrobot_mtc_bringup.launch.py` from the repo root README):
 
 ```bash
-ros2 launch motion_planning motion_planning.launch.py planner:=mtc \
+ros2 launch motion_planning motion_planning_bringup.launch.py planner:=mtc \
   joint_trajectory_action:=/scaled_joint_trajectory_controller/follow_joint_trajectory \
   publish_world_to_base_tf:=true base_height:=0.0 base_yaw:=0.0
 ```

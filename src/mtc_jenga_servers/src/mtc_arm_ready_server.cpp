@@ -30,7 +30,7 @@ class MtcArmReadyServer : public rclcpp::Node {
     action_name_ = mtc_jenga::param<std::string>(this, "action_name", "jenga_arm_ready");
     arm_group_name = mtc_jenga::param<std::string>(this, "arm_group", "ur_onrobot_manipulator");
     arm_home_state_ = mtc_jenga::param<std::string>(this, "arm_home_state", "ready_position");
-    plan_max_attempts_ = static_cast<uint32_t>(mtc_jenga::param<int>(this, "plan_max_attempts", 1));
+    plan_max_attempts_ = static_cast<uint32_t>(mtc_jenga::param<int>(this, "plan_max_attempts", 3));
     plan_time_ = mtc_jenga::param<double>(this, "plan_time", 2.0);
     vel_scale_ = mtc_jenga::param<double>(this, "max_velocity_scaling_factor", 0.1);
     acc_scale_ = mtc_jenga::param<double>(this, "max_acceleration_scaling_factor", 0.1);
@@ -85,6 +85,7 @@ class MtcArmReadyServer : public rclcpp::Node {
 
     auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(node_ptr);
     sampling_planner->setPlannerId("RRTstarPathLengthOptimized");
+    sampling_planner->setProperty("range", 0.1);
     sampling_planner->setProperty("goal_joint_tolerance", 1e-4);
     sampling_planner->setProperty("planning_time", plan_time_);
     sampling_planner->setProperty("enforce_joint_model_state_space", true);

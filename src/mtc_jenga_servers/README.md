@@ -51,7 +51,7 @@ ros2 launch mtc_jenga_servers mtc_probe_server.launch.py
 For exclusion zones, e-stop, `jenga_blocks_scene`, and **all** MTC servers in one process tree, use:
 
 ```bash
-ros2 launch motion_planning motion_planning.launch.py planner:=mtc
+ros2 launch motion_planning motion_planning_bringup.launch.py planner:=mtc
 ```
 
 See the [motion_planning README](../motion_planning/README.md) for prerequisites, `mtc_server_mode`, tests, and sequencers.

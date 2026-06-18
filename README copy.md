@@ -123,7 +123,7 @@ ros2 run ur3e_controller initials_demo
 2. Launch the motion planning stack:
 
 ```bash
-ros2 launch motion_planning motion_planning.launch.py
+ros2 launch motion_planning motion_planning_bringup.launch.py
 ```
 
 3. Send a goal pose:
@@ -162,7 +162,7 @@ Build `jenga_interfaces`, `mtc_jenga_servers`, `motion_planning`, and the `ur_on
 2. MoveIt:  
    `ros2 launch ur_onrobot_moveit_config ur_onrobot_moveit.launch.py ur_type:=ur3e onrobot_type:=rg2 launch_rviz:=true launch_servo:=false`
 3. Exclusion zones + e-stop + MTC server:  
-   `ros2 launch motion_planning motion_planning.launch.py planner:=mtc mtc_server_mode:=single_pose joint_trajectory_action:=/scaled_joint_trajectory_controller/follow_joint_trajectory publish_world_to_base_tf:=true base_height:=0.0 base_yaw:=0.0`
+   `ros2 launch motion_planning motion_planning_bringup.launch.py planner:=mtc mtc_server_mode:=single_pose joint_trajectory_action:=/scaled_joint_trajectory_controller/follow_joint_trajectory publish_world_to_base_tf:=true base_height:=0.0 base_yaw:=0.0`
 
 **Option B — one launch (delayed motion_planning for move_group warm-up)**
 
