@@ -10,7 +10,7 @@ TOWER_ANALYSIS = False
 BLOCK_ANALYSIS = True
 
 # Search area centre and fraction of the full frame
-SEARCH_AREA = (0.484, 0.602, 0.391, 0.658)
+SEARCH_AREA = (0.484, 0.525, 0.391, 0.654)
 
 # Crop margin around the search area
 SEARCH_AREA_MARGIN     = 0.10
@@ -174,3 +174,11 @@ CLEAN_MASK_KERNEL_PX          = 7   # Morphological close on colour mask before 
 INTERSECTION_GAP_TOLERANCE_PX = 25  # How far outside a line segment an intersection may fall and still count.
 CLUSTER_CELL_SIZE_PX          = 15  # Pass-1 grid-bucket cell size for deduplicating nearby intersection points.
 CLUSTER_MERGE_RADIUS_PX       = 12  # Pass-2 merge radius for centroids that straddle bucket boundaries.
+
+# After grid lock, extrapolate this many empty layer bands above the detected tower
+# so newly placed blocks have cells to fill during live play.
+GRID_EXTRA_LAYERS_ON_TOP = 2
+
+# Extrapolated rows: extend centre-column vertical step by this % over the
+# standard median row height (edges unchanged). Set to 0 to disable.
+GRID_EXTRAPOLATED_CENTER_HEIGHT_EXTEND_PCT = 15.0

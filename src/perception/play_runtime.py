@@ -259,6 +259,13 @@ def _run_loop(
                     for px, py in live_valid_points_crop:
                         if 0 <= px < live_disp.shape[1] and 0 <= py < live_disp.shape[0]:
                             cv2.circle(live_disp, (int(px), int(py)), 2, (0, 0, 255), -1)
+                if points_locked and locked_layer_cells:
+                    for layer_pair in locked_layer_cells:
+                        for cell in layer_pair:
+                            tl, tr, bl, br = cell["corners"]
+                            poly = np.array([tl, tr, br, bl], dtype=np.int32)
+                            colour = (255, 180, 0) if cell.get("extrapolated") else (0, 255, 255)
+                            cv2.polylines(live_disp, [poly], True, colour, 1, cv2.LINE_AA)
                 cx = int(round(camera_centre_x_crop))
                 if 0 <= cx < live_disp.shape[1]:
                     cv2.line(live_disp, (cx, 0), (cx, live_disp.shape[0] - 1), (0, 255, 255), 1, cv2.LINE_AA)

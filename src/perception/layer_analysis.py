@@ -76,6 +76,35 @@ def _detect_orientation(left_pcts: dict[str, float], right_pcts: dict[str, float
     return "left" if left_max <= right_max else "right"
 
 
+def _flip_orientation(orientation: str) -> str:
+    if orientation == "left":
+        return "right"
+    if orientation == "right":
+        return "left"
+    return orientation
+
+
+def _count_extrapolated_layers(row_cells: list[tuple[dict, dict]]) -> int:
+    """Number of consecutive extrapolated layer bands at the top of the grid."""
+    count = 0
+    for left_def, right_def in row_cells:
+        if left_def.get("extrapolated") or right_def.get("extrapolated"):
+            count += 1
+        else:
+            break
+    return count
+
+
+def _orientation_alternating_above(anchor: str, steps_above: int) -> str:
+    """
+    Jenga layers alternate end-on direction. Given the orientation of the
+    highest detected layer, return the orientation ``steps_above`` layers higher.
+    """
+    if anchor not in ("left", "right") or steps_above <= 0:
+        return anchor
+    return anchor if steps_above % 2 == 0 else _flip_orientation(anchor)
+
+
 # ---------------------------------------------------------------------------
 # Block detection from end-on face
 # ---------------------------------------------------------------------------
@@ -170,10 +199,14 @@ def analyse_layer(
     frame_width_px: float | None = None,
     known_block_colours: list[str | None] | None = None,
     skip_centroid_compute: bool = False,
+    forced_orientation: str | None = None,
 ) -> dict:
     left_pcts   = _colour_pcts(left_result)
     right_pcts  = _colour_pcts(right_result)
-    orientation = _detect_orientation(left_pcts, right_pcts)
+    if forced_orientation in ("left", "right"):
+        orientation = forced_orientation
+    else:
+        orientation = _detect_orientation(left_pcts, right_pcts)
 
     endon_pcts, endon_cell = (
         (left_pcts, left_cell) if orientation == "left"
@@ -364,6 +397,28 @@ def analyse_tower(
         if precomputed_pct is not None
         else None
     )
+    extra_layers = _count_extrapolated_layers(row_cells)
+    anchor_orientation: str | None = None
+    if extra_layers > 0 and extra_layers < n_layers:
+        anchor_left, anchor_right = row_cells[extra_layers]
+        if (
+            pct_by_name is not None
+            and anchor_left["name"] in pct_by_name
+            and anchor_right["name"] in pct_by_name
+        ):
+            anchor_pct = [
+                pct_by_name[anchor_left["name"]],
+                pct_by_name[anchor_right["name"]],
+            ]
+        else:
+            anchor_pct = compute_percentages(
+                bgr_frame, cells=[anchor_left, anchor_right],
+            )
+        anchor_orientation = _detect_orientation(
+            _colour_pcts(anchor_pct[0]),
+            _colour_pcts(anchor_pct[1]),
+        )
+
     for row_idx, (left_def, right_def) in enumerate(row_cells):
         if (
             pct_by_name is not None
@@ -400,6 +455,16 @@ def analyse_tower(
             if not any(c is not None for c in known_colours):
                 known_colours = None
 
+        forced_orientation = None
+        if (
+            row_idx < extra_layers
+            and anchor_orientation in ("left", "right")
+        ):
+            forced_orientation = _orientation_alternating_above(
+                anchor_orientation,
+                extra_layers - row_idx,
+            )
+
         layer = analyse_layer(
             bgr_frame,
             depth_frame if not (skip_centroid or skip_centroid_compute) else None,
@@ -411,6 +476,7 @@ def analyse_tower(
             frame_width_px=frame_width_px,
             known_block_colours=known_colours,
             skip_centroid_compute=skip_centroid_compute,
+            forced_orientation=forced_orientation,
         )
         layer["layer"] = layer_idx
         tower.append(layer)
