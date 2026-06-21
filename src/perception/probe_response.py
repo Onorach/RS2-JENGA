@@ -123,7 +123,7 @@ def update_tower_centroids_for_probe(
     opposite cells via a combined split_x search, so the front block's split
     (which may fall in the side-on cell) is never missed.
     """
-    tower_out    = copy.deepcopy(tower)
+    tower_out    = [dict(layer, blocks=[dict(b) for b in layer.get("blocks", [])]) for layer in tower]
     target_layer = _to_int_or_none(baseline.get("layer"))
     min_recompute_layer = None if target_layer is None else max(0, int(target_layer) - 1)
     n_layers     = len(row_cells)
@@ -161,9 +161,7 @@ def update_tower_centroids_for_probe(
             continue
         left_cell, right_cell = row_cells[row_idx]
 
-        # High-accuracy centroids: median of near-face pixels, split required.
-        # Both cells searched internally by compute_layer_centroids so the
-        # front-block opposite-cell fallback is always applied.
+        split_x_by_colour: dict[str, float] = {}
         centroids = compute_layer_centroids(
             bgr_frame,
             depth_frame,
@@ -172,15 +170,22 @@ def update_tower_centroids_for_probe(
             orientation,
             robust_stat="median",
             require_split=True,
+            split_x_out=split_x_by_colour,
         )
 
         for block in layer.get("blocks", []):
             if not block.get("present"):
+                block.pop("depth_split_x_px", None)
                 continue
             colour = str(block.get("colour", ""))
             if colour in centroids:
                 block["mean_x_px"] = float(centroids[colour][0])
                 block["mean_y_px"] = float(centroids[colour][1])
+            split_x = split_x_by_colour.get(colour)
+            if split_x is not None:
+                block["depth_split_x_px"] = float(split_x)
+            else:
+                block.pop("depth_split_x_px", None)
 
     return tower_out
 

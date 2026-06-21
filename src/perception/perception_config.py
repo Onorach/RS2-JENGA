@@ -10,7 +10,7 @@ TOWER_ANALYSIS = False
 BLOCK_ANALYSIS = True
 
 # Search area centre and fraction of the full frame
-SEARCH_AREA = (0.509, 0.654, 0.268, 0.456)
+SEARCH_AREA = (0.484, 0.602, 0.391, 0.658)
 
 # Crop margin around the search area
 SEARCH_AREA_MARGIN     = 0.10
@@ -64,32 +64,32 @@ CENTROID_ABORT_SHIFT_PCT = 6.0
 # HSV ranges for colour identification
 HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
     "red": [
-        ((  0, 126,  78), ( 12, 255, 255)),
-        ((171, 126,  78), (179, 255, 255)),
+        ((  0, 111, 105), ( 13, 255, 255)),
+        ((174, 111, 105), (179, 255, 255)),
     ],
     "yellow": [
         (( 16,   0,  76), ( 44, 255, 255)),
     ],
     "green": [
-        (( 55,  65,  62), ( 83, 255, 255)),
+        (( 48,  58,  61), ( 92, 255, 255)),
     ],
     "blue": [
-        (( 82, 114,  88), (111, 255, 255)),
+        (( 82, 150, 108), (111, 255, 255)),
     ],
     "purple": [
-        ((114, 118,  60), (169, 255, 255)),
+        ((114, 138,  49), (142, 255, 255)),
     ],
 }
 
 # Minimum connected-component area (in ROI pixels) kept per colour mask.
 # Higher values reject more tiny blobs/noise before the mask is used elsewhere.
 # Set to 0 to disable size filtering.
-COLOUR_MIN_BLOB_AREA_PX = 222
+COLOUR_MIN_BLOB_AREA_PX = 195
 
 # Colour-mask smoothing (tuned in colour mask setup).
-COLOUR_MASK_MEDIAN_PX      = 0   # Median blur on HSV before inRange; 0 = disabled.
-COLOUR_MASK_MORPH_CLOSE_PX = 8   # Close kernel — fills small holes. 0 = disabled.
-COLOUR_MASK_MORPH_OPEN_PX  = 14   # Open kernel — removes specks. 0 = disabled.
+COLOUR_MASK_MEDIAN_PX      = 4   # Median blur on HSV before inRange; 0 = disabled.
+COLOUR_MASK_MORPH_CLOSE_PX = 9   # Close kernel — fills small holes. 0 = disabled.
+COLOUR_MASK_MORPH_OPEN_PX  = 13   # Open kernel — removes specks. 0 = disabled.
 
 # BGR colours for visualisation
 COLOUR_BGR: dict[str, tuple[int, int, int]] = {
@@ -105,9 +105,9 @@ COLOUR_BGR: dict[str, tuple[int, int, int]] = {
 # Tower mask
 # ---------------------------------------------------------------------------
 
-TOWER_MASK_SAT_MIN                 = 151   # Min HSV saturation for tower foreground.
-TOWER_MASK_BRIGHTNESS_MIN          = 47    # Min HSV value (brightness) for tower foreground.
-TOWER_MASK_MORPH_CLOSE_PX          = 0    # Close kernel size — fills small mask holes. 0 = disabled.
+TOWER_MASK_SAT_MIN                 = 38   # Min HSV saturation for tower foreground.
+TOWER_MASK_BRIGHTNESS_MIN          = 113    # Min HSV value (brightness) for tower foreground.
+TOWER_MASK_MORPH_CLOSE_PX          = 2    # Close kernel size — fills small mask holes. 0 = disabled.
 TOWER_MASK_MORPH_OPEN_PX           = 31    # Open kernel size — removes noise blobs. 0 = disabled.
 
 # ---------------------------------------------------------------------------
@@ -115,36 +115,54 @@ TOWER_MASK_MORPH_OPEN_PX           = 31    # Open kernel size — removes noise 
 # ---------------------------------------------------------------------------
 
 # Valid-point x-bands (percent of ROI width): outer-left, centre, outer-right.
-POINT_VALID_SIDE_BAND_PCT   = 10.0
+POINT_VALID_SIDE_BAND_PCT   = 8.0
 POINT_VALID_CENTER_BAND_PCT = 15.0
 
 # Canny thresholds used on the colour-mask image.
-CANNY_MASK_LOW   = 24   # Lower = more edges.
-CANNY_MASK_HIGH  = 41  # Higher = fewer, stronger edges only.
-
-# Canny thresholds used on the original BGR image.
-CANNY_ORIGINAL_LOW  = 25   # Lower = more edges.
-CANNY_ORIGINAL_HIGH = 62  # Higher = fewer, stronger edges only.
-
-# Width of the horizontal band (centred on the ROI) where Canny edges are
-# kept, as a percentage of ROI width. Edges outside this strip are zeroed
-# before Hough line detection, so both visualisation and grid-point search
-# are restricted to the middle slice. Set to 100.0 to disable.
-CANNY_CENTRE_BAND_PCT = 6.0   # Centre band width (% of ROI) for original Canny / Hough.
-CANNY_CENTRE_BAND_OFFSET_PCT = -1.0  # Horizontal offset of that band (% of ROI width): +right, -left.
+CANNY_MASK_LOW   = 0   # Lower = more edges.
+CANNY_MASK_HIGH  = 0  # Higher = fewer, stronger edges only.
 
 # Hough settings used for lines extracted from colour-mask edges.
 HOUGH_MASK_THRESHOLD  = 8  # Min Hough votes to accept a line.
-HOUGH_MASK_MIN_LENGTH = 10  # Min accepted line length (pixels).
+HOUGH_MASK_MIN_LENGTH = 80  # Min accepted line length (pixels).
 HOUGH_MASK_MAX_GAP    = 30  # Max gap for joining broken line segments.
 
-# Hough settings used for lines extracted from original-image edges.
-HOUGH_ORIGINAL_THRESHOLD  = 20
-HOUGH_ORIGINAL_MIN_LENGTH = 40
-HOUGH_ORIGINAL_MAX_GAP    = 5
-
-MAX_HORIZ_DEG    = 12.0  # Max angle from horizontal to classify as horizontal.
+MAX_HORIZ_DEG    = 13.0  # Max angle from horizontal to classify as horizontal.
 MAX_VERT_DEG     = 5.0   # Max deviation from 90° to classify as vertical.
+
+# ---------------------------------------------------------------------------
+# Centre-seam detection (vertical line down the tower's near corner)
+# ---------------------------------------------------------------------------
+#
+# The tower stands at ~45° so each layer shows two faces meeting at a vertical
+# corner down the middle. That corner is the centre column of the detection
+# grid and later anchors the front block's centroid split.
+#
+# Method: for each layer band take the largest colour blob (the front block's
+# near face) and find its closest-to-camera column from depth. On the recoloured
+# image the seam has no colour edge (both faces are the same colour), so depth is
+# used rather than Canny on the original frame. Solving per layer means the tower
+# need not be perfectly vertical.
+#
+# Robust closest-depth estimate: take the closest this-% of valid depth pixels
+# in the blob and use their median x as the seam. Lower = stricter (nearer the
+# true corner), but fewer pixels and noisier.
+CENTRE_SEAM_CLOSEST_PCT = 20.0
+
+# Minimum valid (non-zero, finite) depth pixels in a layer's blob before the
+# depth seam is trusted for that band. Bands with fewer are skipped.
+CENTRE_SEAM_MIN_VALID_PX = 30
+
+# Minimum coloured pixels for a blob to be considered the layer's "largest
+# colour" (rejects specks left after classification).
+CENTRE_SEAM_MIN_COLOUR_PX = 80
+
+# Horizontal grid lines within this many pixels are merged into one layer
+# boundary when splitting the ROI into layer bands.
+CENTRE_SEAM_ROW_MERGE_PX = 12
+
+# Layer bands shorter than this (px) are discarded as noise.
+CENTRE_SEAM_MIN_BAND_PX = 8
 
 
 # ---------------------------------------------------------------------------

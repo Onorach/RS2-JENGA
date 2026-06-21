@@ -57,7 +57,8 @@ from __future__ import annotations
 import numpy as np
 import cv2
 
-from colour_identification import classify_hsv
+from colour_identification import frame_colour_mask
+from centre_seam import closest_depth_column
 from perception_config import HSV_RANGES
 
 # Minimum pixels for a colour blob to be considered valid.
@@ -118,26 +119,17 @@ def _split_x_and_min_depth(
 
     Strategy: the near face of the block contains the closest (shallowest)
     depth pixels.  We find the minimum depth in the blob, collect all pixels
-    at that depth (within 1 mm tolerance) and return their mean x.  That x
-    is the near-face edge — pixels outside this line belong to the near face.
+    within 1 mm of it (sensor quantisation noise) and return their mean x.  That
+    x is the near-face edge — pixels outside this line belong to the near face.
+
+    Delegates to centre_seam.closest_depth_column, the single shared
+    closest-to-camera-column primitive also used for the grid centre seam.
 
     Returns (split_x, min_depth_mm).  Both are None when no valid pixels exist.
     min_depth_mm is exposed so callers can compare across cells to decide which
     cell is seeing the true near face (see _combined_split_x_per_colour).
     """
-    ys, xs = np.where(mask)
-    if len(xs) == 0:
-        return None, None
-    depths = depth[ys, xs].astype(np.float32)
-    valid  = (depths > 0) & np.isfinite(depths)
-    if not np.any(valid):
-        return None, None
-    dv    = depths[valid]
-    xv    = xs[valid]
-    min_d = float(np.min(dv))
-    # Accept pixels within 1 mm of the minimum (sensor quantisation noise).
-    near = dv <= (min_d + 1.0)
-    return float(np.mean(xv[near])), min_d
+    return closest_depth_column(depth, mask, depth_tol_mm=1.0, stat="mean")
 
 
 def _split_x_from_closest_pixels(
@@ -189,14 +181,13 @@ def _combined_split_info_per_colour(
     to keep same-colour pixels from adjacent layers out of the centroid.
     """
     ih, iw = bgr.shape[:2]
-    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
 
     endon_quad    = _quad_mask((ih, iw), endon_cell["corners"])
     opposite_quad = _quad_mask((ih, iw), opposite_cell["corners"])
 
     result: dict[str, tuple[float, float]] = {}
     for colour in HSV_RANGES:
-        colour_hsv = classify_hsv(hsv, colour)
+        colour_hsv = frame_colour_mask(bgr, colour)
 
         # Raw colour masks — NO depth gate here (see docstring).
         endon_mask    = endon_quad & colour_hsv
@@ -266,8 +257,7 @@ def _compute_combined_centroid(
     block whose visible near face can straddle the cell boundary.
     """
     ih, iw   = bgr.shape[:2]
-    hsv      = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    colour_hsv = classify_hsv(hsv, colour)
+    colour_hsv = frame_colour_mask(bgr, colour)
 
     endon_quad    = _quad_mask((ih, iw), endon_cell["corners"])
     opposite_quad = _quad_mask((ih, iw), opposite_cell["corners"])
@@ -370,7 +360,6 @@ def _centroids_in_one_cell(
                        the front block's true near-face edge is always used.
     """
     ih, iw = bgr.shape[:2]
-    hsv    = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
     quad   = _quad_mask((ih, iw), cell["corners"])
     total  = int(quad.sum())
     if total == 0:
@@ -382,7 +371,7 @@ def _centroids_in_one_cell(
     out: dict[str, tuple[float, float]] = {}
 
     for colour in HSV_RANGES:
-        colour_mask = quad & classify_hsv(hsv, colour)
+        colour_mask = quad & frame_colour_mask(bgr, colour)
         n = int(colour_mask.sum())
         if n < MIN_COLOUR_PIXELS or n / total * 100.0 < MIN_COLOUR_PCT:
             continue
@@ -456,8 +445,7 @@ def _search_colour_low_threshold(
     MIN_PIX = max(10, MIN_COLOUR_PIXELS // 2)
 
     ih, iw = bgr.shape[:2]
-    hsv        = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
-    colour_hsv = classify_hsv(hsv, colour)
+    colour_hsv = frame_colour_mask(bgr, colour)
 
     endon_quad    = _quad_mask((ih, iw), endon_cell["corners"])
     opposite_quad = _quad_mask((ih, iw), opposite_cell["corners"])
@@ -527,6 +515,7 @@ def compute_layer_centroids(
     robust_stat: str = "mean",
     require_split: bool = False,
     required_colours: set[str] | None = None,
+    split_x_out: dict[str, float] | None = None,
 ) -> dict[str, tuple[float, float]]:
     """
     Compute near-face centroid (x_px, y_px) per colour for one layer.
@@ -572,6 +561,9 @@ def compute_layer_centroids(
             endon_cell, opposite_cell,
             endon_target_mm, opposite_target_mm,
         )
+        if split_x_out is not None:
+            split_x_out.clear()
+            split_x_out.update(split_x_by_colour)
 
         # ── Step 2: compute centroids from BOTH cells' pixels ──────────────
         # For every colour with a valid split_x, combine pixels from both
@@ -644,6 +636,9 @@ def compute_layer_centroids(
                     merged[colour] = fallback
 
         return merged
+
+    if split_x_out is not None:
+        split_x_out.clear()
 
     # ── No depth available: plain per-cell colour means ────────────────────
     endon_centroids = _centroids_in_one_cell(

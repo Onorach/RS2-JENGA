@@ -93,7 +93,7 @@ GRID_POINTS_MAX_INPUT_LINES = 500
 _GRID_DETECTION_WINDOWS = (
     "Colour mask",
     "Canny (colour mask)",
-    "Canny (original)",
+    "Centre seam (depth)",
     "Edges",
 )
 
@@ -144,6 +144,7 @@ def _run_loop(
     accumulated_grid_points: list[tuple[int, int]] = []
     _last_pct_results: list[dict] = []
     _last_tower_img:   np.ndarray | None = None
+    _last_debug_img:   np.ndarray | None = None
     _last_tower_state: list[dict] = []
     _selected_probe_block_id: int | None = None
     identity_tracker = BlockIdentityTracker()
@@ -155,6 +156,8 @@ def _run_loop(
 
     TOWER_PRINT_INTERVAL_S = 8.0
     _last_layer_print_time_s: float = 0.0
+    PROBE_UI_EVERY_N = 3
+    _probe_ui_frame_n = 0
 
     def _on_layer_analysis_mouse(event: int, x: int, y: int, _flags: int, _userdata) -> None:
         nonlocal _selected_probe_block_id
@@ -267,11 +270,16 @@ def _run_loop(
             colour_img, _ = classify_roi_bgr(roi_bgr)
             cv2.imshow("Colour mask", colour_img)
             grid_frame_n += 1
-            disp_grey, lines_grey, edges_colour, edges_original = build_edge_display(
-                colour_img, roi_bgr,
+            depth_roi = (
+                None
+                if depth_mm is None
+                else depth_mm[roi_y:roi_y + rh, roi_x:roi_x + rw]
+            )
+            disp_grey, lines_grey, edges_colour, edges_seam = build_edge_display(
+                colour_img, depth_roi=depth_roi,
             )
             cv2.imshow("Canny (colour mask)", edges_colour)
-            cv2.imshow("Canny (original)",    edges_original)
+            cv2.imshow("Centre seam (depth)", edges_seam)
 
             grey_line_history.append(lines_grey)
             line_cap = max(1, int(GRID_POINTS_MAX_INPUT_LINES))
@@ -463,7 +471,9 @@ def _run_loop(
                     frame_width_px=float(iw),
                     print_enabled=False,
                     min_centroid_layer=probe_min_layer,
+                    skip_centroid_layers_from=probe_min_layer if probe_active else None,
                     identity_tracker=identity_tracker,
+                    precomputed_pct=_last_pct_results,
                 )
                 if placing_active and not probe_active:
                     tower = recompute_tower_centroids_strict(
@@ -473,7 +483,8 @@ def _run_loop(
                         tower,
                         min_layer=0,
                     )
-                identity_tracker.apply(tower)
+                if not probe_active:
+                    identity_tracker.apply(tower)
                 _last_tower_state = tower
                 if tower and publish_top_layer:
                     # Bottom-first (L0 at index 0) so GUI L1 = bottom, L6 = top.
@@ -490,7 +501,9 @@ def _run_loop(
                     depth_frame=depth_mm,
                     row_cells=row_cells,
                 )
-            if _last_tower_state:
+            if probe_active:
+                identity_tracker.apply(_last_tower_state)
+            if _last_tower_state and not probe_active:
                 monitor_min_layer = probe_monitor.active_session_min_layer()
                 annotate_depth_split_lines_for_tower(
                     bgr,
@@ -511,27 +524,35 @@ def _run_loop(
                 _selected_probe_block_id = int(robot_target)
             elif not probe_monitor.is_active():
                 _selected_probe_block_id = None
-            if _last_tower_state:
+            if probe_active:
+                _probe_ui_frame_n += 1
+                refresh_probe_ui = (_probe_ui_frame_n % PROBE_UI_EVERY_N == 0)
+            else:
+                _probe_ui_frame_n = 0
+                refresh_probe_ui = True
+
+            if _last_tower_state and refresh_probe_ui:
                 _last_tower_img = build_tower_image(
                     _last_tower_state,
                     selected_block_id=_selected_probe_block_id,
                     probe_status_text=probe_monitor.status_text(),
                 )
 
-            if _last_pct_results:
+            if _last_pct_results and refresh_probe_ui:
                 active_cells = [cell for layer in locked_layer_cells for cell in layer]
                 _ensure_window_open("Box percentages")
-                cv2.imshow(
-                    "Box percentages",
-                    build_debug_image(
-                        bgr,
-                        _last_pct_results,
-                        cells=active_cells,
-                        tower=_last_tower_state,
-                        row_cells=row_cells,
-                        frame_centre_x_px=camera_centre_x_crop,
-                    ),
+                _last_debug_img = build_debug_image(
+                    bgr,
+                    _last_pct_results,
+                    cells=active_cells,
+                    tower=_last_tower_state,
+                    row_cells=row_cells,
+                    frame_centre_x_px=camera_centre_x_crop,
                 )
+
+            if _last_debug_img is not None:
+                _ensure_window_open("Box percentages")
+                cv2.imshow("Box percentages", _last_debug_img)
             if _last_tower_img is not None:
                 _ensure_window_open("Layer Analysis")
                 cv2.setMouseCallback("Layer Analysis", _on_layer_analysis_mouse)
