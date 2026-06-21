@@ -440,9 +440,7 @@ def _assess_probe_response(baseline: dict, current: dict) -> dict:
         and ((target_dx_px ** 2 + target_dy_px ** 2) ** 0.5) > 0.0
     )
 
-    if not bool(current.get("is_middle", False)):
-        status = "invalid_target_not_middle"
-    elif avg_other_centroid_shift_pct > CENTROID_ABORT_SHIFT_PCT:
+    if avg_other_centroid_shift_pct > CENTROID_ABORT_SHIFT_PCT:
         status = "tower_shifting"
     elif target_moved:
         status = "safe_to_remove"
@@ -552,8 +550,6 @@ class ProbeResponseMonitor:
             return "SAFE_TO_REMOVE"
         if status == "tower_shifting":
             return "ABORT_TOWER_MOVED"
-        if status == "invalid_target_not_middle":
-            return "ABORT_INVALID_TARGET_NOT_MIDDLE"
         if status == "monitoring":
             return "MONITORING"
         return "IDLE"
@@ -699,10 +695,12 @@ class ProbeResponseMonitor:
             self._last_eval = None
             self._centroid_shift_avg_window.clear()
             if self._baseline is not None:
+                slot_names = ("front", "mid", "back")
+                pos = int(self._baseline.get("target_pos", -1))
+                slot = slot_names[pos] if 0 <= pos < len(slot_names) else f"slot{pos}"
                 print(
                     f"[probe] started for block {self._active_block_id} "
-                    f"(layer L{self._baseline['layer']}, "
-                    f"middle={self._baseline['is_middle']})"
+                    f"(layer L{self._baseline['layer']}, {slot})"
                 )
             else:
                 print(f"[probe] waiting for valid snapshot for block {self._active_block_id}")
@@ -743,7 +741,6 @@ class ProbeResponseMonitor:
         )
 
         # Use the smoothed tower-motion metric for the "safe vs abort" decision.
-        is_middle = bool(current_snapshot.get("is_middle", False))
         dx = eval_result.get("target_dx_px")
         dy = eval_result.get("target_dy_px")
         target_moved = (
@@ -751,9 +748,7 @@ class ProbeResponseMonitor:
             and dy is not None
             and ((float(dx) ** 2 + float(dy) ** 2) ** 0.5) > 0.0
         )
-        if not is_middle:
-            eval_result["status"] = "invalid_target_not_middle"
-        elif centroid_shift_avg_smoothed > float(CENTROID_ABORT_SHIFT_PCT):
+        if centroid_shift_avg_smoothed > float(CENTROID_ABORT_SHIFT_PCT):
             eval_result["status"] = "tower_shifting"
         elif target_moved:
             eval_result["status"] = "safe_to_remove"
@@ -787,18 +782,6 @@ class ProbeResponseMonitor:
             if label == "ABORT_TOWER_MOVED":
                 print(f"[probe] decision block={self._active_block_id}: ABORT (tower moved)")
                 self._emit_final_decision(int(self._active_block_id), "abort", label)
-                self._stop_monitoring_after_abort()
-                return tower_for_eval
-            elif label == "ABORT_INVALID_TARGET_NOT_MIDDLE":
-                print(
-                    f"[probe] decision block={self._active_block_id}: "
-                    "ABORT (selected block is not a middle block)"
-                )
-                self._emit_final_decision(
-                    int(self._active_block_id),
-                    "abort",
-                    label,
-                )
                 self._stop_monitoring_after_abort()
                 return tower_for_eval
         self._last_status = eval_result["status"]

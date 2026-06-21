@@ -43,7 +43,7 @@ GRID_LOCK_EDGE_ACCUMULATION_FRAMES = 40
 # Use None to disable.
 PROBE_TARGET_BLOCK_ID_PLACEHOLDER: int | None = None
 
-# Minimum increase in the probed middle-block colour percentage to count as
+# Minimum increase in the probed block's colour percentage to count as
 # meaningful movement response.
 PROBE_TARGET_GAIN_MIN_PCT = 3.0
 
