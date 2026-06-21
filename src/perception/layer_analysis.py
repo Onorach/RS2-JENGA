@@ -112,13 +112,12 @@ def _blocks_from_endon(
                 continue
             xy  = mean_xy.get(slot_colour)
             pct = pcts.get(slot_colour, 0.0)
-            if xy is not None and pct >= LOW_PCT:
-                res.append({
-                    "colour":    slot_colour,
-                    "present":   True,
-                    "mean_x_px": xy[0],
-                    "mean_y_px": xy[1],
-                })
+            if pct >= LOW_PCT:
+                block: dict = {"colour": slot_colour, "present": True}
+                if xy is not None:
+                    block["mean_x_px"] = xy[0]
+                    block["mean_y_px"] = xy[1]
+                res.append(block)
             else:
                 # Block not visible enough this frame: mark absent but keep
                 # canonical colour so downstream can still name the slot.
@@ -170,6 +169,7 @@ def analyse_layer(
     frame_centre_x_px: float | None = None,
     frame_width_px: float | None = None,
     known_block_colours: list[str | None] | None = None,
+    skip_centroid_compute: bool = False,
 ) -> dict:
     left_pcts   = _colour_pcts(left_result)
     right_pcts  = _colour_pcts(right_result)
@@ -189,19 +189,21 @@ def analyse_layer(
             required_colours = rc
 
     # Compute near-face centroids for all colours in this layer.
-    # Searches both cells so the front block's split (which may fall in the
-    # opposite/side-on cell) is always found. Falls back to depth-gated mean
-    # when no split is available (e.g. depth stream absent).
-    mean_xy = compute_layer_centroids(
-        bgr_frame,
-        depth_frame,
-        left_cell,
-        right_cell,
-        orientation,
-        robust_stat="mean",
-        require_split=False,
-        required_colours=required_colours,
-    )
+    # Skipped during probe monitoring for layers the probe path recomputes
+    # with stricter split-based centroids on the same frame.
+    if skip_centroid_compute:
+        mean_xy = {}
+    else:
+        mean_xy = compute_layer_centroids(
+            bgr_frame,
+            depth_frame,
+            left_cell,
+            right_cell,
+            orientation,
+            robust_stat="mean",
+            require_split=False,
+            required_colours=required_colours,
+        )
     endon_blocks = _blocks_from_endon(
         endon_pcts, mean_xy, endon_cell,
         orientation=orientation,
@@ -333,10 +335,19 @@ def analyse_tower(
     frame_width_px: float | None = None,
     print_enabled: bool = True,
     min_centroid_layer: int | None = None,
+    skip_centroid_layers_from: int | None = None,
     identity_tracker=None,
+    precomputed_pct: list[dict] | None = None,
 ) -> list[dict]:
     """
     Analyse the full tower layer by layer.
+
+    precomputed_pct : optional list of per-cell colour-percentage dicts (as
+        returned by compute_percentages) already computed for this frame's cells.
+        When supplied, the per-cell percentages are looked up by cell name
+        instead of being recomputed here — this avoids classifying the same
+        cells twice in one frame (the caller already computes them for the
+        Box-percentages view).  Falls back to computing on miss.
 
     identity_tracker : BlockIdentityTracker | None
         When provided and already initialized, the canonical colour-per-slot
@@ -348,17 +359,35 @@ def analyse_tower(
     global _last_print_time
     tower = []
     n_layers = len(row_cells)
+    pct_by_name = (
+        {entry["name"]: entry for entry in precomputed_pct}
+        if precomputed_pct is not None
+        else None
+    )
     for row_idx, (left_def, right_def) in enumerate(row_cells):
-        pct_results = compute_percentages(bgr_frame, cells=[left_def, right_def])
+        if (
+            pct_by_name is not None
+            and left_def["name"] in pct_by_name
+            and right_def["name"] in pct_by_name
+        ):
+            pct_results = [pct_by_name[left_def["name"]], pct_by_name[right_def["name"]]]
+        else:
+            pct_results = compute_percentages(bgr_frame, cells=[left_def, right_def])
         # layer index: row_cells[0] is topmost in image → highest layer index
         layer_idx = (n_layers - 1) - row_idx
 
         # When monitoring a probe, skip all centroid/depth work for layers
         # below the target layer — they cannot move during a probe so there
-        # is no need to recompute them, saving significant CPU per frame.
+        # is no need to recompute them, saving significant CPU every frame.
         skip_centroid = (
             min_centroid_layer is not None
             and layer_idx < int(min_centroid_layer)
+        )
+        # Layers at/above the probe target get strict centroids from the probe
+        # path on the same frame — skip the duplicate mean-centroid pass here.
+        skip_centroid_compute = (
+            skip_centroid_layers_from is not None
+            and layer_idx >= int(skip_centroid_layers_from)
         )
 
         # Fetch canonical colour assignments for this layer when available.
@@ -373,7 +402,7 @@ def analyse_tower(
 
         layer = analyse_layer(
             bgr_frame,
-            depth_frame if not skip_centroid else None,
+            depth_frame if not (skip_centroid or skip_centroid_compute) else None,
             pct_results[0],
             pct_results[1],
             left_def,
@@ -381,6 +410,7 @@ def analyse_tower(
             frame_centre_x_px=frame_centre_x_px,
             frame_width_px=frame_width_px,
             known_block_colours=known_colours,
+            skip_centroid_compute=skip_centroid_compute,
         )
         layer["layer"] = layer_idx
         tower.append(layer)

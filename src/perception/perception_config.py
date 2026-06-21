@@ -10,7 +10,7 @@ TOWER_ANALYSIS = False
 BLOCK_ANALYSIS = True
 
 # Search area centre and fraction of the full frame
-SEARCH_AREA = (0.498, 0.635, 0.355, 0.454)
+SEARCH_AREA = (0.484, 0.602, 0.391, 0.658)
 
 # Crop margin around the search area
 SEARCH_AREA_MARGIN     = 0.10
@@ -64,8 +64,8 @@ CENTROID_ABORT_SHIFT_PCT = 6.0
 # HSV ranges for colour identification
 HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
     "red": [
-        ((  0,  44, 121), ( 12, 255, 255)),
-        ((171,  44, 121), (179, 255, 255)),
+        ((  0, 111, 105), ( 13, 255, 255)),
+        ((174, 111, 105), (179, 255, 255)),
     ],
     "yellow": [
         (( 16,   0,  76), ( 44, 255, 255)),
@@ -77,19 +77,19 @@ HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] =
         (( 82, 150, 108), (111, 255, 255)),
     ],
     "purple": [
-        ((114, 213,  49), (122, 255, 255)),
+        ((114, 138,  49), (142, 255, 255)),
     ],
 }
 
 # Minimum connected-component area (in ROI pixels) kept per colour mask.
 # Higher values reject more tiny blobs/noise before the mask is used elsewhere.
 # Set to 0 to disable size filtering.
-COLOUR_MIN_BLOB_AREA_PX = 222
+COLOUR_MIN_BLOB_AREA_PX = 195
 
 # Colour-mask smoothing (tuned in colour mask setup).
-COLOUR_MASK_MEDIAN_PX      = 0   # Median blur on HSV before inRange; 0 = disabled.
-COLOUR_MASK_MORPH_CLOSE_PX = 8   # Close kernel — fills small holes. 0 = disabled.
-COLOUR_MASK_MORPH_OPEN_PX  = 14   # Open kernel — removes specks. 0 = disabled.
+COLOUR_MASK_MEDIAN_PX      = 4   # Median blur on HSV before inRange; 0 = disabled.
+COLOUR_MASK_MORPH_CLOSE_PX = 9   # Close kernel — fills small holes. 0 = disabled.
+COLOUR_MASK_MORPH_OPEN_PX  = 13   # Open kernel — removes specks. 0 = disabled.
 
 # BGR colours for visualisation
 COLOUR_BGR: dict[str, tuple[int, int, int]] = {
@@ -115,19 +115,19 @@ TOWER_MASK_MORPH_OPEN_PX           = 31    # Open kernel size — removes noise 
 # ---------------------------------------------------------------------------
 
 # Valid-point x-bands (percent of ROI width): outer-left, centre, outer-right.
-POINT_VALID_SIDE_BAND_PCT   = 10.0
+POINT_VALID_SIDE_BAND_PCT   = 8.0
 POINT_VALID_CENTER_BAND_PCT = 15.0
 
 # Canny thresholds used on the colour-mask image.
-CANNY_MASK_LOW   = 43   # Lower = more edges.
+CANNY_MASK_LOW   = 0   # Lower = more edges.
 CANNY_MASK_HIGH  = 0  # Higher = fewer, stronger edges only.
 
 # Hough settings used for lines extracted from colour-mask edges.
 HOUGH_MASK_THRESHOLD  = 8  # Min Hough votes to accept a line.
-HOUGH_MASK_MIN_LENGTH = 10  # Min accepted line length (pixels).
+HOUGH_MASK_MIN_LENGTH = 80  # Min accepted line length (pixels).
 HOUGH_MASK_MAX_GAP    = 30  # Max gap for joining broken line segments.
 
-MAX_HORIZ_DEG    = 12.0  # Max angle from horizontal to classify as horizontal.
+MAX_HORIZ_DEG    = 13.0  # Max angle from horizontal to classify as horizontal.
 MAX_VERT_DEG     = 5.0   # Max deviation from 90° to classify as vertical.
 
 # ---------------------------------------------------------------------------
