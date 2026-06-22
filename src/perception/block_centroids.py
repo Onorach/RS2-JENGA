@@ -59,7 +59,11 @@ import cv2
 
 from colour_identification import frame_colour_mask
 from centre_seam import closest_depth_column
-from perception_config import HSV_RANGES
+from perception_config import (
+    HSV_RANGES,
+    CENTROID_HINT_SEARCH_RADIUS_PX,
+    BLOCK_CENTROID_MIN_BLOB_PX,
+)
 
 # Minimum pixels for a colour blob to be considered valid.
 MIN_COLOUR_PIXELS = 50
@@ -69,6 +73,86 @@ MIN_COLOUR_PCT    = 10.0   # % of cell area
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
+def _components_ge_min_area(
+    mask: np.ndarray,
+    min_area_px: int,
+) -> list[tuple[int, np.ndarray]]:
+    if not bool(mask.any()):
+        return []
+    n_labels, labels, stats, _centroids = cv2.connectedComponentsWithStats(
+        mask.astype(np.uint8), connectivity=8,
+    )
+    out: list[tuple[int, np.ndarray]] = []
+    for label in range(1, n_labels):
+        area = int(stats[label, cv2.CC_STAT_AREA])
+        if area >= int(min_area_px):
+            out.append((area, labels == label))
+    return out
+
+
+def filter_mask_to_primary_blob(
+    mask: np.ndarray,
+    min_area_px: int | None = None,
+    prefer_xy: tuple[float, float] | None = None,
+) -> np.ndarray:
+    """
+    Keep a single connected component from a boolean mask.
+
+    Drops small colour slithers at block boundaries. When prefer_xy is given,
+    prefer the component containing that point, otherwise the largest component.
+    """
+    min_area = int(BLOCK_CENTROID_MIN_BLOB_PX if min_area_px is None else min_area_px)
+    comps = _components_ge_min_area(mask, min_area)
+    if not comps:
+        return np.zeros_like(mask, dtype=bool)
+
+    if prefer_xy is not None:
+        px, py = prefer_xy
+        ix = int(round(float(px)))
+        iy = int(round(float(py)))
+        h, w = mask.shape[:2]
+        if 0 <= ix < w and 0 <= iy < h:
+            for _area, comp in sorted(comps, key=lambda item: -item[0]):
+                if comp[iy, ix]:
+                    return comp
+
+        best_comp: np.ndarray | None = None
+        best_dist = float("inf")
+        for _area, comp in comps:
+            ys, xs = np.where(comp)
+            cx = float(np.mean(xs))
+            cy = float(np.mean(ys))
+            dist = (cx - float(px)) ** 2 + (cy - float(py)) ** 2
+            if dist < best_dist:
+                best_dist = dist
+                best_comp = comp
+        if best_comp is not None:
+            return best_comp
+
+    return max(comps, key=lambda item: item[0])[1]
+
+
+def blob_area_at_xy(
+    bgr: np.ndarray,
+    cell: dict,
+    colour: str,
+    x_px: float,
+    y_px: float,
+    min_area_px: int | None = None,
+) -> int:
+    """Return connected-component area for colour blob containing (x, y) in cell."""
+    min_area = int(BLOCK_CENTROID_MIN_BLOB_PX if min_area_px is None else min_area_px)
+    ih, iw = bgr.shape[:2]
+    quad = _quad_mask((ih, iw), cell["corners"])
+    mask = quad & frame_colour_mask(bgr, colour)
+    for area, comp in _components_ge_min_area(mask, min_area):
+        iy = int(round(float(y_px)))
+        ix = int(round(float(x_px)))
+        if 0 <= iy < ih and 0 <= ix < iw and comp[iy, ix]:
+            return area
+    return 0
+
 
 def _quad_mask(shape: tuple[int, int], corners: list) -> np.ndarray:
     """Boolean mask (H×W) True inside the quad [TL, TR, BL, BR]."""
@@ -280,6 +364,9 @@ def _compute_combined_centroid(
         if int(gated.sum()) >= MIN_COLOUR_PIXELS:
             opposite_mask = gated
 
+    endon_mask = filter_mask_to_primary_blob(endon_mask)
+    opposite_mask = filter_mask_to_primary_blob(opposite_mask)
+
     endon_n    = int(endon_mask.sum())
     opposite_n = int(opposite_mask.sum())
 
@@ -371,7 +458,9 @@ def _centroids_in_one_cell(
     out: dict[str, tuple[float, float]] = {}
 
     for colour in HSV_RANGES:
-        colour_mask = quad & frame_colour_mask(bgr, colour)
+        colour_mask = filter_mask_to_primary_blob(
+            quad & frame_colour_mask(bgr, colour),
+        )
         n = int(colour_mask.sum())
         if n < MIN_COLOUR_PIXELS or n / total * 100.0 < MIN_COLOUR_PCT:
             continue
@@ -421,6 +510,143 @@ def _centroids_in_one_cell(
     return out
 
 
+def _search_colour_near_hint(
+    bgr: np.ndarray,
+    depth: np.ndarray | None,
+    endon_cell: dict,
+    opposite_cell: dict,
+    colour: str,
+    endon_target_mm: float | None,
+    opposite_target_mm: float | None,
+    orientation: str,
+    robust_stat: str,
+    hint_x: float,
+    hint_y: float,
+    radius_px: float,
+) -> tuple[float, float] | None:
+    """Search for a colour centroid within radius_px of a prior (x, y) location."""
+    MIN_PIX = max(8, MIN_COLOUR_PIXELS // 4)
+    radius_sq = float(radius_px) ** 2
+
+    ih, iw = bgr.shape[:2]
+    colour_hsv = frame_colour_mask(bgr, colour)
+    endon_quad = _quad_mask((ih, iw), endon_cell["corners"])
+    opposite_quad = _quad_mask((ih, iw), opposite_cell["corners"])
+    endon_mask = endon_quad & colour_hsv
+    opposite_mask = opposite_quad & colour_hsv
+
+    gate_e = _depth_gate(depth, endon_target_mm, tolerance_mm=120.0) if depth is not None else None
+    gate_o = _depth_gate(depth, opposite_target_mm, tolerance_mm=120.0) if depth is not None else None
+    if gate_e is not None:
+        gated = endon_mask & gate_e
+        if int(gated.sum()) >= MIN_PIX:
+            endon_mask = gated
+    if gate_o is not None:
+        gated = opposite_mask & gate_o
+        if int(gated.sum()) >= MIN_PIX:
+            opposite_mask = gated
+    combined = endon_mask | opposite_mask
+    combined = filter_mask_to_primary_blob(
+        combined,
+        prefer_xy=(float(hint_x), float(hint_y)),
+    )
+
+    ys, xs = np.where(combined)
+    if len(xs) < MIN_PIX:
+        return None
+
+    dist_sq = (xs.astype(np.float32) - float(hint_x)) ** 2 + (
+        ys.astype(np.float32) - float(hint_y)
+    ) ** 2
+    local = dist_sq <= radius_sq
+    if int(local.sum()) < MIN_PIX:
+        return None
+
+    lx = xs[local]
+    ly = ys[local]
+    fn = np.median if str(robust_stat).strip().lower() == "median" else np.mean
+    return float(fn(lx)), float(fn(ly))
+
+
+def _search_required_colour(
+    bgr: np.ndarray,
+    depth: np.ndarray | None,
+    endon_cell: dict,
+    opposite_cell: dict,
+    colour: str,
+    endon_target_mm: float | None,
+    opposite_target_mm: float | None,
+    orientation: str,
+    robust_stat: str,
+    centroid_hints: dict[str, tuple[float, float]] | None = None,
+    radius_px: float = CENTROID_HINT_SEARCH_RADIUS_PX,
+) -> tuple[float, float] | None:
+    """Try last-known location first, then fall back to full-cell search."""
+    hint = centroid_hints.get(colour) if centroid_hints else None
+    if hint is not None:
+        near = _search_colour_near_hint(
+            bgr, depth, endon_cell, opposite_cell, colour,
+            endon_target_mm, opposite_target_mm,
+            orientation, robust_stat,
+            hint_x=float(hint[0]),
+            hint_y=float(hint[1]),
+            radius_px=float(radius_px),
+        )
+        if near is not None:
+            return near
+    return _search_colour_low_threshold(
+        bgr, depth, endon_cell, opposite_cell, colour,
+        endon_target_mm, opposite_target_mm,
+        orientation, robust_stat,
+        prefer_xy=hint,
+    )
+
+
+def recover_colour_centroid(
+    bgr: np.ndarray,
+    depth: np.ndarray | None,
+    left_cell: dict,
+    right_cell: dict,
+    orientation: str,
+    colour: str,
+    hint_xy: tuple[float, float] | None = None,
+    radius_px: float = CENTROID_HINT_SEARCH_RADIUS_PX,
+    robust_stat: str = "mean",
+    hint_only: bool = False,
+) -> tuple[float, float] | None:
+    """
+    Recover a block centroid near hint_xy.
+
+    When hint_only is True, search only within radius_px of the hint on the
+    same layer — no full-cell fallback.
+    """
+    endon_cell = left_cell if orientation == "left" else right_cell
+    opposite_cell = right_cell if orientation == "left" else left_cell
+    endon_target_mm = _median_depth_in_cell(bgr, depth, endon_cell)
+    opposite_target_mm = _median_depth_in_cell(bgr, depth, opposite_cell)
+    if hint_xy is not None:
+        near = _search_colour_near_hint(
+            bgr, depth, endon_cell, opposite_cell, colour,
+            endon_target_mm, opposite_target_mm,
+            orientation, robust_stat,
+            hint_x=float(hint_xy[0]),
+            hint_y=float(hint_xy[1]),
+            radius_px=float(radius_px),
+        )
+        if near is not None:
+            return near
+    if hint_only:
+        return None
+    hints = {colour: hint_xy} if hint_xy is not None else None
+    return _search_required_colour(
+        bgr, depth, endon_cell, opposite_cell, colour,
+        endon_target_mm, opposite_target_mm,
+        orientation, robust_stat,
+        centroid_hints=hints,
+        radius_px=radius_px,
+    )
+
+
 def _search_colour_low_threshold(
     bgr: np.ndarray,
     depth: np.ndarray | None,
@@ -431,6 +657,7 @@ def _search_colour_low_threshold(
     opposite_target_mm: float | None,
     orientation: str,
     robust_stat: str,
+    prefer_xy: tuple[float, float] | None = None,
 ) -> tuple[float, float] | None:
     """
     Low-threshold centroid search for a colour that was not found by the
@@ -466,6 +693,7 @@ def _search_colour_low_threshold(
             opposite_mask = g
 
     combined = endon_mask | opposite_mask
+    combined = filter_mask_to_primary_blob(combined, prefer_xy=prefer_xy)
     if int(combined.sum()) < MIN_PIX:
         return None
 
@@ -516,6 +744,7 @@ def compute_layer_centroids(
     require_split: bool = False,
     required_colours: set[str] | None = None,
     split_x_out: dict[str, float] | None = None,
+    centroid_hints: dict[str, tuple[float, float]] | None = None,
 ) -> dict[str, tuple[float, float]]:
     """
     Compute near-face centroid (x_px, y_px) per colour for one layer.
@@ -537,8 +766,11 @@ def compute_layer_centroids(
                        False → fall back to depth-gated mean when no split
     required_colours : set of colour names that MUST be returned even at low
                        coverage (canonical/known block colours). When a colour
-                       in this set is not found by the normal path, a wide-gate
-                       low-threshold search is run as a last resort.
+                       in this set is not found by the normal path, a search
+                       near the last-known centroid is tried first, then a
+                       wide-gate full-cell fallback.
+    centroid_hints   : optional colour → (x_px, y_px) anchors for the
+                       required-colour search (typically from identity tracks).
 
     Returns
     -------
@@ -589,11 +821,12 @@ def compute_layer_centroids(
                 for colour in required_colours:
                     if colour in out:
                         continue
-                    fallback = _search_colour_low_threshold(
+                    fallback = _search_required_colour(
                         bgr, depth,
                         endon_cell, opposite_cell, colour,
                         endon_target_mm, opposite_target_mm,
                         orientation, robust_stat,
+                        centroid_hints=centroid_hints,
                     )
                     if fallback is not None:
                         out[colour] = fallback
@@ -626,11 +859,12 @@ def compute_layer_centroids(
             for colour in required_colours:
                 if colour in merged:
                     continue
-                fallback = _search_colour_low_threshold(
+                fallback = _search_required_colour(
                     bgr, depth,
                     endon_cell, opposite_cell, colour,
                     endon_target_mm, opposite_target_mm,
                     orientation, robust_stat,
+                    centroid_hints=centroid_hints,
                 )
                 if fallback is not None:
                     merged[colour] = fallback
@@ -659,11 +893,12 @@ def compute_layer_centroids(
         for colour in required_colours:
             if colour in merged:
                 continue
-            fallback = _search_colour_low_threshold(
+            fallback = _search_required_colour(
                 bgr, depth,
                 endon_cell, opposite_cell, colour,
                 endon_target_mm, opposite_target_mm,
                 orientation, robust_stat,
+                centroid_hints=centroid_hints,
             )
             if fallback is not None:
                 merged[colour] = fallback

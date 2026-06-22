@@ -20,7 +20,9 @@ from perception_config import PROBE_TARGET_BLOCK_ID_PLACEHOLDER, CENTROID_ABORT_
 PROBE_PRINT_INTERVAL_S = 0.2
 
 ROBOT_STATE_PROBING = "PROBING"
+ROBOT_STATE_PICK_PLACE = "PICK & PLACE"
 ROBOT_STATE_PLACING = "PICKING AND PLACING"
+ROBOT_STATE_PLACING_LABELS = frozenset({ROBOT_STATE_PICK_PLACE, ROBOT_STATE_PLACING})
 
 
 def parse_selected_goal_pick(data: str) -> tuple[int, int] | None:
@@ -477,6 +479,11 @@ class ProbeResponseMonitor:
         # suppress immediate auto-restart on the same block until robot state
         # changes away from PROBING (or target block changes).
         self._aborted_robot_block_latch: int | None = None
+        self._last_probed_block_id: int | None = None
+
+    def last_probed_block_id(self) -> int | None:
+        """Block id from the most recent robot-controlled probe session."""
+        return self._last_probed_block_id
 
     def _target_block_id(self) -> int | None:
         if self._robot_control_enabled:
@@ -522,6 +529,7 @@ class ProbeResponseMonitor:
                     print(f"[probe] robot PROBING — monitoring block {bid}")
                 self._robot_control_enabled = True
                 self._robot_target_block_id = int(bid)
+                self._last_probed_block_id = int(bid)
                 self._manual_override_enabled = False
                 self._manual_target_block_id = None
             # PROBING but goal not resolved yet: do not clear an active session.
@@ -535,8 +543,8 @@ class ProbeResponseMonitor:
             self._aborted_robot_block_latch = None
 
     def is_robot_placing(self) -> bool:
-        """True when /robot_state reports PICKING AND PLACING."""
-        return self._robot_state_label == ROBOT_STATE_PLACING
+        """True when /robot_state reports an active pick-and-place operation."""
+        return self._robot_state_label in ROBOT_STATE_PLACING_LABELS
 
     def set_target_block_id(self, block_id: int | None) -> None:
         """Set active probe target from Layer Analysis clicks (ignored while robot probes)."""

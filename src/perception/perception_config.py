@@ -10,7 +10,7 @@ TOWER_ANALYSIS = False
 BLOCK_ANALYSIS = True
 
 # Search area centre and fraction of the full frame
-SEARCH_AREA = (0.484, 0.525, 0.391, 0.654)
+SEARCH_AREA = (0.487, 0.508, 0.369, 0.650)
 
 # Crop margin around the search area
 SEARCH_AREA_MARGIN     = 0.10
@@ -127,7 +127,7 @@ HOUGH_MASK_THRESHOLD  = 8  # Min Hough votes to accept a line.
 HOUGH_MASK_MIN_LENGTH = 80  # Min accepted line length (pixels).
 HOUGH_MASK_MAX_GAP    = 30  # Max gap for joining broken line segments.
 
-MAX_HORIZ_DEG    = 13.0  # Max angle from horizontal to classify as horizontal.
+MAX_HORIZ_DEG    = 15.0  # Max angle from horizontal to classify as horizontal.
 MAX_VERT_DEG     = 5.0   # Max deviation from 90° to classify as vertical.
 
 # ---------------------------------------------------------------------------
@@ -182,3 +182,28 @@ GRID_EXTRA_LAYERS_ON_TOP = 2
 # Extrapolated rows: extend centre-column vertical step by this % over the
 # standard median row height (edges unchanged). Set to 0 to disable.
 GRID_EXTRAPOLATED_CENTER_HEIGHT_EXTEND_PCT = 15.0
+
+# ---------------------------------------------------------------------------
+# Robot placement on extrapolated layers
+# ---------------------------------------------------------------------------
+#
+# After pick-and-place, the block outer edge is measured as % of seam→outside
+# span on the end-on face. Thresholds assign front / mid / back slots.
+PLACEMENT_SLOT_FRONT_MAX_PCT = 50.0   # below → front (~33% nominal)
+PLACEMENT_SLOT_MID_MAX_PCT = 83.0     # below → mid (~66% nominal), else back
+PLACEMENT_MIN_COLOUR_PX = 120         # min pixels to accept a placed block blob
+
+# Minimum connected-component area (px) for a colour blob in a grid cell to
+# count as a block centroid. Filters thin slithers at slot boundaries.
+BLOCK_CENTROID_MIN_BLOB_PX = 120
+
+# When a block centroid is lost, search this radius (px) around the last known
+# position before falling back to a full-cell colour search.
+CENTROID_HINT_SEARCH_RADIUS_PX = 60
+
+# Consecutive frames a block must be absent before top-layer placement search.
+PLACEMENT_MISSING_CONFIRM_FRAMES = 4
+
+# If this many blocks drop out in one frame, treat it as camera occlusion —
+# restore centroids but do not start placement searches.
+PLACEMENT_OCCLUSION_MISSING_THRESHOLD = 4

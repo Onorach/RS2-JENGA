@@ -61,6 +61,7 @@ from probe_response import (
     recompute_tower_centroids_strict,
 )
 from block_identity_tracker import BlockIdentityTracker
+from placement_tracker import PlacementTracker
 
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
@@ -148,6 +149,7 @@ def _run_loop(
     _last_tower_state: list[dict] = []
     _selected_probe_block_id: int | None = None
     identity_tracker = BlockIdentityTracker()
+    placement_tracker = PlacementTracker()
     _last_tower_finder_print: float = 0.0
     if probe_monitor is None:
         probe_monitor = ProbeResponseMonitor()
@@ -198,6 +200,7 @@ def _run_loop(
         _selected_probe_block_id = None
         probe_monitor.set_target_block_id(None)
         identity_tracker.reset()
+        placement_tracker.reset()
         _destroy_windows(_GRID_DETECTION_WINDOWS + _POST_LOCK_WINDOWS)
 
     while True:
@@ -330,12 +333,12 @@ def _run_loop(
             )
             if locked_layer_cells:
                 points_locked = True
+                placement_tracker.configure_layers(locked_layer_cells)
                 _destroy_windows(_GRID_DETECTION_WINDOWS)
                 if on_points_locked is not None:
                     on_points_locked()
 
         # --- Tower analysis ---
-                # --- Tower analysis ---
         if TOWER_ANALYSIS:
 
             _hex_frame_n += 1
@@ -454,49 +457,65 @@ def _run_loop(
             row_cells = [(layer[0], layer[1]) for layer in locked_layer_cells]
             probe_active = probe_monitor.is_active()
             placing_active = probe_monitor.is_robot_placing()
-            if (
-                _last_tower_img is None
-                or probe_active
-                or placing_active
-            ):
-                active_cells = [cell for layer in locked_layer_cells for cell in layer]
-                _last_pct_results = compute_percentages(bgr, cells=active_cells)
-                depth_for_layers = (
-                    depth_mm
-                    if depth_mm is not None
-                    else np.zeros(bgr.shape[:2], dtype=np.uint16)
-                )
-                # When a probe is active, skip centroid/depth work for layers
-                # below the target — they cannot move and recomputing them
-                # wastes CPU every frame.
-                probe_min_layer = probe_monitor.monitoring_min_layer()
-                tower = analyse_tower(
+            active_cells = [cell for layer in locked_layer_cells for cell in layer]
+            _last_pct_results = compute_percentages(bgr, cells=active_cells)
+            depth_for_layers = (
+                depth_mm
+                if depth_mm is not None
+                else np.zeros(bgr.shape[:2], dtype=np.uint16)
+            )
+            # When a probe is active, skip centroid/depth work for layers
+            # below the target — they cannot move and recomputing them
+            # wastes CPU every frame.
+            probe_min_layer = probe_monitor.monitoring_min_layer()
+            tower = analyse_tower(
+                bgr,
+                depth_for_layers,
+                row_cells,
+                frame_centre_x_px=camera_centre_x_crop,
+                frame_width_px=float(iw),
+                print_enabled=False,
+                min_centroid_layer=probe_min_layer,
+                skip_centroid_layers_from=probe_min_layer if probe_active else None,
+                identity_tracker=identity_tracker,
+                precomputed_pct=_last_pct_results,
+            )
+            if placing_active and not probe_active:
+                tower = recompute_tower_centroids_strict(
                     bgr,
                     depth_for_layers,
                     row_cells,
-                    frame_centre_x_px=camera_centre_x_crop,
-                    frame_width_px=float(iw),
-                    print_enabled=False,
-                    min_centroid_layer=probe_min_layer,
-                    skip_centroid_layers_from=probe_min_layer if probe_active else None,
-                    identity_tracker=identity_tracker,
-                    precomputed_pct=_last_pct_results,
+                    tower,
+                    min_layer=0,
                 )
-                if placing_active and not probe_active:
-                    tower = recompute_tower_centroids_strict(
-                        bgr,
-                        depth_for_layers,
-                        row_cells,
-                        tower,
-                        min_layer=0,
-                    )
-                if not probe_active:
-                    identity_tracker.apply(tower)
-                _last_tower_state = tower
-                if tower and publish_top_layer:
-                    # Bottom-first (L0 at index 0) so GUI L1 = bottom, L6 = top.
-                    tower_bottom_up = sorted(tower, key=lambda layer: layer["layer"])
-                    publish_top_layer(tower_bottom_up)
+            if not probe_active:
+                placement_tracker.note_absences_before_restore(
+                    tower, identity_tracker,
+                )
+                identity_tracker.restore_absent_canonical_centroids(
+                    bgr,
+                    depth_mm,
+                    row_cells,
+                    tower,
+                    skip_layer_indices=set(placement_tracker.extrapolated_layers()),
+                    skip_block_ids=placement_tracker.blocks_skip_restore(),
+                )
+                identity_tracker.apply(tower)
+            _last_tower_state = tower
+            if placement_tracker.update(
+                bgr,
+                _last_tower_state,
+                row_cells,
+                identity_tracker,
+                depth_frame=depth_mm,
+            ):
+                identity_tracker.apply(_last_tower_state)
+            if tower and publish_top_layer:
+                # Bottom-first (L0 at index 0) so GUI L1 = bottom, L6 = top.
+                tower_bottom_up = sorted(
+                    _last_tower_state, key=lambda layer: layer["layer"],
+                )
+                publish_top_layer(tower_bottom_up)
 
             if probe_bridge is not None:
                 probe_bridge.sync_probe_from_robot(_last_tower_state)

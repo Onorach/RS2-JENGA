@@ -132,7 +132,12 @@ def _blocks_from_endon(
     A half-height percentage threshold is used so blocks with reduced coverage
     (pushed far in depth) are still marked as present.
     """
-    if known_colours is not None and any(c is not None for c in known_colours):
+    if known_colours is not None:
+        if not any(c is not None for c in known_colours):
+            return [
+                {"colour": "unknown", "present": False, "depth_mm": None}
+                for _ in range(3)
+            ]
         LOW_PCT = BLOCK_PRESENT_MIN_PCT / 2.0
         res: list[dict] = []
         for slot_colour in known_colours:
@@ -141,7 +146,7 @@ def _blocks_from_endon(
                 continue
             xy  = mean_xy.get(slot_colour)
             pct = pcts.get(slot_colour, 0.0)
-            if pct >= LOW_PCT:
+            if pct >= LOW_PCT or xy is not None:
                 block: dict = {"colour": slot_colour, "present": True}
                 if xy is not None:
                     block["mean_x_px"] = xy[0]
@@ -200,6 +205,7 @@ def analyse_layer(
     known_block_colours: list[str | None] | None = None,
     skip_centroid_compute: bool = False,
     forced_orientation: str | None = None,
+    centroid_hints: dict[str, tuple[float, float]] | None = None,
 ) -> dict:
     left_pcts   = _colour_pcts(left_result)
     right_pcts  = _colour_pcts(right_result)
@@ -236,6 +242,7 @@ def analyse_layer(
             robust_stat="mean",
             require_split=False,
             required_colours=required_colours,
+            centroid_hints=centroid_hints,
         )
     endon_blocks = _blocks_from_endon(
         endon_pcts, mean_xy, endon_cell,
@@ -448,12 +455,20 @@ def analyse_tower(
         # Fetch canonical colour assignments for this layer when available.
         # On the first frame (tracker not yet initialized) this returns all
         # None and _blocks_from_endon falls back to x-lane detection.
+        # Extrapolated top layers stay empty until placement_tracker registers
+        # a block there — never free-detect new blocks on those bands.
+        is_extrapolated = extra_layers > 0 and row_idx < extra_layers
         known_colours: list[str | None] | None = None
+        centroid_hints: dict[str, tuple[float, float]] | None = None
         if identity_tracker is not None and identity_tracker.is_initialized():
             known_colours = identity_tracker.canonical_colours_for_layer(layer_idx)
-            # If all None (e.g. layer not yet seen), fall back to free detection.
+            centroid_hints = identity_tracker.centroid_hints_for_layer(layer_idx)
             if not any(c is not None for c in known_colours):
-                known_colours = None
+                known_colours = [None, None, None] if is_extrapolated else None
+                if not is_extrapolated:
+                    centroid_hints = None
+        elif is_extrapolated:
+            known_colours = [None, None, None]
 
         forced_orientation = None
         if (
@@ -477,6 +492,7 @@ def analyse_tower(
             known_block_colours=known_colours,
             skip_centroid_compute=skip_centroid_compute,
             forced_orientation=forced_orientation,
+            centroid_hints=centroid_hints,
         )
         layer["layer"] = layer_idx
         tower.append(layer)
