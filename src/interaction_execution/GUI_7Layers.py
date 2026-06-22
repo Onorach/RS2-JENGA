@@ -76,6 +76,19 @@ class JengaTowerModel:
         with self._lock:
             return self._block_data.get((layer, position), None)
 
+    def get_perceived_layer_count(self):
+        """
+        Returns how many layers perception currently believes are populated
+        (i.e. contain at least one detected block), assuming the tower is
+        built contiguously upward from layer 0. Returns 0 if no blocks have
+        been detected at all.
+        """
+        with self._lock:
+            if not self._block_data:
+                return 0
+            max_layer = max(layer for (layer, _pos) in self._block_data.keys())
+            return max_layer + 1
+
     def calculate_valid_placement_layer(self):
         """Dynamically finds the topmost layer that is incomplete (has 2 or fewer blocks)."""
         with self._lock:
@@ -200,6 +213,7 @@ class JengaInterfaceApp:
         self.selected_pick_coords = None
         self.selected_pick_block_id = 0
         self.is_estop_active = False
+        self.current_layer_count = 0  # Rows currently rendered in the matrix grid
 
         self.setup_ui()
         self.update_loop()
@@ -270,20 +284,12 @@ class JengaInterfaceApp:
 
         # Section B: Physical Tower Intermediary Layout Grid
         tk.Label(ctrl_container, text="Jenga Matrix Grid", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=(15, 2))
-        grid_wrapper = tk.Frame(ctrl_container, bg=COLOUR_DARK_GRAY)
-        grid_wrapper.pack(pady=5)
+        self.grid_wrapper = tk.Frame(ctrl_container, bg=COLOUR_DARK_GRAY)
+        self.grid_wrapper.pack(pady=5)
 
-        for layer in range(6, -1, -1):
-            row_frame = tk.Frame(grid_wrapper, bg=COLOUR_DARK_GRAY)
-            row_frame.pack(pady=1)
-            tk.Label(row_frame, text=f"L{layer}", bg=COLOUR_DARK_GRAY, fg=COLOUR_LIGHT_GRAY, font=("Arial", 9, "bold"), width=4).pack(side=tk.LEFT)
-
-            # Positions are now 0-indexed: 0 = left, 1 = middle, 2 = right
-            for pos_idx in range(3):
-                btn = tk.Button(row_frame, text="000", bg=COLOUR_WHITE, fg=COLOUR_BLACK, font=("Arial", 9, "bold"),
-                                width=7, height=2, relief="flat", command=lambda l=layer, p=pos_idx: self.handle_matrix_click(l, p))
-                btn.pack(side=tk.LEFT, padx=2)
-                self.goal_buttons[(layer, pos_idx)] = btn
+        # Row count is driven by perception, not hardcoded. rebuild_grid() (re)builds
+        # the rows; update_loop() keeps it in sync as new layers are detected.
+        self.rebuild_grid(self.get_display_layer_count())
 
         # Section C: Simulation Utilities
         tk.Label(ctrl_container, text="Simulation Utilities", bg=COLOUR_DARK_GRAY, fg=COLOUR_WHITE, font=("Arial", 12, "bold")).pack(pady=(15, 2))
@@ -300,6 +306,34 @@ class JengaInterfaceApp:
         self.goal_status_label = tk.Label(ctrl_container, text="Step 1: Click a block to Pick Up.", 
                                           bg=COLOUR_DARK_GRAY, fg=COLOUR_YELLOW, font=("Arial", 10, "bold"), wraplength=300)
         self.goal_status_label.pack(pady=10)
+
+    def get_display_layer_count(self):
+        """
+        Number of rows to render in the matrix grid: one more than the number
+        of layers perception currently detects, so the topmost row is always
+        a fresh, empty layer the user can select placement positions on.
+        """
+        return self.model.get_perceived_layer_count() + 1
+
+    def rebuild_grid(self, num_layers):
+        """Rebuilds the Jenga matrix grid so it has exactly `num_layers` rows."""
+        for widget in self.grid_wrapper.winfo_children():
+            widget.destroy()
+        self.goal_buttons.clear()
+
+        for layer in range(num_layers - 1, -1, -1):
+            row_frame = tk.Frame(self.grid_wrapper, bg=COLOUR_DARK_GRAY)
+            row_frame.pack(pady=1)
+            tk.Label(row_frame, text=f"L{layer}", bg=COLOUR_DARK_GRAY, fg=COLOUR_LIGHT_GRAY, font=("Arial", 9, "bold"), width=4).pack(side=tk.LEFT)
+
+            # Positions are 0-indexed: 0 = left, 1 = middle, 2 = right
+            for pos_idx in range(3):
+                btn = tk.Button(row_frame, text="000", bg=COLOUR_WHITE, fg=COLOUR_BLACK, font=("Arial", 9, "bold"),
+                                width=7, height=2, relief="flat", command=lambda l=layer, p=pos_idx: self.handle_matrix_click(l, p))
+                btn.pack(side=tk.LEFT, padx=2)
+                self.goal_buttons[(layer, pos_idx)] = btn
+
+        self.current_layer_count = num_layers
 
     def handle_matrix_click(self, layer, position):
         block = self.model.get_block(layer, position)
@@ -366,9 +400,14 @@ class JengaInterfaceApp:
             self.cam_label.image = img_tk
 
         self.state_label.config(text=self.model.get_robot_state())
+
+        display_layer_count = self.get_display_layer_count()
+        if display_layer_count != self.current_layer_count:
+            self.rebuild_grid(display_layer_count)
+
         target_place_layer = self.model.calculate_valid_placement_layer()
         
-        for layer in range(7):
+        for layer in range(display_layer_count):
             # Adjusted internal loop tracking to check indices 0, 1, and 2
             for pos_idx in range(3):
                 btn = self.goal_buttons.get((layer, pos_idx))
