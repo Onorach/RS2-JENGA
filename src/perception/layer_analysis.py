@@ -76,6 +76,35 @@ def _detect_orientation(left_pcts: dict[str, float], right_pcts: dict[str, float
     return "left" if left_max <= right_max else "right"
 
 
+def _flip_orientation(orientation: str) -> str:
+    if orientation == "left":
+        return "right"
+    if orientation == "right":
+        return "left"
+    return orientation
+
+
+def _count_extrapolated_layers(row_cells: list[tuple[dict, dict]]) -> int:
+    """Number of consecutive extrapolated layer bands at the top of the grid."""
+    count = 0
+    for left_def, right_def in row_cells:
+        if left_def.get("extrapolated") or right_def.get("extrapolated"):
+            count += 1
+        else:
+            break
+    return count
+
+
+def _orientation_alternating_above(anchor: str, steps_above: int) -> str:
+    """
+    Jenga layers alternate end-on direction. Given the orientation of the
+    highest detected layer, return the orientation ``steps_above`` layers higher.
+    """
+    if anchor not in ("left", "right") or steps_above <= 0:
+        return anchor
+    return anchor if steps_above % 2 == 0 else _flip_orientation(anchor)
+
+
 # ---------------------------------------------------------------------------
 # Block detection from end-on face
 # ---------------------------------------------------------------------------
@@ -103,7 +132,12 @@ def _blocks_from_endon(
     A half-height percentage threshold is used so blocks with reduced coverage
     (pushed far in depth) are still marked as present.
     """
-    if known_colours is not None and any(c is not None for c in known_colours):
+    if known_colours is not None:
+        if not any(c is not None for c in known_colours):
+            return [
+                {"colour": "unknown", "present": False, "depth_mm": None}
+                for _ in range(3)
+            ]
         LOW_PCT = BLOCK_PRESENT_MIN_PCT / 2.0
         res: list[dict] = []
         for slot_colour in known_colours:
@@ -112,7 +146,7 @@ def _blocks_from_endon(
                 continue
             xy  = mean_xy.get(slot_colour)
             pct = pcts.get(slot_colour, 0.0)
-            if pct >= LOW_PCT:
+            if pct >= LOW_PCT or xy is not None:
                 block: dict = {"colour": slot_colour, "present": True}
                 if xy is not None:
                     block["mean_x_px"] = xy[0]
@@ -170,10 +204,15 @@ def analyse_layer(
     frame_width_px: float | None = None,
     known_block_colours: list[str | None] | None = None,
     skip_centroid_compute: bool = False,
+    forced_orientation: str | None = None,
+    centroid_hints: dict[str, tuple[float, float]] | None = None,
 ) -> dict:
     left_pcts   = _colour_pcts(left_result)
     right_pcts  = _colour_pcts(right_result)
-    orientation = _detect_orientation(left_pcts, right_pcts)
+    if forced_orientation in ("left", "right"):
+        orientation = forced_orientation
+    else:
+        orientation = _detect_orientation(left_pcts, right_pcts)
 
     endon_pcts, endon_cell = (
         (left_pcts, left_cell) if orientation == "left"
@@ -203,6 +242,7 @@ def analyse_layer(
             robust_stat="mean",
             require_split=False,
             required_colours=required_colours,
+            centroid_hints=centroid_hints,
         )
     endon_blocks = _blocks_from_endon(
         endon_pcts, mean_xy, endon_cell,
@@ -364,6 +404,40 @@ def analyse_tower(
         if precomputed_pct is not None
         else None
     )
+    extra_layers = _count_extrapolated_layers(row_cells)
+    use_frozen_orientations = (
+        identity_tracker is not None
+        and identity_tracker.is_initialized()
+    )
+    frozen_anchor = (
+        identity_tracker.frozen_anchor_orientation()
+        if use_frozen_orientations
+        else None
+    )
+    anchor_orientation: str | None = None
+    if extra_layers > 0 and extra_layers < n_layers:
+        if frozen_anchor in ("left", "right"):
+            anchor_orientation = frozen_anchor
+        else:
+            anchor_left, anchor_right = row_cells[extra_layers]
+            if (
+                pct_by_name is not None
+                and anchor_left["name"] in pct_by_name
+                and anchor_right["name"] in pct_by_name
+            ):
+                anchor_pct = [
+                    pct_by_name[anchor_left["name"]],
+                    pct_by_name[anchor_right["name"]],
+                ]
+            else:
+                anchor_pct = compute_percentages(
+                    bgr_frame, cells=[anchor_left, anchor_right],
+                )
+            anchor_orientation = _detect_orientation(
+                _colour_pcts(anchor_pct[0]),
+                _colour_pcts(anchor_pct[1]),
+            )
+
     for row_idx, (left_def, right_def) in enumerate(row_cells):
         if (
             pct_by_name is not None
@@ -393,12 +467,44 @@ def analyse_tower(
         # Fetch canonical colour assignments for this layer when available.
         # On the first frame (tracker not yet initialized) this returns all
         # None and _blocks_from_endon falls back to x-lane detection.
+        # Extrapolated top layers stay empty until placement_tracker registers
+        # a block there — never free-detect new blocks on those bands.
+        is_extrapolated = extra_layers > 0 and row_idx < extra_layers
         known_colours: list[str | None] | None = None
+        centroid_hints: dict[str, tuple[float, float]] | None = None
         if identity_tracker is not None and identity_tracker.is_initialized():
             known_colours = identity_tracker.canonical_colours_for_layer(layer_idx)
-            # If all None (e.g. layer not yet seen), fall back to free detection.
+            centroid_hints = identity_tracker.centroid_hints_for_layer(layer_idx)
             if not any(c is not None for c in known_colours):
-                known_colours = None
+                known_colours = [None, None, None] if is_extrapolated else None
+                if not is_extrapolated:
+                    centroid_hints = None
+        elif is_extrapolated:
+            known_colours = [None, None, None]
+
+        forced_orientation = None
+        if use_frozen_orientations:
+            frozen_layer_orient = identity_tracker.frozen_orientation_for_layer(
+                layer_idx,
+            )
+            if frozen_layer_orient in ("left", "right"):
+                forced_orientation = frozen_layer_orient
+            elif (
+                row_idx < extra_layers
+                and frozen_anchor in ("left", "right")
+            ):
+                forced_orientation = _orientation_alternating_above(
+                    frozen_anchor,
+                    extra_layers - row_idx,
+                )
+        elif (
+            row_idx < extra_layers
+            and anchor_orientation in ("left", "right")
+        ):
+            forced_orientation = _orientation_alternating_above(
+                anchor_orientation,
+                extra_layers - row_idx,
+            )
 
         layer = analyse_layer(
             bgr_frame,
@@ -411,6 +517,8 @@ def analyse_tower(
             frame_width_px=frame_width_px,
             known_block_colours=known_colours,
             skip_centroid_compute=skip_centroid_compute,
+            forced_orientation=forced_orientation,
+            centroid_hints=centroid_hints,
         )
         layer["layer"] = layer_idx
         tower.append(layer)

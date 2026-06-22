@@ -23,8 +23,11 @@ Public API
 ----------
   tracker.apply(tower_state)                  — assign / freeze IDs each frame
   tracker.canonical_colours_for_layer(idx)   — [front_colour, mid_colour, back_colour]
+  tracker.frozen_orientation_for_layer(idx)  — locked left/right after first apply()
+  tracker.frozen_anchor_orientation()        — anchor layer orientation for extrapolated bands
   tracker.is_initialized()                   — True after first apply()
   tracker.mark_block_removed(block_id)       — call when a block is picked out
+  tracker.register_placed_block(...)         — register block on extrapolated layer
   tracker.reset()                             — clear all state (grid reset)
 """
 from __future__ import annotations
@@ -44,6 +47,10 @@ class BlockIdentityTracker:
         self._canonical_slots: dict[tuple[int, int], dict] = {}
         # Block IDs that have been explicitly removed (picked by robot).
         self._removed_block_ids: set[int] = set()
+        # Per-layer left/right orientation frozen after first tower analysis.
+        self._frozen_orientations: dict[int, str] = {}
+        # Orientation of the topmost detected layer (below extrapolated bands).
+        self._frozen_anchor_orientation: str | None = None
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -55,6 +62,8 @@ class BlockIdentityTracker:
         self._initialized = False
         self._canonical_slots.clear()
         self._removed_block_ids.clear()
+        self._frozen_orientations.clear()
+        self._frozen_anchor_orientation = None
 
     def is_initialized(self) -> bool:
         return self._initialized
@@ -75,6 +84,14 @@ class BlockIdentityTracker:
             result[slot_idx] = entry["colour"]
         return result
 
+    def frozen_orientation_for_layer(self, layer_idx: int) -> str | None:
+        """Return the locked left/right orientation for a layer, if known."""
+        return self._frozen_orientations.get(int(layer_idx))
+
+    def frozen_anchor_orientation(self) -> str | None:
+        """Return the locked orientation of the anchor layer (below extrapolated bands)."""
+        return self._frozen_anchor_orientation
+
     def mark_block_removed(self, block_id: int) -> None:
         """
         Mark a block as permanently removed (picked by the robot).
@@ -88,6 +105,199 @@ class BlockIdentityTracker:
             del self._canonical_slots[k]
         # Remove from live tracks too.
         self._tracks.pop(bid, None)
+
+    def register_placed_block(
+        self,
+        layer_idx: int,
+        slot_idx: int,
+        block_id: int,
+        colour: str,
+    ) -> None:
+        """
+        Register a block the robot placed on an extrapolated top layer.
+
+        Re-uses the picked block's id on the new (layer_idx, slot_idx).
+        """
+        bid = int(block_id)
+        self._removed_block_ids.discard(bid)
+        # Drop any prior home (including stale slots below extrapolated layers).
+        stale = [k for k, v in self._canonical_slots.items() if v["block_id"] == bid]
+        for k in stale:
+            del self._canonical_slots[k]
+        self._canonical_slots[(int(layer_idx), int(slot_idx))] = {
+            "block_id": bid,
+            "colour":   str(colour),
+        }
+        if not self._initialized:
+            self._initialized = True
+        self._next_id = max(int(self._next_id), bid + 1)
+
+    def registered_blocks_on_layers(
+        self, layer_indices: list[int],
+    ) -> dict[int, dict]:
+        """
+        Canonical block_id → {colour, layer, slot} for slots on the given layers.
+        """
+        allowed = {int(layer_idx) for layer_idx in layer_indices}
+        out: dict[int, dict] = {}
+        for (layer_idx, slot_idx), entry in self._canonical_slots.items():
+            if int(layer_idx) not in allowed:
+                continue
+            bid = int(entry["block_id"])
+            if bid in self._removed_block_ids:
+                continue
+            out[bid] = {
+                "colour": str(entry["colour"]),
+                "layer": int(layer_idx),
+                "slot": int(slot_idx),
+            }
+        return out
+
+    def canonical_blocks_excluding_layers(
+        self,
+        exclude_layer_indices: set[int],
+    ) -> dict[int, dict]:
+        """
+        Canonical home blocks on all layers except the excluded set (typically
+        extrapolated top bands). Includes last-known centroid when tracked.
+        """
+        exclude = {int(layer_idx) for layer_idx in exclude_layer_indices}
+        out: dict[int, dict] = {}
+        for (layer_idx, slot_idx), entry in self._canonical_slots.items():
+            if int(layer_idx) in exclude:
+                continue
+            bid = int(entry["block_id"])
+            if bid in self._removed_block_ids:
+                continue
+            hint = self.last_centroid_for_block(bid)
+            out[bid] = {
+                "colour": str(entry["colour"]),
+                "layer": int(layer_idx),
+                "slot": int(slot_idx),
+                "mean_x_px": hint[0] if hint is not None else None,
+                "mean_y_px": hint[1] if hint is not None else None,
+            }
+        return out
+
+    def block_id_at_slot(self, layer_idx: int, slot_idx: int) -> int | None:
+        entry = self._canonical_slots.get((int(layer_idx), int(slot_idx)))
+        if entry is None:
+            return None
+        bid = int(entry["block_id"])
+        if bid in self._removed_block_ids:
+            return None
+        return bid
+
+    def centroid_hints_for_layer(
+        self, layer_idx: int,
+    ) -> dict[str, tuple[float, float]]:
+        """
+        Last-known (x, y) centroid per canonical colour on this layer.
+        Used to anchor local colour searches when a block briefly drops out.
+        """
+        hints: dict[str, tuple[float, float]] = {}
+        for slot_idx in range(3):
+            entry = self._canonical_slots.get((int(layer_idx), slot_idx))
+            if entry is None:
+                continue
+            bid = int(entry["block_id"])
+            if bid in self._removed_block_ids:
+                continue
+            track = self._tracks.get(bid)
+            if track is None:
+                continue
+            hints[str(entry["colour"])] = (
+                float(track["x"]),
+                float(track["y"]),
+            )
+        return hints
+
+    def last_centroid_for_block(self, block_id: int) -> tuple[float, float] | None:
+        track = self._tracks.get(int(block_id))
+        if track is None:
+            return None
+        return float(track["x"]), float(track["y"])
+
+    def restore_absent_canonical_centroids(
+        self,
+        bgr_frame,
+        depth_frame,
+        row_cells: list[tuple[dict, dict]],
+        tower: list[dict],
+        skip_layer_indices: set[int],
+        skip_block_ids: set[int] | None = None,
+    ) -> bool:
+        """
+        Re-find canonical blocks that analyse_tower marked absent using their
+        last known centroid as a search hint.
+        """
+        from block_centroids import recover_colour_centroid
+        from perception_config import CENTROID_HINT_SEARCH_RADIUS_PX
+
+        changed = False
+        n_layers = len(row_cells)
+        skip_blocks = skip_block_ids or set()
+        for layer in tower:
+            layer_idx = int(layer.get("layer", -1))
+            if layer_idx in skip_layer_indices:
+                continue
+            orientation = str(layer.get("orientation", ""))
+            if orientation not in ("left", "right"):
+                continue
+            row_idx = (n_layers - 1) - layer_idx
+            if row_idx < 0 or row_idx >= n_layers:
+                continue
+            left_cell, right_cell = row_cells[row_idx]
+            for slot_idx, block in enumerate(layer.get("blocks", [])):
+                if block.get("present"):
+                    continue
+                entry = self._canonical_slots.get((layer_idx, slot_idx))
+                if entry is None:
+                    continue
+                bid = int(entry["block_id"])
+                if bid in self._removed_block_ids:
+                    continue
+                if bid in skip_blocks:
+                    continue
+                colour = str(entry["colour"])
+                hint = self.last_centroid_for_block(bid)
+                centroid = recover_colour_centroid(
+                    bgr_frame,
+                    depth_frame,
+                    left_cell,
+                    right_cell,
+                    orientation,
+                    colour,
+                    hint_xy=hint,
+                    radius_px=float(CENTROID_HINT_SEARCH_RADIUS_PX),
+                )
+                if centroid is None:
+                    continue
+                block["colour"] = colour
+                block["present"] = True
+                block["block_index"] = bid
+                block["id"] = f"{bid:03d}"
+                block["mean_x_px"] = float(centroid[0])
+                block["mean_y_px"] = float(centroid[1])
+                self._tracks[bid] = {
+                    "x": float(centroid[0]),
+                    "y": float(centroid[1]),
+                    "colour": colour,
+                    "misses": 0,
+                }
+                changed = True
+        return changed
+
+    def colour_for_block(self, block_id: int) -> str | None:
+        """Return last known canonical colour for a block id, if any."""
+        bid = int(block_id)
+        for entry in self._canonical_slots.values():
+            if int(entry["block_id"]) == bid:
+                return str(entry["colour"])
+        track = self._tracks.get(bid)
+        if track is not None:
+            return str(track.get("colour"))
+        return None
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -147,11 +357,21 @@ class BlockIdentityTracker:
         self._next_id = max_existing + 1 if max_existing >= 0 else 0
         self._initialized = True
 
+    def _block_has_canonical_home(self, block_id: int) -> bool:
+        """True when this block_id already owns a canonical slot somewhere."""
+        bid = int(block_id)
+        return any(
+            int(entry["block_id"]) == bid
+            for entry in self._canonical_slots.values()
+        )
+
     def _update_canonical_slots(self, tower_state: list[dict]) -> None:
         """
         Record first-seen slot assignments as canonical.
         First-write-wins — slots already in _canonical_slots are never
-        overwritten so identities stay frozen.
+        overwritten so identities stay frozen.  A block that already has a
+        canonical home (e.g. registered on an extrapolated top layer) is never
+        re-seeded from stale detections on its old layer.
         """
         for layer in tower_state:
             layer_idx = int(layer.get("layer", -1))
@@ -166,6 +386,7 @@ class BlockIdentityTracker:
                     and block.get("present")
                     and colour not in ("unknown", None, "")
                     and int(block_id) not in self._removed_block_ids
+                    and not self._block_has_canonical_home(int(block_id))
                 ):
                     self._canonical_slots[key] = {
                         "block_id": int(block_id),
@@ -219,7 +440,12 @@ class BlockIdentityTracker:
     # Main entry point
     # ------------------------------------------------------------------
 
-    def apply(self, tower_state: list[dict]) -> None:
+    def apply(
+        self,
+        tower_state: list[dict],
+        *,
+        anchor_layer_idx: int | None = None,
+    ) -> None:
         if not tower_state:
             return
 
@@ -227,6 +453,7 @@ class BlockIdentityTracker:
             self._initialize_from_existing(tower_state)
             # Seed canonical from the very first frame's assignments.
             self._update_canonical_slots(tower_state)
+            self._freeze_orientations_from_tower(tower_state, anchor_layer_idx)
             return
 
         # ── Normal frame: greedy proximity + colour matching ───────────────
@@ -291,8 +518,16 @@ class BlockIdentityTracker:
             }
 
         to_drop: list[int] = []
+        canonical_ids = {
+            int(entry["block_id"])
+            for entry in self._canonical_slots.values()
+            if int(entry["block_id"]) not in self._removed_block_ids
+        }
         for track_id, track in self._tracks.items():
             if track_id in assigned_track:
+                continue
+            if track_id in canonical_ids:
+                track["misses"] = 0
                 continue
             misses = int(track.get("misses", 0)) + 1
             track["misses"] = misses
@@ -310,3 +545,22 @@ class BlockIdentityTracker:
         # Update canonical with any NEW slots seen for the first time
         # (e.g. after the grid first locks on the initial board state).
         self._update_canonical_slots(tower_state)
+        self._freeze_orientations_from_tower(tower_state, anchor_layer_idx)
+
+    def _freeze_orientations_from_tower(
+        self,
+        tower_state: list[dict],
+        anchor_layer_idx: int | None,
+    ) -> None:
+        """First-write-wins lock of per-layer orientations after initial analysis."""
+        for layer in tower_state:
+            layer_idx = int(layer.get("layer", -1))
+            orient = str(layer.get("orientation", ""))
+            if orient not in ("left", "right"):
+                continue
+            if layer_idx not in self._frozen_orientations:
+                self._frozen_orientations[layer_idx] = orient
+        if self._frozen_anchor_orientation is None and anchor_layer_idx is not None:
+            anchor = self._frozen_orientations.get(int(anchor_layer_idx))
+            if anchor in ("left", "right"):
+                self._frozen_anchor_orientation = anchor

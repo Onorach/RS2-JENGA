@@ -30,6 +30,8 @@ from perception_config import (
     CLUSTER_MERGE_RADIUS_PX,
     POINT_VALID_SIDE_BAND_PCT,
     POINT_VALID_CENTER_BAND_PCT,
+    GRID_EXTRA_LAYERS_ON_TOP,
+    GRID_EXTRAPOLATED_CENTER_HEIGHT_EXTEND_PCT,
 )
 
 
@@ -398,6 +400,56 @@ def filter_points_by_x_bands(
     ]
 
 
+def _median_row_step_y(mapped_grid: list[list[tuple[int, int]]]) -> float | None:
+    """Typical vertical spacing between grid rows (image y increases downward)."""
+    if len(mapped_grid) < 2:
+        return None
+    dys: list[float] = []
+    for r in range(len(mapped_grid) - 1):
+        dy = float(mapped_grid[r + 1][0][1] - mapped_grid[r][0][1])
+        if dy > 0.0:
+            dys.append(dy)
+    if not dys:
+        return None
+    return float(np.median(dys))
+
+
+def _extrapolate_rows_above(
+    mapped_grid: list[list[tuple[int, int]]],
+    extra_layers: int,
+    center_height_extend_pct: float = GRID_EXTRAPOLATED_CENTER_HEIGHT_EXTEND_PCT,
+) -> list[list[tuple[int, int]]]:
+    """
+    Prepend ``extra_layers`` synthetic grid rows above the detected top row.
+
+    Left/right x and y use the median row step.  Centre x is unchanged; centre
+    y uses the same step extended by ``center_height_extend_pct`` (perspective).
+    """
+    if extra_layers <= 0 or len(mapped_grid) < 2:
+        return mapped_grid
+
+    step_y = _median_row_step_y(mapped_grid)
+    if step_y is None or step_y <= 0.0:
+        return mapped_grid
+
+    centre_scale = 1.0 + max(0.0, float(center_height_extend_pct)) / 100.0
+    top_row = mapped_grid[0]
+    extra_rows: list[list[tuple[int, int]]] = []
+    for i in range(extra_layers, 0, -1):
+        left_x, left_y = top_row[0]
+        centre_x, centre_y = top_row[1]
+        right_x, right_y = top_row[2]
+        edge_y = int(round(left_y - step_y * i))
+        centre_y_out = int(round(centre_y - step_y * i * centre_scale))
+        right_y_out = int(round(right_y - step_y * i))
+        extra_rows.append([
+            (left_x, edge_y),
+            (centre_x, centre_y_out),
+            (right_x, right_y_out),
+        ])
+    return extra_rows + mapped_grid
+
+
 def build_layer_cells_from_points(
     points_roi: list[tuple[int, int]],
     roi_xywh: tuple[int, int, int, int],
@@ -407,6 +459,8 @@ def build_layer_cells_from_points(
 
     Points are expected in ROI-space; returned cells use full-frame coordinates.
     Assumes a 3-column grid; derives the number of layers from the point count.
+    After mapping detected points, ``GRID_EXTRA_LAYERS_ON_TOP`` empty layer bands
+    are extrapolated above the tower for blocks placed during live play.
     """
     if not points_roi:
         return []
@@ -437,6 +491,10 @@ def build_layer_cells_from_points(
         row_x_ord = np.argsort(row_pts[:, 0])
         mapped_grid.append([(int(px), int(py)) for px, py in row_pts[row_x_ord]])
 
+    extra_layers = max(0, int(GRID_EXTRA_LAYERS_ON_TOP))
+    detected_layer_count = len(mapped_grid) - 1
+    mapped_grid = _extrapolate_rows_above(mapped_grid, extra_layers)
+
     dynamic_layers: list[list[dict]] = []
     for r in range(len(mapped_grid) - 1):
         top, bot = mapped_grid[r], mapped_grid[r + 1]
@@ -446,8 +504,23 @@ def build_layer_cells_from_points(
         right_corners = [top[1], top[2], bot[1], bot[2]]
         if any(c is None for c in left_corners + right_corners):
             continue
+        extrapolated = r < extra_layers
         dynamic_layers.append([
-            {"name": f"left_cell_r{r}",  "corners": left_corners},
-            {"name": f"right_cell_r{r}", "corners": right_corners},
+            {
+                "name": f"left_cell_r{r}",
+                "corners": left_corners,
+                "extrapolated": extrapolated,
+            },
+            {
+                "name": f"right_cell_r{r}",
+                "corners": right_corners,
+                "extrapolated": extrapolated,
+            },
         ])
+    if extra_layers > 0 and dynamic_layers:
+        print(
+            f"[grid] locked {detected_layer_count} detected layer(s), "
+            f"added {extra_layers} extrapolated on top "
+            f"({len(dynamic_layers)} total layers)"
+        )
     return dynamic_layers
