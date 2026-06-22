@@ -74,6 +74,13 @@ from cv_bridge import CvBridge
 # Display helpers
 # ---------------------------------------------------------------------------
 
+def _anchor_layer_idx(extrapolated_layers: list[int]) -> int | None:
+    """Layer index of the topmost detected row below extrapolated bands."""
+    if not extrapolated_layers:
+        return None
+    return min(extrapolated_layers) - 1
+
+
 def _ensure_window_open(name: str) -> None:
     """Create or re-create an OpenCV window if it has been closed."""
     try:
@@ -500,7 +507,12 @@ def _run_loop(
                     skip_layer_indices=set(placement_tracker.extrapolated_layers()),
                     skip_block_ids=placement_tracker.blocks_skip_restore(),
                 )
-                identity_tracker.apply(tower)
+                identity_tracker.apply(
+                    tower,
+                    anchor_layer_idx=_anchor_layer_idx(
+                        placement_tracker.extrapolated_layers(),
+                    ),
+                )
             _last_tower_state = tower
             if placement_tracker.update(
                 bgr,
@@ -509,7 +521,12 @@ def _run_loop(
                 identity_tracker,
                 depth_frame=depth_mm,
             ):
-                identity_tracker.apply(_last_tower_state)
+                identity_tracker.apply(
+                    _last_tower_state,
+                    anchor_layer_idx=_anchor_layer_idx(
+                        placement_tracker.extrapolated_layers(),
+                    ),
+                )
             if tower and publish_top_layer:
                 # Bottom-first (L0 at index 0) so GUI L1 = bottom, L6 = top.
                 tower_bottom_up = sorted(
@@ -528,7 +545,12 @@ def _run_loop(
                     row_cells=row_cells,
                 )
             if probe_active:
-                identity_tracker.apply(_last_tower_state)
+                identity_tracker.apply(
+                    _last_tower_state,
+                    anchor_layer_idx=_anchor_layer_idx(
+                        placement_tracker.extrapolated_layers(),
+                    ),
+                )
             if _last_tower_state and not probe_active:
                 monitor_min_layer = probe_monitor.active_session_min_layer()
                 annotate_depth_split_lines_for_tower(

@@ -130,6 +130,58 @@ def _centre_seam_x_for_layer(
     return float(left_cell["corners"][1][0])
 
 
+def _outer_edge_x_on_endon_face(
+    xs_side: np.ndarray,
+    orientation: str,
+) -> float:
+    """Outermost x among end-on-face pixels (toward the tower outside edge)."""
+    if orientation == "left":
+        return float(np.min(xs_side))
+    return float(np.max(xs_side))
+
+
+def _slot_threshold_label(penetration_pct: float) -> str:
+    if penetration_pct < float(PLACEMENT_SLOT_FRONT_MAX_PCT):
+        return (
+            f"front (penetration {penetration_pct:.1f}% "
+            f"< {PLACEMENT_SLOT_FRONT_MAX_PCT}%)"
+        )
+    if penetration_pct < float(PLACEMENT_SLOT_MID_MAX_PCT):
+        return (
+            f"mid (penetration {penetration_pct:.1f}% "
+            f">= {PLACEMENT_SLOT_FRONT_MAX_PCT}% "
+            f"and < {PLACEMENT_SLOT_MID_MAX_PCT}%)"
+        )
+    return (
+        f"back (penetration {penetration_pct:.1f}% "
+        f">= {PLACEMENT_SLOT_MID_MAX_PCT}%)"
+    )
+
+
+def _format_blob_slot_reason(
+    *,
+    orientation: str,
+    centre_seam_x: float,
+    outside_x: float,
+    outer_x: float,
+    mean_x: float,
+    penetration_pct: float,
+    slot_idx: int,
+    endon_px: int,
+    full_px: int,
+) -> str:
+    if orientation == "left":
+        span = float(centre_seam_x - outside_x)
+    else:
+        span = float(outside_x - centre_seam_x)
+    return (
+        f"slot={SLOT_NAMES[slot_idx]} ({_slot_threshold_label(penetration_pct)}); "
+        f"orient={orientation} seam_x={centre_seam_x:.1f} outside_x={outside_x:.1f} "
+        f"span={span:.1f}px outer_x={outer_x:.1f} mean_x={mean_x:.1f} "
+        f"endon_px={endon_px}/{full_px}"
+    )
+
+
 def measure_slot_from_outer_edge(
     outer_edge_x: float,
     centre_seam_x: float,
@@ -197,14 +249,29 @@ def colour_blobs_in_layer(
         ys, xs = np.where(component)
         if len(xs) == 0:
             continue
-        if orientation == "left":
-            outer_x = float(np.min(xs))
-        else:
-            outer_x = float(np.max(xs))
-        mean_x = float(np.mean(xs))
-        mean_y = float(np.mean(ys))
+        endon_side = xs >= centre_seam_x if orientation == "right" else xs <= centre_seam_x
+        xs_side = xs[endon_side]
+        ys_side = ys[endon_side]
+        full_px = int(len(xs))
+        endon_px = int(len(xs_side))
+        if endon_px < min_area:
+            continue
+        mean_x = float(np.mean(xs_side))
+        mean_y = float(np.mean(ys_side))
+        outer_x = _outer_edge_x_on_endon_face(xs_side, orientation)
         slot_idx, penetration_pct = measure_slot_from_outer_edge(
             outer_x, centre_seam_x, outside_x, orientation,
+        )
+        slot_reason = _format_blob_slot_reason(
+            orientation=orientation,
+            centre_seam_x=centre_seam_x,
+            outside_x=outside_x,
+            outer_x=outer_x,
+            mean_x=mean_x,
+            penetration_pct=penetration_pct,
+            slot_idx=slot_idx,
+            endon_px=endon_px,
+            full_px=full_px,
         )
         blobs.append({
             "slot_idx": int(slot_idx),
@@ -212,6 +279,12 @@ def colour_blobs_in_layer(
             "penetration_pct": round(penetration_pct, 1),
             "mean_x_px": mean_x,
             "mean_y_px": mean_y,
+            "outer_x_px": outer_x,
+            "centre_seam_x": centre_seam_x,
+            "outside_x": outside_x,
+            "endon_px": endon_px,
+            "full_px": full_px,
+            "slot_reason": slot_reason,
             "blob_key": (int(round(mean_x / 8.0)), int(round(mean_y / 8.0))),
         })
 
@@ -286,19 +359,28 @@ class PlacementTracker:
             return
 
         watched = self._watched_blocks(identity_tracker)
-        absent_ids = [
-            block_id
-            for block_id, info in watched.items()
-            if self._absent_from_home(tower, block_id, info)
-        ]
+        effective = self._effective_present(tower, identity_tracker)
+        extrap = set(self._extrapolated_layers)
+        absent_ids: list[int] = []
+        for block_id, info in watched.items():
+            bid = int(block_id)
+            eff = effective.get(bid)
+            if eff is not None and int(eff["layer"]) in extrap:
+                continue
+            if self._absent_from_home(tower, bid, info):
+                absent_ids.append(bid)
         self._last_absent_count = len(absent_ids)
         threshold = int(PLACEMENT_OCCLUSION_MISSING_THRESHOLD)
 
         if len(absent_ids) >= threshold:
             if not self._occlusion_hold:
+                details = ", ".join(
+                    f"{bid:03d}@L{watched[bid]['layer']}s{watched[bid]['slot']}"
+                    for bid in absent_ids
+                )
                 _dbg(
-                    f"occlusion: {len(absent_ids)} blocks absent — pausing "
-                    f"missing detection and clearing search state"
+                    f"occlusion: {len(absent_ids)} blocks absent ({details}) "
+                    f"— pausing missing detection and clearing search state"
                 )
             self._occlusion_hold = True
             self._missing_streak.clear()
@@ -312,12 +394,39 @@ class PlacementTracker:
             self._occlusion_hold = False
 
         for block_id, info in watched.items():
-            if not self._absent_from_home(tower, block_id, info):
-                self._missing_streak.pop(block_id, None)
-            elif block_id not in self._pending_removals:
-                streak = int(self._missing_streak.get(block_id, 0)) + 1
-                self._missing_streak[block_id] = streak
-                self._note_block_absent(block_id, info, streak=streak)
+            bid = int(block_id)
+            eff = effective.get(bid)
+            if eff is not None and int(eff["layer"]) in extrap:
+                self._missing_streak.pop(bid, None)
+                continue
+            if not self._absent_from_home(tower, bid, info):
+                self._missing_streak.pop(bid, None)
+            elif bid not in self._pending_removals:
+                streak = int(self._missing_streak.get(bid, 0)) + 1
+                self._missing_streak[bid] = streak
+                self._note_block_absent(bid, info, streak=streak)
+
+    def _clear_block_from_tower_below(
+        self,
+        tower: list[dict],
+        block_id: int,
+    ) -> None:
+        """Remove stale same-frame presence on non-extrapolated layers."""
+        extrap = set(self._extrapolated_layers)
+        bid = int(block_id)
+        for layer in tower:
+            layer_idx = int(layer.get("layer", -1))
+            if layer_idx in extrap:
+                continue
+            for block in layer.get("blocks", []):
+                if not block.get("present"):
+                    continue
+                present_id = block.get("block_index")
+                if present_id is not None and int(present_id) == bid:
+                    block["present"] = False
+                    block.pop("block_index", None)
+                    block.pop("id", None)
+                    block["colour"] = "unknown"
 
     def extrapolated_layers(self) -> list[int]:
         return list(self._extrapolated_layers)
@@ -362,6 +471,10 @@ class PlacementTracker:
         watched = identity_tracker.canonical_blocks_excluding_layers(
             set(self._extrapolated_layers),
         )
+        for block_id in identity_tracker.registered_blocks_on_layers(
+            self._extrapolated_layers,
+        ):
+            watched.pop(int(block_id), None)
         for block_id, info in watched.items():
             last = self._last_known.get(block_id)
             if last is None:
@@ -661,6 +774,15 @@ class PlacementTracker:
                 f"→ FOUND {detection['slot_name']} "
                 f"({detection['penetration_pct']:.1f}%) [{pcts}]"
             )
+            _dbg(
+                f"block {block_id:03d}: placement reason → "
+                f"{detection.get('slot_reason', 'no detail')}"
+            )
+            if detection.get("selection_reason"):
+                _dbg(
+                    f"block {block_id:03d}: blob chosen because "
+                    f"{detection['selection_reason']}"
+                )
             self._apply_top_layer_placement(
                 tower,
                 identity_tracker,
@@ -868,9 +990,22 @@ class PlacementTracker:
                 f"components={mask_stats.get('components')})"
             )
 
+        _dbg(
+            f"block {block_id:03d} ({colour}): L{target_layer} "
+            f"orientation={orientation} — {len(blobs)} blob(s):"
+        )
+        for i, blob in enumerate(blobs):
+            _dbg(f"  blob[{i}] {blob.get('slot_reason', blob)}")
+
         occupied = self._occupied_slots_on_layer(
             tower, int(target_layer), block_id=block_id,
         )
+        if occupied:
+            _dbg(
+                f"block {block_id:03d}: occupied slots on L{target_layer} "
+                f"= {sorted(occupied)}"
+            )
+
         hint_x = pending.get("mean_x_px")
         hint_y = pending.get("mean_y_px")
 
@@ -879,8 +1014,16 @@ class PlacementTracker:
             slot_idx = int(blob["slot_idx"])
             blob_key = (int(target_layer),) + tuple(blob["blob_key"])
             if slot_idx in occupied:
+                _dbg(
+                    f"  blob slot {blob['slot_name']} rejected: "
+                    f"slot {slot_idx} occupied"
+                )
                 continue
             if blob_key in self._claimed_blob_keys:
+                _dbg(
+                    f"  blob slot {blob['slot_name']} rejected: "
+                    f"blob_key {blob_key} already claimed"
+                )
                 continue
             if hint_x is not None and hint_y is not None:
                 dist = float(np.hypot(
@@ -895,7 +1038,25 @@ class PlacementTracker:
             return None, f"all {len(blobs)} blob(s) rejected (occupied/claimed)"
 
         candidates.sort(key=lambda item: item[0])
-        blob = candidates[0][1]
+        dist, blob = candidates[0]
+        if hint_x is not None and hint_y is not None:
+            blob = dict(blob)
+            blob["selection_reason"] = (
+                f"nearest to last hint ({hint_x:.1f}, {hint_y:.1f}), "
+                f"dist={dist:.1f}px (of {len(candidates)} candidate(s))"
+            )
+        else:
+            blob = dict(blob)
+            blob["selection_reason"] = (
+                f"first unoccupied unclaimed blob "
+                f"(of {len(candidates)} candidate(s), no hint)"
+            )
+        if len(candidates) > 1:
+            others = ", ".join(
+                f"{item[1]['slot_name']}@{item[0]:.0f}px"
+                for item in candidates[1:]
+            )
+            blob["selection_reason"] += f"; other candidates: {others}"
         blob_key = (int(target_layer),) + tuple(blob["blob_key"])
         self._claimed_blob_keys.add(blob_key)
         return (int(target_layer), blob), "ok"
@@ -915,6 +1076,7 @@ class PlacementTracker:
         identity_tracker.register_placed_block(
             layer_idx, slot_idx, block_id, colour,
         )
+        self._clear_block_from_tower_below(tower, block_id)
 
         layer_data = next(
             (layer for layer in tower if int(layer.get("layer", -1)) == layer_idx),
@@ -943,3 +1105,11 @@ class PlacementTracker:
             f"L{layer_idx} {detection['slot_name']} "
             f"({detection['penetration_pct']:.1f}% seam→outside)"
         )
+        print(
+            f"[placement] slot decision: "
+            f"{detection.get('slot_reason', 'no detail')}"
+        )
+        if detection.get("selection_reason"):
+            print(
+                f"[placement] blob selection: {detection['selection_reason']}"
+            )

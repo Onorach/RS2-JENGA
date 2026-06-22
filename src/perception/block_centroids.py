@@ -225,6 +225,45 @@ def _split_x_from_closest_pixels(
     return sx
 
 
+def _centre_seam_x(left_cell: dict) -> float:
+    """X coordinate of the vertical seam between left and right lane cells."""
+    return float(left_cell["corners"][1][0])
+
+
+def _endon_side_x_mask(
+    x_grid: np.ndarray,
+    centre_seam_x: float,
+    orientation: str,
+) -> np.ndarray:
+    """True where x lies on the end-on side of the layer centre seam."""
+    if orientation == "left":
+        return x_grid <= float(centre_seam_x)
+    return x_grid >= float(centre_seam_x)
+
+
+def _enforce_centroid_endon_side(
+    cx: float,
+    centre_seam_x: float,
+    orientation: str,
+) -> float:
+    """Clamp centroid x to the end-on half of the layer (correct side of seam)."""
+    if orientation == "left":
+        return min(cx, float(centre_seam_x))
+    return max(cx, float(centre_seam_x))
+
+
+def _finalize_centroid_x(
+    cx: float,
+    *,
+    centre_seam_x: float,
+    orientation: str,
+    split_x: float | None = None,
+) -> float:
+    if split_x is not None:
+        cx = _enforce_centroid_face_side(cx, split_x, orientation)
+    return _enforce_centroid_endon_side(cx, centre_seam_x, orientation)
+
+
 def _enforce_centroid_face_side(cx: float, split_x: float, orientation: str) -> float:
     """
     Clamp a centroid x so it always sits on the near-face side of the split line.
@@ -328,99 +367,49 @@ def _compute_combined_centroid(
     split_x: float,
     orientation: str,
     robust_stat: str,
+    centre_seam_x: float,
 ) -> tuple[float, float] | None:
     """
-    Compute the near-face centroid for one colour using pixels from BOTH cells.
-
-    After the winning split_x is known (from whichever cell saw the closer
-    depth), this function builds a combined pixel set from both cells, applies
-    the near-face mask (orientation determines which side of split_x is the
-    near face), and returns the robust centroid of those pixels.
-
-    Using both cells gives more stable pixel counts, especially for the front
-    block whose visible near face can straddle the cell boundary.
+    Compute the near-face centroid using end-on cell pixels on the correct
+    side of the centre seam only.
     """
-    ih, iw   = bgr.shape[:2]
+    del opposite_cell, opposite_target_mm
+    ih, iw = bgr.shape[:2]
     colour_hsv = frame_colour_mask(bgr, colour)
+    endon_quad = _quad_mask((ih, iw), endon_cell["corners"])
+    endon_mask = endon_quad & colour_hsv
 
-    endon_quad    = _quad_mask((ih, iw), endon_cell["corners"])
-    opposite_quad = _quad_mask((ih, iw), opposite_cell["corners"])
-
-    endon_mask    = endon_quad & colour_hsv
-    opposite_mask = opposite_quad & colour_hsv
-
-    # Depth-gate each cell independently.
-    # Use a wider tolerance (80 mm) here so pushed blocks — whose centroid
-    # depth may deviate substantially from the layer median — are not lost.
     endon_gate = _depth_gate(depth, endon_target_mm, tolerance_mm=80.0)
     if endon_gate is not None:
         gated = endon_mask & endon_gate
         if int(gated.sum()) >= MIN_COLOUR_PIXELS:
             endon_mask = gated
 
-    opposite_gate = _depth_gate(depth, opposite_target_mm, tolerance_mm=80.0)
-    if opposite_gate is not None:
-        gated = opposite_mask & opposite_gate
-        if int(gated.sum()) >= MIN_COLOUR_PIXELS:
-            opposite_mask = gated
-
     endon_mask = filter_mask_to_primary_blob(endon_mask)
-    opposite_mask = filter_mask_to_primary_blob(opposite_mask)
-
-    endon_n    = int(endon_mask.sum())
-    opposite_n = int(opposite_mask.sum())
-
-    if endon_n < MIN_COLOUR_PIXELS and opposite_n < MIN_COLOUR_PIXELS:
+    if int(endon_mask.sum()) < MIN_COLOUR_PIXELS:
         return None
 
-    fn     = np.median if str(robust_stat).strip().lower() == "median" else np.mean
+    fn = np.median if str(robust_stat).strip().lower() == "median" else np.mean
     x_grid = np.broadcast_to(np.arange(iw, dtype=np.float32), (ih, iw))
+    endon_side = _endon_side_x_mask(x_grid, centre_seam_x, orientation)
 
-    def _masked_centroid(mask: np.ndarray) -> tuple[float, float] | None:
-        """Return (cx, cy) with face-side enforcement, or None if too few pixels."""
-        ys, xs = np.where(mask)
+    if orientation == "left":
+        face_mask = endon_mask & endon_side & (x_grid <= float(split_x))
+    else:
+        face_mask = endon_mask & endon_side & (x_grid >= float(split_x))
+
+    ys, xs = np.where(face_mask)
+    if len(xs) < max(10, MIN_COLOUR_PIXELS // 5):
+        ys, xs = np.where(endon_mask & endon_side)
         if len(xs) < max(10, MIN_COLOUR_PIXELS // 5):
             return None
-        cx = float(fn(xs))
-        cy = float(fn(ys))
-        # Always clamp to the near-face side of the split line so the centroid
-        # never drifts to the far-face side regardless of how few pixels remain.
-        cx = _enforce_centroid_face_side(cx, split_x, orientation)
-        return cx, cy
 
-    if opposite_n < MIN_COLOUR_PIXELS:
-        # No side-face pixels — use the end-on cell with face-side mask.
-        source = endon_mask if endon_n >= MIN_COLOUR_PIXELS else opposite_mask
-        if orientation == "left":
-            face_mask = source & (x_grid <= float(split_x))
-        else:
-            face_mask = source & (x_grid >= float(split_x))
-        result = _masked_centroid(face_mask)
-        if result is not None:
-            return result
-        # Face mask too sparse (block at cell boundary): use full source with
-        # clamping so the centroid is still on the correct side.
-        ys, xs = np.where(source)
-        if len(xs) == 0:
-            return None
-        cx = _enforce_centroid_face_side(float(fn(xs)), split_x, orientation)
-        return cx, float(fn(ys))
-
-    # Both cells have significant pixels: apply face mask to the union.
-    combined = endon_mask | opposite_mask
-    if orientation == "left":
-        face_mask = combined & (x_grid <= float(split_x))
-    else:
-        face_mask = combined & (x_grid >= float(split_x))
-    result = _masked_centroid(face_mask)
-    if result is not None:
-        return result
-
-    # Face mask too sparse: fall back to end-on only with clamping.
-    ys, xs = np.where(endon_mask)
-    if len(xs) == 0:
-        return None
-    cx = _enforce_centroid_face_side(float(fn(xs)), split_x, orientation)
+    cx = _finalize_centroid_x(
+        float(fn(xs)),
+        centre_seam_x=centre_seam_x,
+        orientation=orientation,
+        split_x=split_x,
+    )
     return cx, float(fn(ys))
 
 
@@ -433,6 +422,7 @@ def _centroids_in_one_cell(
     robust_stat: str,
     require_split: bool,
     override_split_x: dict[str, float] | None = None,
+    centre_seam_x: float | None = None,
 ) -> dict[str, tuple[float, float]]:
     """
     Compute near-face centroid (x, y) per colour in a single cell.
@@ -455,6 +445,11 @@ def _centroids_in_one_cell(
     gate    = _depth_gate(depth, target_depth_mm) if depth is not None else None
     use_med = str(robust_stat).strip().lower() == "median"
     x_grid  = np.broadcast_to(np.arange(iw, dtype=np.float32), (ih, iw))
+    endon_side = (
+        _endon_side_x_mask(x_grid, centre_seam_x, orientation)
+        if centre_seam_x is not None
+        else np.ones((ih, iw), dtype=bool)
+    )
     out: dict[str, tuple[float, float]] = {}
 
     for colour in HSV_RANGES:
@@ -467,9 +462,9 @@ def _centroids_in_one_cell(
 
         # Apply depth gate if available (removes same-colour pixels from
         # adjacent layers sitting at different depths).
-        active = colour_mask
+        active = colour_mask & endon_side
         if gate is not None:
-            gated = colour_mask & gate
+            gated = active & gate
             if int(gated.sum()) >= MIN_COLOUR_PIXELS:
                 active = gated
 
@@ -493,7 +488,19 @@ def _centroids_in_one_cell(
                 ys, xs = np.where(face_mask)
                 if len(xs) >= max(10, MIN_COLOUR_PIXELS // 5):
                     fn = np.median if use_med else np.mean
-                    out[colour] = (float(fn(xs)), float(fn(ys)))
+                    cx = float(fn(xs))
+                    if centre_seam_x is not None:
+                        cx = _finalize_centroid_x(
+                            cx,
+                            centre_seam_x=centre_seam_x,
+                            orientation=orientation,
+                            split_x=float(split_x),
+                        )
+                    else:
+                        cx = _enforce_centroid_face_side(
+                            cx, float(split_x), orientation,
+                        )
+                    out[colour] = (cx, float(fn(ys)))
                     continue   # Successfully used split-based centroid.
 
         # No split found (or no depth).
@@ -505,7 +512,12 @@ def _centroids_in_one_cell(
         if len(xs) == 0:
             continue
         fn = np.median if use_med else np.mean
-        out[colour] = (float(fn(xs)), float(fn(ys)))
+        cx = float(fn(xs))
+        if centre_seam_x is not None:
+            cx = _finalize_centroid_x(
+                cx, centre_seam_x=centre_seam_x, orientation=orientation,
+            )
+        out[colour] = (cx, float(fn(ys)))
 
     return out
 
@@ -523,6 +535,7 @@ def _search_colour_near_hint(
     hint_x: float,
     hint_y: float,
     radius_px: float,
+    centre_seam_x: float,
 ) -> tuple[float, float] | None:
     """Search for a colour centroid within radius_px of a prior (x, y) location."""
     MIN_PIX = max(8, MIN_COLOUR_PIXELS // 4)
@@ -531,23 +544,18 @@ def _search_colour_near_hint(
     ih, iw = bgr.shape[:2]
     colour_hsv = frame_colour_mask(bgr, colour)
     endon_quad = _quad_mask((ih, iw), endon_cell["corners"])
-    opposite_quad = _quad_mask((ih, iw), opposite_cell["corners"])
     endon_mask = endon_quad & colour_hsv
-    opposite_mask = opposite_quad & colour_hsv
 
     gate_e = _depth_gate(depth, endon_target_mm, tolerance_mm=120.0) if depth is not None else None
-    gate_o = _depth_gate(depth, opposite_target_mm, tolerance_mm=120.0) if depth is not None else None
     if gate_e is not None:
         gated = endon_mask & gate_e
         if int(gated.sum()) >= MIN_PIX:
             endon_mask = gated
-    if gate_o is not None:
-        gated = opposite_mask & gate_o
-        if int(gated.sum()) >= MIN_PIX:
-            opposite_mask = gated
-    combined = endon_mask | opposite_mask
+
+    x_grid = np.broadcast_to(np.arange(iw, dtype=np.float32), (ih, iw))
+    endon_side = _endon_side_x_mask(x_grid, centre_seam_x, orientation)
     combined = filter_mask_to_primary_blob(
-        combined,
+        endon_mask & endon_side,
         prefer_xy=(float(hint_x), float(hint_y)),
     )
 
@@ -565,7 +573,10 @@ def _search_colour_near_hint(
     lx = xs[local]
     ly = ys[local]
     fn = np.median if str(robust_stat).strip().lower() == "median" else np.mean
-    return float(fn(lx)), float(fn(ly))
+    cx = _finalize_centroid_x(
+        float(fn(lx)), centre_seam_x=centre_seam_x, orientation=orientation,
+    )
+    return cx, float(fn(ly))
 
 
 def _search_required_colour(
@@ -580,8 +591,11 @@ def _search_required_colour(
     robust_stat: str,
     centroid_hints: dict[str, tuple[float, float]] | None = None,
     radius_px: float = CENTROID_HINT_SEARCH_RADIUS_PX,
+    centre_seam_x: float | None = None,
 ) -> tuple[float, float] | None:
     """Try last-known location first, then fall back to full-cell search."""
+    if centre_seam_x is None:
+        return None
     hint = centroid_hints.get(colour) if centroid_hints else None
     if hint is not None:
         near = _search_colour_near_hint(
@@ -591,6 +605,7 @@ def _search_required_colour(
             hint_x=float(hint[0]),
             hint_y=float(hint[1]),
             radius_px=float(radius_px),
+            centre_seam_x=float(centre_seam_x),
         )
         if near is not None:
             return near
@@ -599,6 +614,7 @@ def _search_required_colour(
         endon_target_mm, opposite_target_mm,
         orientation, robust_stat,
         prefer_xy=hint,
+        centre_seam_x=float(centre_seam_x),
     )
 
 
@@ -624,6 +640,7 @@ def recover_colour_centroid(
     opposite_cell = right_cell if orientation == "left" else left_cell
     endon_target_mm = _median_depth_in_cell(bgr, depth, endon_cell)
     opposite_target_mm = _median_depth_in_cell(bgr, depth, opposite_cell)
+    centre_seam_x = _centre_seam_x(left_cell)
     if hint_xy is not None:
         near = _search_colour_near_hint(
             bgr, depth, endon_cell, opposite_cell, colour,
@@ -632,6 +649,7 @@ def recover_colour_centroid(
             hint_x=float(hint_xy[0]),
             hint_y=float(hint_xy[1]),
             radius_px=float(radius_px),
+            centre_seam_x=centre_seam_x,
         )
         if near is not None:
             return near
@@ -644,6 +662,7 @@ def recover_colour_centroid(
         orientation, robust_stat,
         centroid_hints=hints,
         radius_px=radius_px,
+        centre_seam_x=centre_seam_x,
     )
 
 
@@ -658,6 +677,7 @@ def _search_colour_low_threshold(
     orientation: str,
     robust_stat: str,
     prefer_xy: tuple[float, float] | None = None,
+    centre_seam_x: float | None = None,
 ) -> tuple[float, float] | None:
     """
     Low-threshold centroid search for a colour that was not found by the
@@ -674,34 +694,29 @@ def _search_colour_low_threshold(
     ih, iw = bgr.shape[:2]
     colour_hsv = frame_colour_mask(bgr, colour)
 
-    endon_quad    = _quad_mask((ih, iw), endon_cell["corners"])
-    opposite_quad = _quad_mask((ih, iw), opposite_cell["corners"])
+    endon_quad = _quad_mask((ih, iw), endon_cell["corners"])
+    endon_mask = endon_quad & colour_hsv
 
-    endon_mask    = endon_quad & colour_hsv
-    opposite_mask = opposite_quad & colour_hsv
-
-    # Wide gate for pushed blocks.
     gate_e = _depth_gate(depth, endon_target_mm, tolerance_mm=120.0) if depth is not None else None
-    gate_o = _depth_gate(depth, opposite_target_mm, tolerance_mm=120.0) if depth is not None else None
     if gate_e is not None:
         g = endon_mask & gate_e
         if int(g.sum()) >= MIN_PIX:
             endon_mask = g
-    if gate_o is not None:
-        g = opposite_mask & gate_o
-        if int(g.sum()) >= MIN_PIX:
-            opposite_mask = g
 
-    combined = endon_mask | opposite_mask
-    combined = filter_mask_to_primary_blob(combined, prefer_xy=prefer_xy)
+    x_grid = np.broadcast_to(np.arange(iw, dtype=np.float32), (ih, iw))
+    if centre_seam_x is not None:
+        endon_mask = endon_mask & _endon_side_x_mask(
+            x_grid, centre_seam_x, orientation,
+        )
+
+    combined = filter_mask_to_primary_blob(endon_mask, prefer_xy=prefer_xy)
     if int(combined.sum()) < MIN_PIX:
         return None
 
     fn = np.median if str(robust_stat).strip().lower() == "median" else np.mean
 
-    # Try to get split_x for face-side accuracy.
     split_x: float | None = None
-    if depth is not None:
+    if depth is not None and centre_seam_x is not None:
         info = _combined_split_info_per_colour(
             bgr, depth, endon_cell, opposite_cell,
             endon_target_mm, opposite_target_mm,
@@ -710,22 +725,28 @@ def _search_colour_low_threshold(
         if entry is not None:
             split_x = entry[0]
 
-    if split_x is not None:
+    if split_x is not None and centre_seam_x is not None:
         centroid = _compute_combined_centroid(
             bgr, depth, endon_cell, opposite_cell, colour,
             endon_target_mm, opposite_target_mm,
-            split_x, orientation, robust_stat,
+            split_x, orientation, robust_stat, centre_seam_x,
         )
         if centroid is not None:
             return centroid
 
-    # No split found: mean of combined mask, clamped to correct side.
     ys, xs = np.where(combined)
     if len(xs) == 0:
         return None
     cx = float(fn(xs))
     cy = float(fn(ys))
-    if split_x is not None:
+    if centre_seam_x is not None:
+        cx = _finalize_centroid_x(
+            cx,
+            centre_seam_x=centre_seam_x,
+            orientation=orientation,
+            split_x=split_x,
+        )
+    elif split_x is not None:
         cx = _enforce_centroid_face_side(cx, split_x, orientation)
     return cx, cy
 
@@ -778,7 +799,7 @@ def compute_layer_centroids(
     """
     endon_cell        = left_cell  if orientation == "left"  else right_cell
     opposite_cell     = right_cell if orientation == "left"  else left_cell
-    opposite_orient   = "right"    if orientation == "left"  else "left"
+    centre_seam_x     = _centre_seam_x(left_cell)
 
     endon_target_mm    = _median_depth_in_cell(bgr, depth, endon_cell)
     opposite_target_mm = _median_depth_in_cell(bgr, depth, opposite_cell)
@@ -808,7 +829,7 @@ def compute_layer_centroids(
                 bgr, depth,
                 endon_cell, opposite_cell, colour,
                 endon_target_mm, opposite_target_mm,
-                split_x, orientation, robust_stat,
+                split_x, orientation, robust_stat, centre_seam_x,
             )
             if centroid is not None:
                 out[colour] = centroid
@@ -827,6 +848,7 @@ def compute_layer_centroids(
                         endon_target_mm, opposite_target_mm,
                         orientation, robust_stat,
                         centroid_hints=centroid_hints,
+                        centre_seam_x=centre_seam_x,
                     )
                     if fallback is not None:
                         out[colour] = fallback
@@ -841,15 +863,9 @@ def compute_layer_centroids(
             bgr, depth, endon_cell, orientation,
             endon_target_mm, robust_stat, require_split=False,
             override_split_x=_no_split,
+            centre_seam_x=centre_seam_x,
         )
-        opposite_fallback = _centroids_in_one_cell(
-            bgr, depth, opposite_cell, opposite_orient,
-            opposite_target_mm, robust_stat, require_split=False,
-            override_split_x=_no_split,
-        )
-        # Priority: split-based (both-cell) > end-on fallback > opposite fallback.
-        merged: dict[str, tuple[float, float]] = dict(opposite_fallback)
-        merged.update(endon_fallback)
+        merged: dict[str, tuple[float, float]] = dict(endon_fallback)
         merged.update(out)
 
         # ── Required-colours fallback ──────────────────────────────────────
@@ -865,6 +881,7 @@ def compute_layer_centroids(
                     endon_target_mm, opposite_target_mm,
                     orientation, robust_stat,
                     centroid_hints=centroid_hints,
+                    centre_seam_x=centre_seam_x,
                 )
                 if fallback is not None:
                     merged[colour] = fallback
@@ -878,13 +895,9 @@ def compute_layer_centroids(
     endon_centroids = _centroids_in_one_cell(
         bgr, None, endon_cell, orientation, None,
         robust_stat, require_split=False,
+        centre_seam_x=centre_seam_x,
     )
-    opposite_centroids = _centroids_in_one_cell(
-        bgr, None, opposite_cell, opposite_orient, None,
-        robust_stat, require_split=False,
-    )
-    merged = dict(opposite_centroids)
-    merged.update(endon_centroids)
+    merged = dict(endon_centroids)
 
     # ── Required-colours fallback (canonical blocks not found by normal path) ─
     # Run last regardless of depth availability so canonical blocks are always
@@ -899,6 +912,7 @@ def compute_layer_centroids(
                 endon_target_mm, opposite_target_mm,
                 orientation, robust_stat,
                 centroid_hints=centroid_hints,
+                centre_seam_x=centre_seam_x,
             )
             if fallback is not None:
                 merged[colour] = fallback

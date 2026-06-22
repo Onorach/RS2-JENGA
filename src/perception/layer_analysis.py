@@ -405,26 +405,38 @@ def analyse_tower(
         else None
     )
     extra_layers = _count_extrapolated_layers(row_cells)
+    use_frozen_orientations = (
+        identity_tracker is not None
+        and identity_tracker.is_initialized()
+    )
+    frozen_anchor = (
+        identity_tracker.frozen_anchor_orientation()
+        if use_frozen_orientations
+        else None
+    )
     anchor_orientation: str | None = None
     if extra_layers > 0 and extra_layers < n_layers:
-        anchor_left, anchor_right = row_cells[extra_layers]
-        if (
-            pct_by_name is not None
-            and anchor_left["name"] in pct_by_name
-            and anchor_right["name"] in pct_by_name
-        ):
-            anchor_pct = [
-                pct_by_name[anchor_left["name"]],
-                pct_by_name[anchor_right["name"]],
-            ]
+        if frozen_anchor in ("left", "right"):
+            anchor_orientation = frozen_anchor
         else:
-            anchor_pct = compute_percentages(
-                bgr_frame, cells=[anchor_left, anchor_right],
+            anchor_left, anchor_right = row_cells[extra_layers]
+            if (
+                pct_by_name is not None
+                and anchor_left["name"] in pct_by_name
+                and anchor_right["name"] in pct_by_name
+            ):
+                anchor_pct = [
+                    pct_by_name[anchor_left["name"]],
+                    pct_by_name[anchor_right["name"]],
+                ]
+            else:
+                anchor_pct = compute_percentages(
+                    bgr_frame, cells=[anchor_left, anchor_right],
+                )
+            anchor_orientation = _detect_orientation(
+                _colour_pcts(anchor_pct[0]),
+                _colour_pcts(anchor_pct[1]),
             )
-        anchor_orientation = _detect_orientation(
-            _colour_pcts(anchor_pct[0]),
-            _colour_pcts(anchor_pct[1]),
-        )
 
     for row_idx, (left_def, right_def) in enumerate(row_cells):
         if (
@@ -471,7 +483,21 @@ def analyse_tower(
             known_colours = [None, None, None]
 
         forced_orientation = None
-        if (
+        if use_frozen_orientations:
+            frozen_layer_orient = identity_tracker.frozen_orientation_for_layer(
+                layer_idx,
+            )
+            if frozen_layer_orient in ("left", "right"):
+                forced_orientation = frozen_layer_orient
+            elif (
+                row_idx < extra_layers
+                and frozen_anchor in ("left", "right")
+            ):
+                forced_orientation = _orientation_alternating_above(
+                    frozen_anchor,
+                    extra_layers - row_idx,
+                )
+        elif (
             row_idx < extra_layers
             and anchor_orientation in ("left", "right")
         ):

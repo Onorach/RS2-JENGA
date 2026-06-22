@@ -23,6 +23,8 @@ Public API
 ----------
   tracker.apply(tower_state)                  — assign / freeze IDs each frame
   tracker.canonical_colours_for_layer(idx)   — [front_colour, mid_colour, back_colour]
+  tracker.frozen_orientation_for_layer(idx)  — locked left/right after first apply()
+  tracker.frozen_anchor_orientation()        — anchor layer orientation for extrapolated bands
   tracker.is_initialized()                   — True after first apply()
   tracker.mark_block_removed(block_id)       — call when a block is picked out
   tracker.register_placed_block(...)         — register block on extrapolated layer
@@ -45,6 +47,10 @@ class BlockIdentityTracker:
         self._canonical_slots: dict[tuple[int, int], dict] = {}
         # Block IDs that have been explicitly removed (picked by robot).
         self._removed_block_ids: set[int] = set()
+        # Per-layer left/right orientation frozen after first tower analysis.
+        self._frozen_orientations: dict[int, str] = {}
+        # Orientation of the topmost detected layer (below extrapolated bands).
+        self._frozen_anchor_orientation: str | None = None
 
     # ------------------------------------------------------------------
     # Public helpers
@@ -56,6 +62,8 @@ class BlockIdentityTracker:
         self._initialized = False
         self._canonical_slots.clear()
         self._removed_block_ids.clear()
+        self._frozen_orientations.clear()
+        self._frozen_anchor_orientation = None
 
     def is_initialized(self) -> bool:
         return self._initialized
@@ -75,6 +83,14 @@ class BlockIdentityTracker:
                 continue
             result[slot_idx] = entry["colour"]
         return result
+
+    def frozen_orientation_for_layer(self, layer_idx: int) -> str | None:
+        """Return the locked left/right orientation for a layer, if known."""
+        return self._frozen_orientations.get(int(layer_idx))
+
+    def frozen_anchor_orientation(self) -> str | None:
+        """Return the locked orientation of the anchor layer (below extrapolated bands)."""
+        return self._frozen_anchor_orientation
 
     def mark_block_removed(self, block_id: int) -> None:
         """
@@ -104,6 +120,10 @@ class BlockIdentityTracker:
         """
         bid = int(block_id)
         self._removed_block_ids.discard(bid)
+        # Drop any prior home (including stale slots below extrapolated layers).
+        stale = [k for k, v in self._canonical_slots.items() if v["block_id"] == bid]
+        for k in stale:
+            del self._canonical_slots[k]
         self._canonical_slots[(int(layer_idx), int(slot_idx))] = {
             "block_id": bid,
             "colour":   str(colour),
@@ -337,11 +357,21 @@ class BlockIdentityTracker:
         self._next_id = max_existing + 1 if max_existing >= 0 else 0
         self._initialized = True
 
+    def _block_has_canonical_home(self, block_id: int) -> bool:
+        """True when this block_id already owns a canonical slot somewhere."""
+        bid = int(block_id)
+        return any(
+            int(entry["block_id"]) == bid
+            for entry in self._canonical_slots.values()
+        )
+
     def _update_canonical_slots(self, tower_state: list[dict]) -> None:
         """
         Record first-seen slot assignments as canonical.
         First-write-wins — slots already in _canonical_slots are never
-        overwritten so identities stay frozen.
+        overwritten so identities stay frozen.  A block that already has a
+        canonical home (e.g. registered on an extrapolated top layer) is never
+        re-seeded from stale detections on its old layer.
         """
         for layer in tower_state:
             layer_idx = int(layer.get("layer", -1))
@@ -356,6 +386,7 @@ class BlockIdentityTracker:
                     and block.get("present")
                     and colour not in ("unknown", None, "")
                     and int(block_id) not in self._removed_block_ids
+                    and not self._block_has_canonical_home(int(block_id))
                 ):
                     self._canonical_slots[key] = {
                         "block_id": int(block_id),
@@ -409,7 +440,12 @@ class BlockIdentityTracker:
     # Main entry point
     # ------------------------------------------------------------------
 
-    def apply(self, tower_state: list[dict]) -> None:
+    def apply(
+        self,
+        tower_state: list[dict],
+        *,
+        anchor_layer_idx: int | None = None,
+    ) -> None:
         if not tower_state:
             return
 
@@ -417,6 +453,7 @@ class BlockIdentityTracker:
             self._initialize_from_existing(tower_state)
             # Seed canonical from the very first frame's assignments.
             self._update_canonical_slots(tower_state)
+            self._freeze_orientations_from_tower(tower_state, anchor_layer_idx)
             return
 
         # ── Normal frame: greedy proximity + colour matching ───────────────
@@ -508,3 +545,22 @@ class BlockIdentityTracker:
         # Update canonical with any NEW slots seen for the first time
         # (e.g. after the grid first locks on the initial board state).
         self._update_canonical_slots(tower_state)
+        self._freeze_orientations_from_tower(tower_state, anchor_layer_idx)
+
+    def _freeze_orientations_from_tower(
+        self,
+        tower_state: list[dict],
+        anchor_layer_idx: int | None,
+    ) -> None:
+        """First-write-wins lock of per-layer orientations after initial analysis."""
+        for layer in tower_state:
+            layer_idx = int(layer.get("layer", -1))
+            orient = str(layer.get("orientation", ""))
+            if orient not in ("left", "right"):
+                continue
+            if layer_idx not in self._frozen_orientations:
+                self._frozen_orientations[layer_idx] = orient
+        if self._frozen_anchor_orientation is None and anchor_layer_idx is not None:
+            anchor = self._frozen_orientations.get(int(anchor_layer_idx))
+            if anchor in ("left", "right"):
+                self._frozen_anchor_orientation = anchor
