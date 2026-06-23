@@ -27,7 +27,7 @@ from perception_config import (
     CENTROID_HINT_SEARCH_RADIUS_PX,
     BLOCK_CENTROID_MIN_BLOB_PX,
     PLACEMENT_MIN_COLOUR_PX,
-    PLACEMENT_MISSING_CONFIRM_FRAMES,
+    BLOCK_MISSING_CONFIRM_FRAMES,
     PLACEMENT_OCCLUSION_MISSING_THRESHOLD,
     PLACEMENT_SLOT_FRONT_MAX_PCT,
     PLACEMENT_SLOT_MID_MAX_PCT,
@@ -100,6 +100,7 @@ def _block_at_home(
     *,
     layer_idx: int,
     slot_idx: int,
+    expected_colour: str | None = None,
 ) -> bool:
     """True when the block is present at its canonical home slot."""
     layer_data = next(
@@ -115,7 +116,16 @@ def _block_at_home(
     if not block.get("present"):
         return False
     bid = block.get("block_index")
-    return bid is not None and int(bid) == int(block_id)
+    if bid is not None and int(bid) == int(block_id):
+        return True
+    colour = str(block.get("colour", ""))
+    if (
+        expected_colour
+        and expected_colour not in ("unknown", "")
+        and colour == str(expected_colour)
+    ):
+        return True
+    return False
 
 
 def _centre_seam_x_for_layer(
@@ -333,27 +343,17 @@ class PlacementTracker:
         return bool(self._pending_removals)
 
     def blocks_skip_restore(self) -> set[int]:
-        """
-        Block ids that should not be auto-restored.
+        """Block ids actively being searched after confirmed removal."""
+        return set(self._pending_removals.keys())
 
-        During mass absence (hand/occlusion) allow restore for everyone so
-        centroids come back. While a single block is in the missing-streak
-        window, skip restore so a picked block is not re-found at its slot.
-        """
-        skip = set(self._pending_removals.keys())
-        if self._last_absent_count >= int(PLACEMENT_OCCLUSION_MISSING_THRESHOLD):
-            return skip
-        skip.update(self._missing_streak.keys())
-        return skip
-
-    def note_absences_before_restore(
+    def note_absences(
         self,
         tower: list[dict],
         identity_tracker,
     ) -> None:
         """
-        Update missing streaks from analyse_tower output before canonical
-        restore runs, so picked blocks stay absent through the confirm window.
+        Update missing streaks after restore/apply, when canonical ids and
+        recovered centroids are reflected in the tower state.
         """
         if not self._configured or not tower or not self._prev_initialized:
             return
@@ -498,6 +498,7 @@ class PlacementTracker:
             block_id,
             layer_idx=int(info["layer"]),
             slot_idx=int(info["slot"]),
+            expected_colour=str(info.get("colour", "")),
         )
 
     def _note_block_absent(
@@ -507,8 +508,8 @@ class PlacementTracker:
         *,
         streak: int,
     ) -> None:
-        confirm = int(PLACEMENT_MISSING_CONFIRM_FRAMES)
-        if streak == 1 or streak == confirm:
+        confirm = int(BLOCK_MISSING_CONFIRM_FRAMES)
+        if streak == confirm:
             _dbg(
                 f"block {block_id:03d} ({info['colour']}) missing at "
                 f"L{info['layer']} slot {info['slot']} "
@@ -617,7 +618,7 @@ class PlacementTracker:
                 continue
 
             streak = int(self._missing_streak.get(block_id, 0))
-            if streak < int(PLACEMENT_MISSING_CONFIRM_FRAMES):
+            if streak < int(BLOCK_MISSING_CONFIRM_FRAMES):
                 continue
 
             pending_info = dict(info)

@@ -337,7 +337,51 @@ def _block_abs_global_y(block: dict) -> float:
         return float("inf")
 
 
-def _print_tower(tower: list[dict]) -> None:
+class SlotAbsenceStreakTracker:
+    """Per (layer, slot) consecutive absent-frame counts for confirmed missing."""
+
+    def __init__(self, confirm_frames: int) -> None:
+        self._confirm = max(1, int(confirm_frames))
+        self._streaks: dict[tuple[int, int], int] = {}
+
+    def reset(self) -> None:
+        self._streaks.clear()
+
+    def update(self, tower: list[dict]) -> None:
+        active: set[tuple[int, int]] = set()
+        for layer in tower:
+            layer_idx = int(layer.get("layer", -1))
+            for slot_idx, block in enumerate(layer.get("blocks", [])):
+                key = (layer_idx, slot_idx)
+                active.add(key)
+                if block.get("present"):
+                    self._streaks.pop(key, None)
+                else:
+                    self._streaks[key] = self._streaks.get(key, 0) + 1
+        for key in list(self._streaks.keys()):
+            if key not in active:
+                self._streaks.pop(key, None)
+
+    def absent_streak(self, layer_idx: int, slot_idx: int) -> int:
+        return int(self._streaks.get((int(layer_idx), int(slot_idx)), 0))
+
+    def is_confirmed_missing(self, layer_idx: int, slot_idx: int) -> bool:
+        return self.absent_streak(layer_idx, slot_idx) >= self._confirm
+
+
+def _slot_absent_label(block: dict, *, confirmed_missing: bool) -> str:
+    if confirmed_missing:
+        return "missing"
+    colour = block.get("colour", "unknown")
+    if colour not in (None, "", "unknown"):
+        return str(colour)
+    return "—"
+
+
+def _print_tower(
+    tower: list[dict],
+    absence_streaks: SlotAbsenceStreakTracker | None = None,
+) -> None:
     print(
         f"── Layer Analysis (L0 = bottom, blocks: front → mid → back, "
         f"{BLOCK_POSE_WORLD_FRAME} x/y/z mm) ────"
@@ -349,22 +393,31 @@ def _print_tower(tower: list[dict]) -> None:
         labels      = ["front", " mid ", " back"]
         parts = []
 
-        for label, block in zip(labels, layer["blocks"]):
+        for slot_idx, (label, block) in enumerate(zip(labels, layer["blocks"])):
             if block["present"]:
                 xyz_str = _format_global_pose_xyz(block)
                 parts.append(f"{label}: {block['colour']}{xyz_str}")
             else:
-                parts.append(f"{label}: missing")
+                confirmed = (
+                    absence_streaks is None
+                    or absence_streaks.is_confirmed_missing(idx, slot_idx)
+                )
+                parts.append(
+                    f"{label}: {_slot_absent_label(block, confirmed_missing=confirmed)}"
+                )
 
         print(f"  L{idx} {arrow}  " + "  |  ".join(parts))
     print()
 
 
-def print_tower_state(tower: list[dict]) -> None:
+def print_tower_state(
+    tower: list[dict],
+    absence_streaks: SlotAbsenceStreakTracker | None = None,
+) -> None:
     """Print an already-computed tower state without recomputing analysis."""
     if not tower:
         return
-    _print_tower(tower)
+    _print_tower(tower, absence_streaks=absence_streaks)
 
 
 def analyse_tower(

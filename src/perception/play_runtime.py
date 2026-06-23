@@ -25,6 +25,7 @@ from layer_analysis import (
     build_tower_image,
     block_id_from_tower_image_point,
     print_tower_state,
+    SlotAbsenceStreakTracker,
 )
 from grid_generation import (
     build_edge_display,
@@ -53,6 +54,7 @@ from perception_config import (
     SEARCH_AREA_MARGIN,
     BLOCK_POSE_WORLD_FRAME,
     GRID_LOCK_EDGE_ACCUMULATION_FRAMES,
+    BLOCK_MISSING_CONFIRM_FRAMES,
 )
 from probe_response import (
     ProbeResponseMonitor,
@@ -157,6 +159,7 @@ def _run_loop(
     _selected_probe_block_id: int | None = None
     identity_tracker = BlockIdentityTracker()
     placement_tracker = PlacementTracker()
+    slot_absence_streaks = SlotAbsenceStreakTracker(BLOCK_MISSING_CONFIRM_FRAMES)
     _last_tower_finder_print: float = 0.0
     if probe_monitor is None:
         probe_monitor = ProbeResponseMonitor()
@@ -341,6 +344,7 @@ def _run_loop(
             if locked_layer_cells:
                 points_locked = True
                 placement_tracker.configure_layers(locked_layer_cells)
+                slot_absence_streaks.reset()
                 _destroy_windows(_GRID_DETECTION_WINDOWS)
                 if on_points_locked is not None:
                     on_points_locked()
@@ -496,9 +500,6 @@ def _run_loop(
                     min_layer=0,
                 )
             if not probe_active:
-                placement_tracker.note_absences_before_restore(
-                    tower, identity_tracker,
-                )
                 identity_tracker.restore_absent_canonical_centroids(
                     bgr,
                     depth_mm,
@@ -513,6 +514,8 @@ def _run_loop(
                         placement_tracker.extrapolated_layers(),
                     ),
                 )
+                placement_tracker.note_absences(tower, identity_tracker)
+                slot_absence_streaks.update(tower)
             _last_tower_state = tower
             if placement_tracker.update(
                 bgr,
@@ -545,6 +548,7 @@ def _run_loop(
                     row_cells=row_cells,
                 )
             if probe_active:
+                slot_absence_streaks.update(_last_tower_state)
                 identity_tracker.apply(
                     _last_tower_state,
                     anchor_layer_idx=_anchor_layer_idx(
@@ -565,7 +569,7 @@ def _run_loop(
                 and _last_tower_state
                 and (time.monotonic() - _last_layer_print_time_s) >= TOWER_PRINT_INTERVAL_S
             ):
-                print_tower_state(_last_tower_state)
+                print_tower_state(_last_tower_state, slot_absence_streaks)
                 _last_layer_print_time_s = time.monotonic()
             robot_target = probe_monitor.robot_target_block_id()
             if robot_target is not None:

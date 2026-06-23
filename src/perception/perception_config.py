@@ -10,7 +10,7 @@ TOWER_ANALYSIS = False
 BLOCK_ANALYSIS = True
 
 # Search area centre and fraction of the full frame
-SEARCH_AREA = (0.497, 0.519, 0.369, 0.650)
+SEARCH_AREA = (0.466, 0.494, 0.444, 0.952)
 
 # Crop margin around the search area
 SEARCH_AREA_MARGIN     = 0.10
@@ -64,20 +64,20 @@ CENTROID_ABORT_SHIFT_PCT = 6.0
 # HSV ranges for colour identification
 HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
     "red": [
-        ((  0, 111, 105), ( 13, 255, 255)),
-        ((174, 111, 105), (179, 255, 255)),
+        ((  0, 208, 105), ( 10, 255, 255)),
+        ((138, 208, 105), (179, 255, 255)),
     ],
     "yellow": [
-        (( 16,   0,  76), ( 44, 255, 255)),
+        (( 11, 147, 106), ( 32, 255, 255)),
     ],
     "green": [
-        (( 48,  58,  61), ( 92, 255, 255)),
+        (( 30,  58,  61), ( 95, 255, 255)),
     ],
     "blue": [
-        (( 82, 150, 108), (111, 255, 255)),
+        (( 92, 114, 149), (116, 255, 255)),
     ],
     "purple": [
-        ((114, 138,  49), (142, 255, 255)),
+        ((108, 138,  49), (163, 255, 255)),
     ],
 }
 
@@ -105,10 +105,10 @@ COLOUR_BGR: dict[str, tuple[int, int, int]] = {
 # Tower mask
 # ---------------------------------------------------------------------------
 
-TOWER_MASK_SAT_MIN                 = 38   # Min HSV saturation for tower foreground.
-TOWER_MASK_BRIGHTNESS_MIN          = 113    # Min HSV value (brightness) for tower foreground.
+TOWER_MASK_SAT_MIN                 = 125   # Min HSV saturation for tower foreground.
+TOWER_MASK_BRIGHTNESS_MIN          = 78    # Min HSV value (brightness) for tower foreground.
 TOWER_MASK_MORPH_CLOSE_PX          = 2    # Close kernel size — fills small mask holes. 0 = disabled.
-TOWER_MASK_MORPH_OPEN_PX           = 31    # Open kernel size — removes noise blobs. 0 = disabled.
+TOWER_MASK_MORPH_OPEN_PX           = 27    # Open kernel size — removes noise blobs. 0 = disabled.
 
 # ---------------------------------------------------------------------------
 # Edge detection
@@ -127,7 +127,7 @@ HOUGH_MASK_THRESHOLD  = 8  # Min Hough votes to accept a line.
 HOUGH_MASK_MIN_LENGTH = 80  # Min accepted line length (pixels).
 HOUGH_MASK_MAX_GAP    = 30  # Max gap for joining broken line segments.
 
-MAX_HORIZ_DEG    = 15.0  # Max angle from horizontal to classify as horizontal.
+MAX_HORIZ_DEG    = 23.0  # Max angle from horizontal to classify as horizontal.
 MAX_VERT_DEG     = 5.0   # Max deviation from 90° to classify as vertical.
 
 # ---------------------------------------------------------------------------
@@ -201,8 +201,12 @@ BLOCK_CENTROID_MIN_BLOB_PX = 120
 # position before falling back to a full-cell colour search.
 CENTROID_HINT_SEARCH_RADIUS_PX = 60
 
-# Consecutive frames a block must be absent before top-layer placement search.
-PLACEMENT_MISSING_CONFIRM_FRAMES = 4
+# Consecutive frames a slot must read absent before it is labeled "missing"
+# in layer analysis and before placement search begins.
+BLOCK_MISSING_CONFIRM_FRAMES = 4
+
+# Backward-compatible alias for placement_tracker.
+PLACEMENT_MISSING_CONFIRM_FRAMES = BLOCK_MISSING_CONFIRM_FRAMES
 
 # If this many blocks drop out in one frame, treat it as camera occlusion —
 # restore centroids but do not start placement searches.
