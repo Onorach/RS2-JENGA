@@ -48,6 +48,10 @@ Public API
                           robust_stat, require_split)
       -> dict[colour_str, (x_px, y_px)]
 
+  compute_layer_blob_centroids(bgr, depth, left_cell, right_cell, orientation,
+                               robust_stat)
+      -> list[dict]  one entry per disconnected same-colour blob on end-on face
+
   compute_split_x_per_colour(bgr, depth, left_cell, right_cell, orientation)
       -> dict[colour_str, x_px]
       Used by annotate_depth_split_lines_for_tower for visualisation only.
@@ -749,6 +753,66 @@ def _search_colour_low_threshold(
     elif split_x is not None:
         cx = _enforce_centroid_face_side(cx, split_x, orientation)
     return cx, cy
+
+
+def compute_layer_blob_centroids(
+    bgr: np.ndarray,
+    depth: np.ndarray | None,
+    left_cell: dict,
+    right_cell: dict,
+    orientation: str,
+    robust_stat: str = "mean",
+) -> list[dict]:
+    """
+    Find every disconnected colour blob on the end-on face of one layer.
+
+    Unlike compute_layer_centroids (one centroid per colour), this keeps
+    separate connected components so front and back blocks of the same colour
+    are both returned when their masks do not touch.
+    """
+    endon_cell = left_cell if orientation == "left" else right_cell
+    centre_seam_x = _centre_seam_x(left_cell)
+    endon_target_mm = _median_depth_in_cell(bgr, depth, endon_cell)
+    gate = _depth_gate(depth, endon_target_mm) if depth is not None else None
+
+    ih, iw = bgr.shape[:2]
+    quad = _quad_mask((ih, iw), endon_cell["corners"])
+    if int(quad.sum()) == 0:
+        return []
+
+    x_grid = np.broadcast_to(np.arange(iw, dtype=np.float32), (ih, iw))
+    endon_side = _endon_side_x_mask(x_grid, centre_seam_x, orientation)
+    use_med = str(robust_stat).strip().lower() == "median"
+    fn = np.median if use_med else np.mean
+    min_area = int(BLOCK_CENTROID_MIN_BLOB_PX)
+    min_pixels = max(10, MIN_COLOUR_PIXELS // 2)
+    blobs: list[dict] = []
+
+    for colour in HSV_RANGES:
+        colour_mask = quad & frame_colour_mask(bgr, colour)
+        for area, comp in _components_ge_min_area(colour_mask, min_area):
+            active = comp & endon_side
+            if gate is not None:
+                gated = active & gate
+                if int(gated.sum()) >= min_pixels:
+                    active = gated
+            pixel_count = int(active.sum())
+            if pixel_count < min_pixels:
+                continue
+            ys, xs = np.where(active)
+            cx = _finalize_centroid_x(
+                float(fn(xs)),
+                centre_seam_x=centre_seam_x,
+                orientation=orientation,
+            )
+            blobs.append({
+                "colour": colour,
+                "mean_x_px": cx,
+                "mean_y_px": float(fn(ys)),
+                "area": pixel_count,
+            })
+
+    return blobs
 
 
 # ---------------------------------------------------------------------------

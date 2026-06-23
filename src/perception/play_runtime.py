@@ -17,7 +17,7 @@ from std_msgs.msg import String
 from geometry_msgs.msg import Pose
 from jenga_interfaces.msg import JengaBlockState, JengaBlockStates
 
-from colour_identification import classify_roi_bgr, compute_roi
+from colour_identification import classify_roi_bgr, compute_roi, compute_display_crop
 from box_percentages import compute_percentages, build_debug_image
 from layer_analysis import (
     analyse_tower,
@@ -51,7 +51,6 @@ from tower_analysis import (
 from perception_config import (
     TOWER_ANALYSIS,
     BLOCK_ANALYSIS,
-    SEARCH_AREA_MARGIN,
     BLOCK_POSE_WORLD_FRAME,
     GRID_LOCK_EDGE_ACCUMULATION_FRAMES,
     BLOCK_MISSING_CONFIRM_FRAMES,
@@ -146,7 +145,6 @@ def _run_loop(
     grid_detection_started = False
     grid_frame_n           = 0
     frame_n          = 0
-    roi_margin       = SEARCH_AREA_MARGIN
     grey_line_history: deque[list[tuple]] = deque(maxlen=EDGE_HISTORY_FRAMES)
     points_locked    = False
     locked_layer_cells: list[list[dict]] = []
@@ -224,12 +222,8 @@ def _run_loop(
         frame_n += 1
         last_grid_points: list[tuple[int, int]] = []
 
-        # --- Crop setup (search area + margin) ---
-        rx, ry, rw, rh = compute_roi(iw, ih)
-        mx, my  = int(rw * roi_margin), int(rh * roi_margin)
-        dx1 = max(0, rx - mx);  dy1 = max(0, ry - my)
-        dx2 = min(iw, rx + rw + mx); dy2 = min(ih, ry + rh + my)
-        roi_x, roi_y = rx - dx1, ry - dy1
+        # --- Crop setup (search area horizontal margin, full height to frame top) ---
+        dx1, dy1, dx2, dy2, roi_x, roi_y, rw, rh = compute_display_crop(iw, ih)
 
         bgr = bgr_full[dy1:dy2, dx1:dx2]
         depth_mm = None if depth_mm_full is None else depth_mm_full[dy1:dy2, dx1:dx2]

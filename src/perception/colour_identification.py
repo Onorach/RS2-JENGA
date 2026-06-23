@@ -18,6 +18,7 @@ from perception_config import (
     HSV_RANGES,
     COLOUR_BGR,
     SEARCH_AREA,
+    SEARCH_AREA_MARGIN,
     COLOUR_MIN_BLOB_AREA_PX,
     COLOUR_MASK_MEDIAN_PX,
     COLOUR_MASK_MORPH_CLOSE_PX,
@@ -47,6 +48,31 @@ def compute_roi(
     x = max(0, min(int(iw * cx_f) - cw // 2, iw - cw))
     y = max(0, min(int(ih * cy_f) - ch // 2, ih - ch))
     return x, y, cw, ch
+
+
+def compute_display_crop(
+    iw: int,
+    ih: int,
+    search_area: tuple[float, float, float, float] | None = None,
+    margin: float = SEARCH_AREA_MARGIN,
+) -> tuple[int, int, int, int, int, int, int, int]:
+    """
+    Full-frame crop for live / box-percentages views.
+
+    Horizontal: search area plus margin on left and right.
+    Vertical: from the top of the camera frame down through the search area
+    plus margin below.
+    """
+    rx, ry, rw, rh = compute_roi(iw, ih, search_area=search_area)
+    mx = int(rw * margin)
+    my = int(rh * margin)
+    dx1 = max(0, rx - mx)
+    dy1 = 0
+    dx2 = min(iw, rx + rw + mx)
+    dy2 = min(ih, ry + rh + my)
+    roi_x = rx - dx1
+    roi_y = ry - dy1
+    return dx1, dy1, dx2, dy2, roi_x, roi_y, rw, rh
 
 
 def _odd(k: int) -> int:

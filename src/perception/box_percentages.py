@@ -421,12 +421,11 @@ def build_debug_image(
 ) -> np.ndarray:
     ih, iw = bgr_frame.shape[:2]
 
-    all_corners = [c for cell in cells for c in cell["corners"]]
-    margin = 40
-    min_x = max(0,  min(c[0] for c in all_corners) - margin)
-    min_y = max(0,  min(c[1] for c in all_corners) - margin)
-    max_x = min(iw, max(c[0] for c in all_corners) + margin)
-    max_y = min(ih, max(c[1] for c in all_corners) + margin)
+    # Use the full input crop (caller sets horizontal margin + top-of-frame height).
+    min_x = 0
+    min_y = 0
+    max_x = iw
+    max_y = ih
     cw, ch = max_x - min_x, max_y - min_y
     canvas = np.full((ch, cw, 3), 255, dtype=np.uint8)
 

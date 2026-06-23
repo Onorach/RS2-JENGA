@@ -15,7 +15,8 @@ import time
 from collections import deque
 
 from box_percentages import endon_outside_edge_x
-from block_centroids import compute_layer_centroids
+from block_centroids import compute_layer_blob_centroids, compute_layer_centroids
+from layer_analysis import _assign_blobs_to_lanes
 from perception_config import PROBE_TARGET_BLOCK_ID_PLACEHOLDER, CENTROID_ABORT_SHIFT_PCT
 PROBE_PRINT_INTERVAL_S = 0.2
 
@@ -87,6 +88,33 @@ def _endon_cell_for_layer(
     row_idx = (n_layers - 1) - layer_idx
     left_cell, right_cell = row_cells[row_idx]
     return left_cell if orientation == "left" else right_cell
+
+
+def _layer_block_width_px(
+    snapshot: dict,
+    layer_idx: int,
+    *,
+    frame_shape: tuple[int, int] | None = None,
+) -> float:
+    """Average adjacent slot spacing on a layer — used to normalise shift %."""
+    all_centroids = snapshot.get("all_centroids_px", {})
+    block_layer = snapshot.get("block_layer_by_id", {})
+    xs = sorted(
+        float(xy[0])
+        for bid, xy in all_centroids.items()
+        if block_layer.get(bid) == int(layer_idx)
+    )
+    if len(xs) >= 2:
+        dists = [abs(xs[i + 1] - xs[i]) for i in range(len(xs) - 1)]
+        return max(1.0, float(sum(dists) / len(dists)))
+    fallback = snapshot.get("block_width_px")
+    if fallback is not None:
+        return max(1.0, float(fallback))
+    if frame_shape is not None:
+        fh, fw = int(frame_shape[0]), int(frame_shape[1])
+        if fh > 0 and fw > 0:
+            return max(1.0, float((fh * fh + fw * fw) ** 0.5))
+    return 1.0
 
 
 def _layer_outside_edge_x(
@@ -162,6 +190,7 @@ def update_tower_centroids_for_probe(
         if row_idx < 0 or row_idx >= n_layers:
             continue
         left_cell, right_cell = row_cells[row_idx]
+        endon_cell = left_cell if orientation == "left" else right_cell
 
         split_x_by_colour: dict[str, float] = {}
         centroids = compute_layer_centroids(
@@ -174,15 +203,32 @@ def update_tower_centroids_for_probe(
             require_split=True,
             split_x_out=split_x_by_colour,
         )
+        colour_blobs = compute_layer_blob_centroids(
+            bgr_frame,
+            depth_frame,
+            left_cell,
+            right_cell,
+            orientation,
+            robust_stat="median",
+        )
+        lane_blobs = _assign_blobs_to_lanes(colour_blobs, endon_cell, orientation)
 
-        for block in layer.get("blocks", []):
+        assigned_colours: set[str] = set()
+        for slot_idx, block in enumerate(layer.get("blocks", [])):
             if not block.get("present"):
                 block.pop("depth_split_x_px", None)
                 continue
             colour = str(block.get("colour", ""))
-            if colour in centroids:
+            blob = lane_blobs[slot_idx] if slot_idx < len(lane_blobs) else None
+            if blob is not None and str(blob.get("colour", "")) == colour:
+                block["mean_x_px"] = float(blob["mean_x_px"])
+                block["mean_y_px"] = float(blob["mean_y_px"])
+                assigned_colours.add(colour)
+            elif colour in centroids and colour not in assigned_colours:
                 block["mean_x_px"] = float(centroids[colour][0])
                 block["mean_y_px"] = float(centroids[colour][1])
+                assigned_colours.add(colour)
+            # else: colour already claimed or missing — leave existing mean_x/y intact
             split_x = split_x_by_colour.get(colour)
             if split_x is not None:
                 block["depth_split_x_px"] = float(split_x)
@@ -321,7 +367,26 @@ def _build_probe_snapshot(
             continue
         block_edge_offset_x[bid] = float(xy[0] - edge_x)
 
-    excluded_centroid_ids = set([int(block_id)] + behind_block_ids)
+    # Build a set of block IDs whose colour is shared by another present block
+    # in the same layer. Their centroids are ambiguous (colour-keyed lookup
+    # cannot distinguish them) and will always show spurious ~200% shifts.
+    colour_collision_ids: set[int] = set()
+    layer_colour_to_bids: dict[tuple[int, str], list[int]] = {}
+    for bid, lyr in block_layer_by_id.items():
+        for layer in tower:
+            if int(layer.get("layer", -1)) != lyr:
+                continue
+            for block in layer.get("blocks", []):
+                if _to_int_or_none(block.get("block_index")) != bid:
+                    continue
+                colour = str(block.get("colour", ""))
+                key = (lyr, colour)
+                layer_colour_to_bids.setdefault(key, []).append(bid)
+    for bids in layer_colour_to_bids.values():
+        if len(bids) > 1:
+            colour_collision_ids.update(bids)
+
+    excluded_centroid_ids = set([int(block_id)] + behind_block_ids) | colour_collision_ids
     monitor_centroid_ids = sorted(
         bid for bid in all_centroids_px
         if (
@@ -329,7 +394,7 @@ def _build_probe_snapshot(
             and block_layer_by_id.get(bid, -1) >= int(target_layer)
         )
     )
-
+    
     target_centroid = all_centroids_px.get(int(block_id))
     monitor_points = [all_centroids_px[bid] for bid in monitor_centroid_ids if bid in all_centroids_px]
     if monitor_points:
@@ -401,26 +466,40 @@ def _build_probe_snapshot(
 
 
 def _assess_probe_response(baseline: dict, current: dict) -> dict:
-    norm_px = float(
+    default_norm = float(
         current.get("block_width_px")
         or baseline.get("block_width_px")
         or 1.0
     )
+    block_layer = baseline.get("block_layer_by_id", {})
     monitor_ids = list(baseline.get("monitor_centroid_ids", []))
     centroid_shift_pcts: list[float] = []
+    per_block_shift: list[tuple[int, float]] = []
     for bid in monitor_ids:
         bxy = baseline.get("all_centroids_px", {}).get(bid)
         cxy = current.get("all_centroids_px", {}).get(bid)
         if bxy is None or cxy is None:
             continue
 
-        # Tower centroids during monitoring already use anchored x + blob mean y.
         shift_px = float(
             ((float(cxy[0]) - float(bxy[0])) ** 2 + (float(cxy[1]) - float(bxy[1])) ** 2) ** 0.5
         )
-        centroid_shift_pcts.append((shift_px / norm_px) * 100.0)
+        layer_idx = block_layer.get(bid)
+        norm_px = (
+            _layer_block_width_px(baseline, int(layer_idx))
+            if layer_idx is not None
+            else default_norm
+        )
+        shift_pct = (shift_px / norm_px) * 100.0
+        centroid_shift_pcts.append(shift_pct)
+        per_block_shift.append((int(bid), shift_pct))
+
+    target_norm = _layer_block_width_px(
+        baseline,
+        int(baseline.get("layer", 0)),
+    )
     avg_other_centroid_shift_pct = (
-        float(sum(centroid_shift_pcts) / len(centroid_shift_pcts))
+        float(sorted(centroid_shift_pcts)[len(centroid_shift_pcts) // 2])
         if centroid_shift_pcts else 0.0
     )
 
@@ -435,7 +514,9 @@ def _assess_probe_response(baseline: dict, current: dict) -> dict:
 
     target_shift_pct = None
     if target_dx_px is not None and target_dy_px is not None:
-        target_shift_pct = (((target_dx_px ** 2 + target_dy_px ** 2) ** 0.5) / norm_px) * 100.0
+        target_shift_pct = (
+            ((target_dx_px ** 2 + target_dy_px ** 2) ** 0.5) / target_norm
+        ) * 100.0
     target_moved = (
         target_dx_px is not None
         and target_dy_px is not None
@@ -455,6 +536,7 @@ def _assess_probe_response(baseline: dict, current: dict) -> dict:
         "target_dx_px": target_dx_px,
         "target_dy_px": target_dy_px,
         "target_shift_pct": target_shift_pct,
+        "per_block_shift_pct": per_block_shift,
     }
 
 
@@ -693,8 +775,24 @@ class ProbeResponseMonitor:
         if self._active_block_id != int(probe_target_block_id):
             self._active_block_id = int(probe_target_block_id)
             self._final_decision_sent = False
+            baseline_tower = tower_state
+            if bgr_frame is not None and row_cells is not None:
+                seed = _build_probe_snapshot(
+                    tower_state,
+                    block_id=self._active_block_id,
+                    frame_shape=frame_shape,
+                    row_cells=row_cells,
+                )
+                if seed is not None:
+                    baseline_tower = update_tower_centroids_for_probe(
+                        bgr_frame,
+                        depth_frame,
+                        row_cells,
+                        tower_state,
+                        seed,
+                    )
             self._baseline = _build_probe_snapshot(
-                tower_state,
+                baseline_tower,
                 block_id=self._active_block_id,
                 frame_shape=frame_shape,
                 row_cells=row_cells,
@@ -778,17 +876,38 @@ class ProbeResponseMonitor:
             else:
                 movement_xy = f"({dx:+.1f},{dy:+.1f})"
             if should_print:
+                per_block = eval_result.get("per_block_shift_pct") or []
+                if per_block:
+                    detail = ", ".join(
+                        f"{bid:03d}={pct:.1f}%"
+                        for bid, pct in sorted(per_block, key=lambda item: -item[1])[:6]
+                    )
+                    shift_detail = f" per_block=[{detail}]"
+                else:
+                    shift_detail = ""
                 print(
                     "[probe] "
                     f"block={self._active_block_id} status={eval_result['status']}  "
-                    f"centroid_shift_avg={eval_result['avg_other_centroid_shift_pct']:.2f}%  "
+                    f"centroid_shift_avg={eval_result['avg_other_centroid_shift_pct']:.2f}%"
+                    f"{shift_detail}  "
                     f"centroid_movement_px={movement_xy}"
                 )
                 self._last_print_time = now
         if eval_result["status"] != self._last_status:
             label = self._status_label(eval_result["status"])
             if label == "ABORT_TOWER_MOVED":
-                print(f"[probe] decision block={self._active_block_id}: ABORT (tower moved)")
+                per_block = eval_result.get("per_block_shift_pct") or []
+                if per_block:
+                    detail = ", ".join(
+                        f"{bid:03d}={pct:.1f}%"
+                        for bid, pct in sorted(per_block, key=lambda item: -item[1])[:6]
+                    )
+                    print(
+                        f"[probe] decision block={self._active_block_id}: "
+                        f"ABORT (tower moved) per_block=[{detail}]"
+                    )
+                else:
+                    print(f"[probe] decision block={self._active_block_id}: ABORT (tower moved)")
                 self._emit_final_decision(int(self._active_block_id), "abort", label)
                 self._stop_monitoring_after_abort()
                 return tower_for_eval

@@ -14,6 +14,7 @@ from box_percentages import (
 )
 from block_centroids import (
     compute_layer_centroids,
+    compute_layer_blob_centroids,
     compute_split_x_per_colour,
 )
 from block_pose_global import build_block_pose_mm
@@ -109,17 +110,148 @@ def _orientation_alternating_above(anchor: str, steps_above: int) -> str:
 # Block detection from end-on face
 # ---------------------------------------------------------------------------
 
+def _lane_index_for_x(mx: float, cell: dict) -> int:
+    corners = cell["corners"]
+    x_left_bound = (corners[0][0] + corners[2][0]) / 2.0
+    x_right_bound = (corners[1][0] + corners[3][0]) / 2.0
+    lane_w = max(1.0, (x_right_bound - x_left_bound) / 3.0)
+    return max(0, min(2, int((mx - x_left_bound) // lane_w)))
+
+
+def _assign_blobs_to_lanes(
+    blobs: list[dict],
+    cell: dict,
+    orientation: str,
+) -> list[dict | None]:
+    """Map each blob to at most one front/mid/back lane by x, largest blob first."""
+    if not blobs:
+        return [None, None, None]
+
+    corners = cell["corners"]
+    x_left = (corners[0][0] + corners[2][0]) / 2.0
+    x_right = (corners[1][0] + corners[3][0]) / 2.0
+    lane_w = max(1.0, (x_right - x_left) / 3.0)
+    lane_centers = [x_left + lane_w * (i + 0.5) for i in range(3)]
+
+    lane_blobs: list[dict | None] = [None, None, None]
+    for blob in sorted(blobs, key=lambda item: -int(item.get("area", 0))):
+        preferred = _lane_index_for_x(float(blob["mean_x_px"]), cell)
+        if lane_blobs[preferred] is None:
+            lane_blobs[preferred] = blob
+            continue
+        for lane in sorted(
+            range(3),
+            key=lambda idx: abs(lane_centers[idx] - float(blob["mean_x_px"])),
+        ):
+            if lane_blobs[lane] is None:
+                lane_blobs[lane] = blob
+                break
+
+    if orientation == "left":
+        lane_blobs = lane_blobs[::-1]
+    return lane_blobs
+
+
+def _present_block_from_blob(blob: dict, colour: str) -> dict:
+    return {
+        "colour": colour,
+        "present": True,
+        "mean_x_px": float(blob["mean_x_px"]),
+        "mean_y_px": float(blob["mean_y_px"]),
+    }
+
+
+def _blocks_from_colour_blobs(
+    pcts: dict[str, float],
+    mean_xy: dict[str, tuple[float, float]],
+    cell: dict,
+    orientation: str,
+    colour_blobs: list[dict],
+    known_colours: list[str | None] | None = None,
+) -> list[dict]:
+    """Assign disconnected same-colour blobs to front/mid/back lanes."""
+    lane_blobs = _assign_blobs_to_lanes(colour_blobs, cell, orientation)
+    absent = {"colour": "unknown", "present": False, "depth_mm": None}
+
+    if known_colours is not None:
+        LOW_PCT = BLOCK_PRESENT_MIN_PCT / 2.0
+        res: list[dict] = [dict(absent) for _ in range(3)]
+        used_blob_ids: set[int] = set()
+
+        for slot_idx, slot_colour in enumerate(known_colours):
+            if slot_colour in (None, "", "unknown"):
+                res[slot_idx] = dict(absent)
+                continue
+            res[slot_idx]["colour"] = str(slot_colour)
+
+            blob = lane_blobs[slot_idx]
+            if (
+                blob is not None
+                and blob["colour"] == slot_colour
+                and id(blob) not in used_blob_ids
+            ):
+                res[slot_idx] = _present_block_from_blob(blob, str(slot_colour))
+                used_blob_ids.add(id(blob))
+                continue
+
+            pct = pcts.get(slot_colour, 0.0)
+            xy = mean_xy.get(slot_colour)
+            if pct >= LOW_PCT or xy is not None:
+                block: dict = {"colour": str(slot_colour), "present": True}
+                if xy is not None:
+                    block["mean_x_px"] = xy[0]
+                    block["mean_y_px"] = xy[1]
+                res[slot_idx] = block
+
+        # Same colour in multiple slots: assign leftover blobs by x order.
+        slots_by_colour: dict[str, list[int]] = {}
+        for slot_idx, slot_colour in enumerate(known_colours):
+            if slot_colour in (None, "", "unknown"):
+                continue
+            if res[slot_idx].get("present"):
+                continue
+            slots_by_colour.setdefault(str(slot_colour), []).append(slot_idx)
+
+        for colour, slot_indices in slots_by_colour.items():
+            available = [
+                blob for blob in colour_blobs
+                if blob["colour"] == colour and id(blob) not in used_blob_ids
+            ]
+            if not available:
+                continue
+            slot_indices.sort(
+                key=lambda idx: idx if orientation == "right" else -idx,
+            )
+            available.sort(key=lambda blob: float(blob["mean_x_px"]))
+            for slot_idx, blob in zip(slot_indices, available):
+                res[slot_idx] = _present_block_from_blob(blob, colour)
+                used_blob_ids.add(id(blob))
+
+        return res
+
+    res = [dict(absent) for _ in range(3)]
+    for slot_idx, blob in enumerate(lane_blobs):
+        if blob is None:
+            continue
+        colour = str(blob["colour"])
+        if pcts.get(colour, 0.0) < BLOCK_PRESENT_MIN_PCT:
+            continue
+        res[slot_idx] = _present_block_from_blob(blob, colour)
+    return res
+
+
 def _blocks_from_endon(
     pcts: dict[str, float],
     mean_xy: dict[str, tuple[float, float]],
     cell: dict,
     orientation: str = "left",
     known_colours: list[str | None] | None = None,
+    colour_blobs: list[dict] | None = None,
 ) -> list[dict]:
     """
-    One centroid per colour across the full end-on layer side (all pixels of
-    that colour in the cell). Assign each colour to a front/mid/back lane by
-    its mean x, then reorder lanes for tower orientation.
+    Detect blocks on the end-on face. When colour_blobs is supplied, each
+    disconnected blob is assigned to a front/mid/back lane by x so two blocks
+    of the same colour on one layer can both be found.
 
     known_colours
     -------------
@@ -132,6 +264,11 @@ def _blocks_from_endon(
     A half-height percentage threshold is used so blocks with reduced coverage
     (pushed far in depth) are still marked as present.
     """
+    if colour_blobs:
+        return _blocks_from_colour_blobs(
+            pcts, mean_xy, cell, orientation, colour_blobs, known_colours,
+        )
+
     if known_colours is not None:
         if not any(c is not None for c in known_colours):
             return [
@@ -232,6 +369,7 @@ def analyse_layer(
     # with stricter split-based centroids on the same frame.
     if skip_centroid_compute:
         mean_xy = {}
+        colour_blobs: list[dict] = []
     else:
         mean_xy = compute_layer_centroids(
             bgr_frame,
@@ -244,10 +382,19 @@ def analyse_layer(
             required_colours=required_colours,
             centroid_hints=centroid_hints,
         )
+        colour_blobs = compute_layer_blob_centroids(
+            bgr_frame,
+            depth_frame,
+            left_cell,
+            right_cell,
+            orientation,
+            robust_stat="mean",
+        )
     endon_blocks = _blocks_from_endon(
         endon_pcts, mean_xy, endon_cell,
         orientation=orientation,
         known_colours=known_block_colours,
+        colour_blobs=colour_blobs,
     )
 
     frame_width    = float(frame_width_px) if frame_width_px is not None else float(bgr_frame.shape[1])
@@ -260,7 +407,7 @@ def analyse_layer(
             lateral_px = frame_centre_x - block["mean_x_px"]
             mx = block.get("mean_x_px")
             my = block.get("mean_y_px")
-            if mx is not None and my is not None:
+            if depth_frame is not None and mx is not None and my is not None:  # ← add depth_frame guard
                 centroid_face = _centroid_face_depth_mm(depth_frame, mx, my)
                 if centroid_face is not None and centroid_face > 0:
                     block["centroid_face_depth_mm"] = round(centroid_face, 1)

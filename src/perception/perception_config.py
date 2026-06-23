@@ -10,7 +10,7 @@ TOWER_ANALYSIS = False
 BLOCK_ANALYSIS = True
 
 # Search area centre and fraction of the full frame
-SEARCH_AREA = (0.466, 0.494, 0.444, 0.952)
+SEARCH_AREA = (0.542, 0.621, 0.402, 0.650)
 
 # Crop margin around the search area
 SEARCH_AREA_MARGIN     = 0.10
@@ -55,7 +55,7 @@ PROBE_ABOVE_LAYER_GAIN_MIN_PCT = 3.0
 
 # Centroid shift threshold (percentage of tower-width normalisation) used to
 # decide that the tower moved and the probe result should abort.
-CENTROID_ABORT_SHIFT_PCT = 6.0
+CENTROID_ABORT_SHIFT_PCT = 99.0
 
 # ---------------------------------------------------------------------------
 # Colour Settings
@@ -64,20 +64,20 @@ CENTROID_ABORT_SHIFT_PCT = 6.0
 # HSV ranges for colour identification
 HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
     "red": [
-        ((  0, 208, 105), ( 10, 255, 255)),
-        ((138, 208, 105), (179, 255, 255)),
+        ((  0, 208, 182), (  5, 255, 255)),
+        ((165, 208, 182), (179, 255, 255)),
     ],
     "yellow": [
-        (( 11, 147, 106), ( 32, 255, 255)),
+        (( 11, 212, 180), ( 32, 255, 255)),
     ],
     "green": [
         (( 30,  58,  61), ( 95, 255, 255)),
     ],
     "blue": [
-        (( 92, 114, 149), (116, 255, 255)),
+        (( 75,  98, 113), (123, 255, 255)),
     ],
     "purple": [
-        ((108, 138,  49), (163, 255, 255)),
+        ((108, 151,  40), (163, 255, 255)),
     ],
 }
 
@@ -127,7 +127,7 @@ HOUGH_MASK_THRESHOLD  = 8  # Min Hough votes to accept a line.
 HOUGH_MASK_MIN_LENGTH = 80  # Min accepted line length (pixels).
 HOUGH_MASK_MAX_GAP    = 30  # Max gap for joining broken line segments.
 
-MAX_HORIZ_DEG    = 23.0  # Max angle from horizontal to classify as horizontal.
+MAX_HORIZ_DEG    = 20.0  # Max angle from horizontal to classify as horizontal.
 MAX_VERT_DEG     = 5.0   # Max deviation from 90° to classify as vertical.
 
 # ---------------------------------------------------------------------------
@@ -177,11 +177,11 @@ CLUSTER_MERGE_RADIUS_PX       = 12  # Pass-2 merge radius for centroids that str
 
 # After grid lock, extrapolate this many empty layer bands above the detected tower
 # so newly placed blocks have cells to fill during live play.
-GRID_EXTRA_LAYERS_ON_TOP = 2
+GRID_EXTRA_LAYERS_ON_TOP = 3
 
 # Extrapolated rows: extend centre-column vertical step by this % over the
 # standard median row height (edges unchanged). Set to 0 to disable.
-GRID_EXTRAPOLATED_CENTER_HEIGHT_EXTEND_PCT = 15.0
+GRID_EXTRAPOLATED_CENTER_HEIGHT_EXTEND_PCT = 20.0
 
 # ---------------------------------------------------------------------------
 # Robot placement on extrapolated layers
