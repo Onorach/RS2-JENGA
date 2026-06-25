@@ -33,6 +33,11 @@ def generate_launch_description() -> LaunchDescription:
         default_value="0.1",
         description="Sync with mtc_jenga_servers/config/mtc_velocity_scaling.yaml",
     )
+    probe_angle_delta_arg = DeclareLaunchArgument(
+        "probe_angle_delta",
+        default_value="0.2618",
+        description="Angular step (radians) for GenerateGraspPose sampling around the probing axis (~pi/12).",
+    )
 
     node = Node(
         package="mtc_jenga_servers",
@@ -50,6 +55,7 @@ def generate_launch_description() -> LaunchDescription:
                 "gripper_tcp": LaunchConfiguration("gripper_tcp"),
                 "probe_frame": LaunchConfiguration("probe_frame"),
                 "use_sim_block_attach": LaunchConfiguration("use_sim_block_attach"),
+                "probe_angle_delta": LaunchConfiguration("probe_angle_delta"),
             },
         ],
     )
@@ -62,6 +68,7 @@ def generate_launch_description() -> LaunchDescription:
             use_sim_block_attach_arg,
             max_vel_arg,
             max_acc_arg,
+            probe_angle_delta_arg,
             node,
         ]
     )

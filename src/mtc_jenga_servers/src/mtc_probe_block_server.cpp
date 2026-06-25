@@ -22,7 +22,6 @@
 #include <moveit/task_constructor/task.h>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/string.hpp>
-#include <geometry_msgs/msg/twist_stamped.hpp>
 
 #include <Eigen/Geometry>
 
@@ -61,18 +60,20 @@ class MtcProbeBlockServer : public rclcpp::Node {
     box_z_ = mtc_jenga::param<double>(this, "block_box_z", 0.015);
 
     plan_max_attempts_ = static_cast<uint32_t>(mtc_jenga::param<int>(this, "plan_max_attempts", 1));
-    plan_time_ = mtc_jenga::param<double>(this, "plan_time", 5.0);
+    plan_time_ = mtc_jenga::param<double>(this, "plan_time", 7.5);
     vel_scale_ = mtc_jenga::param<double>(this, "max_velocity_scaling_factor", 0.1);
     acc_scale_ = mtc_jenga::param<double>(this, "max_acceleration_scaling_factor", 0.1);
     cart_step_ = mtc_jenga::param<double>(this, "cartesian_step", 0.001);
 
-    approach_min_ = mtc_jenga::param<double>(this, "approach_distance_min", 0.01);
-    approach_max_ = mtc_jenga::param<double>(this, "approach_distance_max", 0.05);
+    approach_min_ = mtc_jenga::param<double>(this, "approach_distance_min", 0.005);
+    approach_max_ = mtc_jenga::param<double>(this, "approach_distance_max", 0.03);
     retreat_distance_ = mtc_jenga::param<double>(this, "retreat_distance", 0.02);
 
-    probe_r_ = mtc_jenga::param<double>(this, "probe_frame_roll", 0.0);
+    probe_r_ = mtc_jenga::param<double>(this, "probe_frame_roll", -M_PI / 1.0);
     probe_p_ = mtc_jenga::param<double>(this, "probe_frame_pitch", M_PI / 1.0);
     probe_y_ = mtc_jenga::param<double>(this, "probe_frame_yaw", 0.0);
+    probe_r_alt_ = mtc_jenga::param<double>(this, "probe_frame_roll_alt", 0.0);
+    probe_angle_delta_ = mtc_jenga::param<double>(this, "probe_angle_delta", M_PI / 12.0);
 
     ft_sensor_topic_ = mtc_jenga::param<std::string>(this, "ft_topic", "force_torque_sensor_broadcaster/wrench");
     stuck_force_threshold_n_ = mtc_jenga::param<double>(this, "stuck_force_threshold_n", 0.05);
@@ -93,9 +94,12 @@ class MtcProbeBlockServer : public rclcpp::Node {
     push_cartesian_step_scales_ = mtc_jenga::param<std::vector<double>>(
         this, "push_cartesian_step_scales", std::vector<double>{1.0, 0.5, 0.25});
 
+    push_timeout_s_ = mtc_jenga::param<double>(this, "push_timeout_s", 5.0);
+
     probe_subframe_ = mtc_jenga::param<std::string>(this, "probe_subframe", "end_plus");
     probe_offset_m_ = mtc_jenga::param<double>(this, "probe_offset_m", 0.045);
     use_sim_block_attach_ = mtc_jenga::param<bool>(this, "use_sim_block_attach", true);
+    blocks_per_layer_ = mtc_jenga::param<int>(this, "blocks_per_layer", 3);
 
     status_topic_ = mtc_jenga::param<std::string>(this, "status_topic", "mtc_probe_status");
     pub_status_ = create_publisher<std_msgs::msg::String>(status_topic_, 10);
@@ -127,8 +131,6 @@ class MtcProbeBlockServer : public rclcpp::Node {
                 "use_sim_block_attach=%s",
                 action_name_.c_str(), status_topic_.c_str(), ft_sensor_topic_.c_str(),
                 probe_frame_.c_str(), use_sim_block_attach_ ? "true" : "false");
-
-    servo_pub_ = create_publisher<geometry_msgs::msg::TwistStamped>("servo_node/delta_twist_cmds", 10);
   }
 
   private:
@@ -171,10 +173,19 @@ class MtcProbeBlockServer : public rclcpp::Node {
     return {w.wrench.force.x, w.wrench.force.y, w.wrench.force.z};
   }
 
+  double effectiveProbeRoll(uint32_t block_index) const {
+    const int layer = static_cast<int>(block_index) / blocks_per_layer_;
+    const double roll = (layer % 2 == 0) ? probe_r_ : probe_r_alt_;
+    RCLCPP_INFO(get_logger(),
+                "effectiveProbeRoll: block_index=%u layer=%d (%s) roll=%.4f rad",
+                block_index, layer, (layer % 2 == 0) ? "even" : "odd", roll);
+    return roll;
+  }
+
   // ---------------------------------------------------------------------------
   // Phase 1: MTC Approach Task
   // ---------------------------------------------------------------------------
-  mtc::Task buildApproachTask(const std::string& block_id) {
+  mtc::Task buildApproachTask(const std::string& block_id, uint32_t block_index) {
     mtc::Task task;
     task.stages()->setName("jenga_probe_approach");
     auto node_ptr = rclcpp::Node::shared_from_this();
@@ -258,12 +269,14 @@ class MtcProbeBlockServer : public rclcpp::Node {
         gen->setMonitoredStage(allow_collision_ptr);
 
         Eigen::Isometry3d probe_ft = Eigen::Isometry3d::Identity();
-        probe_ft = probe_ft * Eigen::AngleAxisd(probe_r_, Eigen::Vector3d::UnitX())
-                            * Eigen::AngleAxisd(probe_p_, Eigen::Vector3d::UnitY())
-                            * Eigen::AngleAxisd(probe_y_, Eigen::Vector3d::UnitZ());
+        probe_ft = probe_ft
+                 * Eigen::AngleAxisd(effectiveProbeRoll(block_index), Eigen::Vector3d::UnitX())
+                 * Eigen::AngleAxisd(probe_p_, Eigen::Vector3d::UnitY())
+                 * Eigen::AngleAxisd(probe_y_, Eigen::Vector3d::UnitZ());
         auto ik = std::make_unique<mtc::stages::ComputeIK>("probe IK", std::move(gen));
-        ik->setMaxIKSolutions(64);
+        ik->setMaxIKSolutions(16);
         ik->setMinSolutionDistance(0.05);
+        ik->setTimeout(0.05);
         ik->setIKFrame(probe_ft, probe_frame_);
         ik->properties().configureInitFrom(mtc::Stage::PARENT, {"eef", "group"});
         ik->properties().configureInitFrom(mtc::Stage::INTERFACE, {"target_pose"});
@@ -288,6 +301,13 @@ class MtcProbeBlockServer : public rclcpp::Node {
     task.setProperty("ik_frame", probe_frame_);
 
     task.add(std::make_unique<mtc::stages::CurrentState>("current"));
+
+    {
+      auto stage = std::make_unique<mtc::stages::ModifyPlanningScene>(
+          "allow collision (probe,block)");
+      stage->allowCollisions(block_id, mtc_jenga::probeCollisionLinkNames(), true);
+      task.add(std::move(stage));
+    }
 
     auto sampling_planner = std::make_shared<mtc::solvers::PipelinePlanner>(node_ptr);
     sampling_planner->setPlannerId("RRTstarPathLengthOptimized");
@@ -399,84 +419,181 @@ class MtcProbeBlockServer : public rclcpp::Node {
   PushResult runFtPushLoop() {
     PushResult result;
     ensureMoveGroup();
-    
-    // 1. Tare FT sensor (Bias calculation)
+
     Eigen::Vector3d wrench_bias = Eigen::Vector3d::Zero();
     auto w0 = getLatestWrench();
     if (w0) {
       wrench_bias = wrenchForceVec(*w0);
+      if (std::isfinite(wrench_bias.x()) && std::isfinite(wrench_bias.y()) &&
+          std::isfinite(wrench_bias.z())) {
+        RCLCPP_INFO(get_logger(), "FT tare: bias=(%.2f, %.2f, %.2f) N",
+                    wrench_bias.x(), wrench_bias.y(), wrench_bias.z());
+      } else {
+        wrench_bias = Eigen::Vector3d::Zero();
+        RCLCPP_WARN(get_logger(), "FT tare returned non-finite values; using zero bias");
+      }
+    } else {
+      RCLCPP_WARN(get_logger(), "No FT data available for taring; proceeding with zero bias");
     }
-  
-    // 2. Setup Loop timing (Servo typically expects commands at 50-100Hz)
-    rclcpp::Rate rate(50); 
-    auto start_pose_msg = move_group_->getCurrentPose(probe_frame_);
-    Eigen::Vector3d start_pos(start_pose_msg.pose.position.x, 
-                              start_pose_msg.pose.position.y, 
-                              start_pose_msg.pose.position.z);
-  
-    RCLCPP_INFO(get_logger(), "Starting velocity-based push at %.3f m/s", push_velocity_m_s_);
-  
+
+    const double push_vel_scale = std::clamp(push_velocity_m_s_ / 0.1, 0.01, 0.05);
+    int stuck_count = 0;
+    int consecutive_cartesian_failures = 0;
+
+    const Eigen::Vector3d push_dir = probeAxisInWorld();
+
+    RCLCPP_INFO(get_logger(),
+                "Starting Cartesian push (step=%.4f m, target=%.4f m, vel_scale=%.3f)",
+                push_step_m_, protrusion_target_m_, push_vel_scale);
+
     while (rclcpp::ok()) {
       if (estop_.load()) {
+        RCLCPP_WARN(get_logger(), "E-stop during push loop");
         result.outcome = PROBE_ERROR;
         break;
       }
-    
-      // 3. Create Twist command in the probe frame
-      // Moving along the X-axis of the probe_frame_ simplifies the math significantly.
-      geometry_msgs::msg::TwistStamped twist;
-      twist.header.stamp = now();
-      twist.header.frame_id = probe_frame_; // Command relative to the probe tip
-      twist.twist.linear.x = push_velocity_m_s_; 
-      servo_pub_->publish(twist);
-  
-      // 4. Calculate Displacement
-      auto current_pose = move_group_->getCurrentPose(probe_frame_);
-      Eigen::Vector3d current_pos(current_pose.pose.position.x, 
-                                  current_pose.pose.position.y, 
-                                  current_pose.pose.position.z);
-      result.displacement_m = (current_pos - start_pos).norm();
-  
-      // 5. Monitor Force
-      auto wrench = getLatestWrench();
-      if (wrench) {
-        // Since we move along the probe's X-axis, we care about the force on that axis
-        const Eigen::Vector3d force = wrenchForceVec(*wrench) - wrench_bias;
-        
-        // We need the probe's direction in the FT sensor frame, 
-        // but for simplicity, we check the magnitude of the force vector projected
-        // onto the movement direction if they are in the same frame.
-        double force_magnitude = force.norm(); 
-        result.max_force_n = std::max(result.max_force_n, force_magnitude);
-  
-        if (force_magnitude >= emergency_force_threshold_n_) {
-          RCLCPP_WARN(get_logger(), "Emergency Force! %.2f N", force_magnitude);
-          result.outcome = PROBE_STUCK;
-          break;
-        }
-  
-        if (force_magnitude >= stuck_force_threshold_n_) {
-          // You could add a 'stuck_count' here like in your original code
-          result.outcome = PROBE_STUCK;
+
+      const auto current_pose_msg = move_group_->getCurrentPose(probe_frame_);
+      const geometry_msgs::msg::Pose& current_pose = current_pose_msg.pose;
+
+      bool planned = false;
+      double used_step_m = 0.0;
+      double best_fraction = 0.0;
+      moveit_msgs::msg::RobotTrajectory trajectory_msg;
+      geometry_msgs::msg::Pose target_pose = current_pose;
+
+      for (const double scale : push_cartesian_step_scales_) {
+        if (!std::isfinite(scale) || scale <= 0.0) continue;
+        used_step_m = push_step_m_ * scale;
+        target_pose = current_pose;
+        target_pose.position.x += push_dir.x() * used_step_m;
+        target_pose.position.y += push_dir.y() * used_step_m;
+        target_pose.position.z += push_dir.z() * used_step_m;
+
+        RCLCPP_DEBUG(get_logger(),
+                     "Cartesian attempt: disp=%.4f m, step=%.5f m (scale=%.2f)",
+                     result.displacement_m, used_step_m, scale);
+
+        std::vector<geometry_msgs::msg::Pose> waypoints;
+        waypoints.push_back(target_pose);
+
+        move_group_->setStartStateToCurrentState();
+
+        trajectory_msg = moveit_msgs::msg::RobotTrajectory{};
+        const double fraction = move_group_->computeCartesianPath(
+            waypoints, cart_step_, 0.0 /* jump_threshold */, trajectory_msg,
+            false /* avoid_collisions */);
+        best_fraction = std::max(best_fraction, fraction);
+
+        RCLCPP_DEBUG(get_logger(), "Cartesian result: fraction=%.2f points=%zu",
+                     fraction, trajectory_msg.joint_trajectory.points.size());
+
+        const auto& pts = trajectory_msg.joint_trajectory.points;
+        if (fraction >= push_cartesian_min_fraction_ && pts.size() >= 2) {
+          planned = true;
           break;
         }
       }
-  
-      // 6. Check Displacement Target
+
+      if (!planned) {
+        ++consecutive_cartesian_failures;
+        RCLCPP_WARN(get_logger(),
+                    "Cartesian path planning failed (best_fraction=%.2f, "
+                    "consecutive_failures=%d/%d)",
+                    best_fraction, consecutive_cartesian_failures,
+                    push_cartesian_max_consecutive_failures_);
+        if (consecutive_cartesian_failures > push_cartesian_max_consecutive_failures_) {
+          RCLCPP_ERROR(get_logger(),
+                       "Cartesian planning repeatedly failed; aborting Phase 2 push");
+          result.outcome = PROBE_ERROR;
+          break;
+        }
+        if (push_cartesian_retry_wait_s_ > 0.0) {
+          std::this_thread::sleep_for(
+              std::chrono::duration<double>(push_cartesian_retry_wait_s_));
+        }
+        continue;
+      }
+
+      consecutive_cartesian_failures = 0;
+
+      auto& points = trajectory_msg.joint_trajectory.points;
+      for (auto& pt : points) {
+        double t_sec = pt.time_from_start.sec + pt.time_from_start.nanosec * 1e-9;
+        t_sec /= std::max(push_vel_scale, 0.01);
+        pt.time_from_start.sec = static_cast<int32_t>(t_sec);
+        pt.time_from_start.nanosec =
+            static_cast<uint32_t>((t_sec - pt.time_from_start.sec) * 1e9);
+        for (auto& v : pt.velocities) v *= std::max(push_vel_scale, 0.01);
+        for (auto& a : pt.accelerations)
+          a *= (std::max(push_vel_scale, 0.01) * std::max(push_vel_scale, 0.01));
+      }
+
+      moveit::planning_interface::MoveGroupInterface::Plan plan;
+      plan.trajectory_ = trajectory_msg;
+      auto exec_result = move_group_->execute(plan);
+      if (exec_result != moveit::core::MoveItErrorCode::SUCCESS) {
+        RCLCPP_ERROR(get_logger(), "Push segment execute failed: %d", exec_result.val);
+        result.outcome = PROBE_ERROR;
+        break;
+      }
+
+      result.displacement_m += used_step_m;
+
+      const auto achieved_pose_msg = move_group_->getCurrentPose(probe_frame_);
+      const auto& achieved = achieved_pose_msg.pose.position;
+      const auto& desired = target_pose.position;
+      const double pos_err_m = std::hypot(
+          std::hypot(achieved.x - desired.x, achieved.y - desired.y), achieved.z - desired.z);
+      if (pos_err_m > push_cartesian_target_pos_tol_m_) {
+        RCLCPP_WARN(get_logger(),
+                    "Cartesian push achieved pose differs from target "
+                    "(err=%.4f m > tol=%.4f m)",
+                    pos_err_m, push_cartesian_target_pos_tol_m_);
+      }
+
+      auto wrench = getLatestWrench();
+      if (wrench) {
+        const Eigen::Vector3d force = wrenchForceVec(*wrench) - wrench_bias;
+        const double contact_force = force.dot(push_dir);
+        const double force_magnitude = std::abs(contact_force);
+
+        result.max_force_n = std::max(result.max_force_n, force_magnitude);
+
+        RCLCPP_DEBUG(get_logger(), "Push: disp=%.4f m, force=%.2f N (threshold=%.1f N)",
+                     result.displacement_m, force_magnitude, stuck_force_threshold_n_);
+
+        if (force_magnitude >= emergency_force_threshold_n_) {
+          RCLCPP_WARN(get_logger(),
+                      "Emergency force threshold exceeded: %.2f N >= %.1f N",
+                      force_magnitude, emergency_force_threshold_n_);
+          result.outcome = PROBE_STUCK;
+          break;
+        }
+
+        if (force_magnitude >= stuck_force_threshold_n_) {
+          ++stuck_count;
+          if (stuck_count >= stuck_dwell_samples_) {
+            RCLCPP_INFO(get_logger(),
+                        "Block is STUCK: force=%.2f N sustained for %d samples",
+                        force_magnitude, stuck_count);
+            result.outcome = PROBE_STUCK;
+            break;
+          }
+        } else {
+          stuck_count = 0;
+        }
+      }
+
       if (result.displacement_m >= protrusion_target_m_) {
+        RCLCPP_INFO(get_logger(),
+                    "Block is LOOSE: pushed %.4f m (target %.4f m), max_force=%.2f N",
+                    result.displacement_m, protrusion_target_m_, result.max_force_n);
         result.outcome = PROBE_LOOSE;
         break;
       }
-  
-      rate.sleep();
     }
-    
-    // 7. Stop the robot (Send zero velocity)
-    geometry_msgs::msg::TwistStamped stop_twist;
-    stop_twist.header.stamp = now();
-    stop_twist.header.frame_id = probe_frame_;
-    servo_pub_->publish(stop_twist);
-  
+
     return result;
   }
 
@@ -485,6 +602,7 @@ class MtcProbeBlockServer : public rclcpp::Node {
   // ---------------------------------------------------------------------------
   bool runProbe(const geometry_msgs::msg::PoseStamped& block_pose,
                 const std::string& block_id,
+                uint32_t block_index,
                 PushResult& push_result_out) {
     push_result_out = {};
     bool block_attached = false;
@@ -501,7 +619,7 @@ class MtcProbeBlockServer : public rclcpp::Node {
 
     // Phase 1: MTC approach (close gripper + move to contact pose)
     RCLCPP_INFO(get_logger(), "Phase 1: MTC approach");
-    mtc::Task approach_task = buildApproachTask(block_id);
+    mtc::Task approach_task = buildApproachTask(block_id, block_index);
     if (!planAndExecuteMtc(approach_task, "Phase1-Approach")) {
       push_result_out.outcome = PROBE_ERROR;
       return false;
@@ -509,10 +627,11 @@ class MtcProbeBlockServer : public rclcpp::Node {
 
     block_attached = attachBlockForSim(block_id);
 
-    // Phase 2: FT-monitored push
+    // Phase 2: FT-monitored Cartesian push
     RCLCPP_INFO(get_logger(), "Phase 2: FT-monitored push (target=%.4f m, stuck_threshold=%.1f N)",
                 protrusion_target_m_, stuck_force_threshold_n_);
     push_result_out = runFtPushLoop();
+
     detachBlockIfAttached(block_id, block_attached);
 
     // Phase 3: MTC retreat + return home
@@ -561,7 +680,7 @@ class MtcProbeBlockServer : public rclcpp::Node {
     const std::string block_id = mtc_jenga::blockIdFromIndex(goal->block_index);
 
     PushResult push_result;
-    const bool ok = runProbe(goal->block_pose, block_id, push_result);
+    const bool ok = runProbe(goal->block_pose, block_id, goal->block_index, push_result);
 
     send_fb("probe_done", 100.0F);
 
@@ -603,7 +722,6 @@ class MtcProbeBlockServer : public rclcpp::Node {
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr sub_estop_active_;
   rclcpp::Subscription<geometry_msgs::msg::WrenchStamped>::SharedPtr sub_ft_;
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr pub_status_;
-  rclcpp::Publisher<geometry_msgs::msg::TwistStamped>::SharedPtr servo_pub_;
 
   mutable std::mutex ft_mutex_;
   geometry_msgs::msg::WrenchStamped ft_latest_;
@@ -627,10 +745,12 @@ class MtcProbeBlockServer : public rclcpp::Node {
   double acc_scale_{0.20};
   double cart_step_{0.001};
 
-  double approach_min_{0.01}, approach_max_{0.05};
+  double approach_min_{0.02}, approach_max_{0.05};
   double retreat_distance_{0.02};
 
   double probe_r_{0.0}, probe_p_{M_PI / 2.0}, probe_y_{0.0};
+  double probe_r_alt_{0.0};
+  double probe_angle_delta_{M_PI / 12.0};
 
   double stuck_force_threshold_n_{10.0};
   double emergency_force_threshold_n_{30.0};
@@ -645,9 +765,12 @@ class MtcProbeBlockServer : public rclcpp::Node {
   double push_cartesian_retry_wait_s_{0.05};
   std::vector<double> push_cartesian_step_scales_{1.0, 0.5, 0.25};
 
+  double push_timeout_s_{10.0};
+
   std::string probe_subframe_{"probe_plus"};
   double probe_offset_m_{0.045};
   bool use_sim_block_attach_{true};
+  int blocks_per_layer_{3};
 
   std::atomic<bool> busy_{false};
   std::atomic<int> active_block_index_{-1};

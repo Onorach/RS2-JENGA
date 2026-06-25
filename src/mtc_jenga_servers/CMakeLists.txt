@@ -11,6 +11,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 find_package(ament_cmake REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(jenga_interfaces REQUIRED)
+find_package(moveit_core REQUIRED)
 find_package(moveit_msgs REQUIRED)
 find_package(moveit_ros_planning_interface REQUIRED)
 find_package(moveit_task_constructor_core REQUIRED)
@@ -91,6 +92,7 @@ target_include_directories(mtc_probe_block_server PUBLIC $<BUILD_INTERFACE:${CMA
 ament_target_dependencies(mtc_probe_block_server
   geometry_msgs
   jenga_interfaces
+  moveit_core
   moveit_msgs
   moveit_ros_planning_interface
   moveit_task_constructor_core

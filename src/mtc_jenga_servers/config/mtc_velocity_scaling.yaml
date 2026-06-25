@@ -18,6 +18,9 @@ mtc_probe_block_server:
     max_acceleration_scaling_factor: 0.1
     probe_frame: probe_tip
     use_sim_block_attach: true
+    blocks_per_layer: 3
+    probe_frame_roll: -3.14159265358979   # even layers (0, 2, 4, …) — -180 deg
+    probe_frame_roll_alt: 0.0             # odd layers  (1, 3, 5, …) —    0 deg
 
 mtc_extract_side_block_server:
   ros__parameters:
