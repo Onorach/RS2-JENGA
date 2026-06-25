@@ -403,7 +403,8 @@ def analyse_layer(
 
     for block in endon_blocks:
         if block["present"] and "mean_x_px" in block:
-            # Image x increases to the right; camera +Y is defined as left.
+            # Image x increases to the right; camera +Y is image-left (mapped to
+            # global -Y after the flipped mount — see block_pose_global.py).
             lateral_px = frame_centre_x - block["mean_x_px"]
             mx = block.get("mean_x_px")
             my = block.get("mean_y_px")

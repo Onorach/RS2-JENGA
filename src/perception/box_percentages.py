@@ -27,7 +27,9 @@ except ImportError:
 
 from colour_identification import frame_colour_mask
 from centre_seam import closest_depth_column
-from perception_config import HSV_RANGES, COLOUR_BGR
+from camera_image_geometry import endon_outside_edge_x as _geometry_outside_edge_x
+from camera_image_geometry import near_face_x_mask
+from perception_config import HSV_RANGES, COLOUR_BGR, NEAR_FACE_SEAM_X_STAT
 
 DOMINANT_PCT      = 55.0   # Above this → side-on face.
 MIN_COLOUR_PCT    = 10.0   # Colour must cover at least this % of the cell to count.
@@ -48,10 +50,7 @@ def _quad_mask(shape: tuple[int, int], corners: list[tuple[int, int]]) -> np.nda
 
 def endon_outside_edge_x(cell: dict, orientation: str) -> float:
     """Image x of the tower's outside face edge on the end-on cell quad."""
-    corners = cell["corners"]
-    if orientation == "left":
-        return float(min(corners[0][0], corners[2][0]))
-    return float(max(corners[1][0], corners[3][0]))
+    return _geometry_outside_edge_x(cell, orientation)
 
 
 def _lane_strip_masks(shape: tuple[int, int], cell: dict) -> list[np.ndarray]:
@@ -219,7 +218,7 @@ def _depth_split_x_from_closest_pixels(
     closest-to-camera-column primitive (here gated to exactly the minimum depth).
     """
     split_x, _ = closest_depth_column(
-        depth_frame, mask, depth_tol_mm=0.0, stat="mean",
+        depth_frame, mask, depth_tol_mm=0.0, stat=NEAR_FACE_SEAM_X_STAT,
     )
     return split_x
 
@@ -286,10 +285,9 @@ def colour_mean_xy_in_cell(
 
         split_x = _depth_split_x_from_closest_pixels(depth_frame, active_mask)
         if split_x is not None:
-            if orientation == "left":
-                outside_mask = active_mask & (x_grid <= float(split_x))
-            else:
-                outside_mask = active_mask & (x_grid >= float(split_x))
+            outside_mask = active_mask & near_face_x_mask(
+                x_grid, float(split_x), orientation,
+            )
             ys, xs = np.where(outside_mask)
             if len(xs) >= max(10, MIN_COLOUR_PIXELS // 5):
                 if use_median:

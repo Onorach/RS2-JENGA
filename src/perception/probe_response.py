@@ -14,7 +14,10 @@ import json
 import time
 from collections import deque
 
+import numpy as np
+
 from box_percentages import endon_outside_edge_x
+from camera_image_geometry import outer_edge_x_on_endon_face
 from block_centroids import compute_layer_blob_centroids, compute_layer_centroids
 from layer_analysis import _assign_blobs_to_lanes
 from perception_config import PROBE_TARGET_BLOCK_ID_PLACEHOLDER, CENTROID_ABORT_SHIFT_PCT
@@ -129,8 +132,9 @@ def _layer_outside_edge_x(
             return endon_outside_edge_x(cell, orientation)
     if not fallback_centroid_xs:
         return None
-    return (
-        min(fallback_centroid_xs) if orientation == "left" else max(fallback_centroid_xs)
+    return outer_edge_x_on_endon_face(
+        np.asarray(fallback_centroid_xs, dtype=np.float64),
+        orientation,
     )
 
 

@@ -10,6 +10,7 @@ import numpy as np
 
 from perception_config import (
     CAMERA_GLOBAL_POSITION_MM,
+    CAMERA_LOCAL_AXIS_SIGN,
     BLOCK_YAW_DEG_ASSUMED,
 )
 
@@ -68,9 +69,12 @@ def build_block_pose_mm(
     }
     pose_global_mm: dict[str, object] = {
         "position": {
-            "x": x_local_mm + float(CAMERA_GLOBAL_POSITION_MM[0]),
-            "y": y_local_mm + float(CAMERA_GLOBAL_POSITION_MM[1]),
-            "z": z_local_mm + float(CAMERA_GLOBAL_POSITION_MM[2]),
+            "x": float(CAMERA_GLOBAL_POSITION_MM[0])
+            + float(CAMERA_LOCAL_AXIS_SIGN[0]) * x_local_mm,
+            "y": float(CAMERA_GLOBAL_POSITION_MM[1])
+            + float(CAMERA_LOCAL_AXIS_SIGN[1]) * y_local_mm,
+            "z": float(CAMERA_GLOBAL_POSITION_MM[2])
+            + float(CAMERA_LOCAL_AXIS_SIGN[2]) * z_local_mm,
         },
         "orientation": orientation_xyzw,
     }

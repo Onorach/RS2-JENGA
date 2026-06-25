@@ -14,8 +14,7 @@ from collections import deque
 import cv2
 import numpy as np
 from std_msgs.msg import String
-from geometry_msgs.msg import Pose
-from jenga_interfaces.msg import JengaBlockState, JengaBlockStates
+from jenga_interfaces.msg import JengaBlockStates
 
 from colour_identification import classify_roi_bgr, compute_roi, compute_display_crop
 from box_percentages import compute_percentages, build_debug_image
@@ -51,7 +50,6 @@ from tower_analysis import (
 from perception_config import (
     TOWER_ANALYSIS,
     BLOCK_ANALYSIS,
-    BLOCK_POSE_WORLD_FRAME,
     GRID_LOCK_EDGE_ACCUMULATION_FRAMES,
     BLOCK_MISSING_CONFIRM_FRAMES,
 )
@@ -63,6 +61,7 @@ from probe_response import (
 )
 from block_identity_tracker import BlockIdentityTracker
 from placement_tracker import PlacementTracker
+from block_states_publish import BlockStatesPublishCache, build_block_states_msg
 
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
@@ -158,6 +157,7 @@ def _run_loop(
     identity_tracker = BlockIdentityTracker()
     placement_tracker = PlacementTracker()
     slot_absence_streaks = SlotAbsenceStreakTracker(BLOCK_MISSING_CONFIRM_FRAMES)
+    block_states_cache = BlockStatesPublishCache()
     _last_tower_finder_print: float = 0.0
     if probe_monitor is None:
         probe_monitor = ProbeResponseMonitor()
@@ -189,6 +189,15 @@ def _run_loop(
         probe_monitor.set_target_block_id(_selected_probe_block_id)
         print(f"[probe] selected block {_selected_probe_block_id} for probing")
 
+    def _publish_tower(tower_data) -> None:
+        if publish_top_layer is None:
+            return
+        publish_top_layer(
+            tower_data,
+            absence_streaks=slot_absence_streaks,
+            block_states_cache=block_states_cache,
+        )
+
     def _reset_grid_pipeline() -> None:
         nonlocal grid_detection_started, grid_frame_n, points_locked
         nonlocal locked_layer_cells, accumulated_grid_points, live_valid_points_crop
@@ -209,6 +218,8 @@ def _run_loop(
         probe_monitor.set_target_block_id(None)
         identity_tracker.reset()
         placement_tracker.reset()
+        slot_absence_streaks.reset()
+        block_states_cache.reset()
         _destroy_windows(_GRID_DETECTION_WINDOWS + _POST_LOCK_WINDOWS)
 
     while True:
@@ -289,7 +300,7 @@ def _run_loop(
                 if depth_mm is None
                 else depth_mm[roi_y:roi_y + rh, roi_x:roi_x + rw]
             )
-            disp_grey, lines_grey, edges_colour, edges_seam = build_edge_display(
+            disp_grey, lines_grey, edges_colour, edges_seam, seam_center_x = build_edge_display(
                 colour_img, depth_roi=depth_roi,
             )
             cv2.imshow("Canny (colour mask)", edges_colour)
@@ -310,7 +321,9 @@ def _run_loop(
             last_grid_points = find_hv_intersections_from_classified(
                 horiz_hist, vert_hist, history_disp.shape,
             )
-            last_grid_points = filter_points_by_x_bands(last_grid_points, rw)
+            last_grid_points = filter_points_by_x_bands(
+                last_grid_points, rw, center_x_px=seam_center_x,
+            )
             accumulated_grid_points.extend(last_grid_points)
 
             # Use accumulated points from frame 0 up to lock time.
@@ -339,6 +352,7 @@ def _run_loop(
                 points_locked = True
                 placement_tracker.configure_layers(locked_layer_cells)
                 slot_absence_streaks.reset()
+                block_states_cache.reset()
                 _destroy_windows(_GRID_DETECTION_WINDOWS)
                 if on_points_locked is not None:
                     on_points_locked()
@@ -509,7 +523,6 @@ def _run_loop(
                     ),
                 )
                 placement_tracker.note_absences(tower, identity_tracker)
-                slot_absence_streaks.update(tower)
             _last_tower_state = tower
             if placement_tracker.update(
                 bgr,
@@ -524,12 +537,15 @@ def _run_loop(
                         placement_tracker.extrapolated_layers(),
                     ),
                 )
-            if tower and publish_top_layer:
-                # Bottom-first (L0 at index 0) so GUI L1 = bottom, L6 = top.
+            if tower and publish_top_layer and not probe_active:
+                # Hold the last published tower in the GUI during topple monitoring.
+                # Perception skips identity restore and partial centroid work while
+                # probing, so live tower snapshots are unreliable for block_states.
                 tower_bottom_up = sorted(
                     _last_tower_state, key=lambda layer: layer["layer"],
                 )
-                publish_top_layer(tower_bottom_up)
+                slot_absence_streaks.update(tower_bottom_up)
+                _publish_tower(tower_bottom_up)
 
             if probe_bridge is not None:
                 probe_bridge.sync_probe_from_robot(_last_tower_state)
@@ -542,7 +558,6 @@ def _run_loop(
                     row_cells=row_cells,
                 )
             if probe_active:
-                slot_absence_streaks.update(_last_tower_state)
                 identity_tracker.apply(
                     _last_tower_state,
                     anchor_layer_idx=_anchor_layer_idx(
@@ -708,58 +723,29 @@ class _ImageBridge(Node):
         }
         self.sync_probe_from_robot()
 
-    def publish_top_layer(self, tower_data) -> None:
+    def publish_top_layer(
+        self,
+        tower_data,
+        *,
+        absence_streaks=None,
+        block_states_cache=None,
+    ) -> None:
         """Publish full tower state (list of layer dicts) on /top_layer_state."""
-        msg      = String()
+        msg = String()
         msg.data = json.dumps(tower_data)
         self.top_layer_pub.publish(msg)
-        self.block_states_pub.publish(self._build_block_states_msg(tower_data))
-        self.sync_probe_from_robot(tower_data)
-
-    def _build_block_states_msg(self, tower_data) -> JengaBlockStates:
-        """Build typed block-state message from tower JSON-like layer dicts."""
-        out = JengaBlockStates()
-        out.header.stamp = self.get_clock().now().to_msg()
-        out.header.frame_id = BLOCK_POSE_WORLD_FRAME
-
-        blocks: list[JengaBlockState] = []
-        for layer in tower_data:
-            layer_idx = int(layer.get("layer", -1))
-            for pos_idx, block in enumerate(layer.get("blocks", [])):
-                if not block.get("present"):
-                    continue
-                pose_global_mm = block.get("pose_global_mm")
-                if not pose_global_mm:
-                    continue
-                pos = pose_global_mm.get("position", {})
-                ori = pose_global_mm.get("orientation", {})
-
-                b = JengaBlockState()
-                b.block_id = int(block.get("block_index", -1))
-                b.colour = str(block.get("colour", "unknown"))
-                b.layer = max(layer_idx, 0)
-                # Per-layer slot: front=0, mid=1, back=2.
-                b.layer_position = max(0, min(2, int(pos_idx)))
-
-                pose = Pose()
-                # geometry_msgs/Pose uses SI units (metres).
-                pose.position.x = float(pos.get("x", 0.0)) / 1000.0
-                pose.position.y = float(pos.get("y", 0.0)) / 1000.0
-                pose.position.z = float(pos.get("z", 0.0)) / 1000.0
-                pose.orientation.x = float(ori.get("x", 0.0))
-                pose.orientation.y = float(ori.get("y", 0.0))
-                pose.orientation.z = float(ori.get("z", 0.0))
-                pose.orientation.w = float(ori.get("w", 1.0))
-                b.pose = pose
-                blocks.append(b)
-
-        blocks.sort(key=lambda item: item.block_id)
-        out.blocks = blocks
+        block_states_msg = build_block_states_msg(
+            tower_data,
+            stamp=self.get_clock().now().to_msg(),
+            absence_streaks=absence_streaks,
+            cache=block_states_cache,
+        )
+        self.block_states_pub.publish(block_states_msg)
         self._blocks_by_slot = {
             (int(b.layer), int(b.layer_position)): int(b.block_id)
-            for b in blocks
+            for b in block_states_msg.blocks
         }
-        return out
+        self.sync_probe_from_robot(tower_data)
 
     def _cb(self, msg: Image) -> None:
         enc = (msg.encoding or "").lower()
@@ -821,50 +807,24 @@ class _TowerStatePublisher(Node):
             JengaBlockStates, "/jenga/block_states", 10
         )
 
-    def publish_top_layer(self, tower_data) -> None:
+    def publish_top_layer(
+        self,
+        tower_data,
+        *,
+        absence_streaks=None,
+        block_states_cache=None,
+    ) -> None:
         msg = String()
         msg.data = json.dumps(tower_data)
         self.top_layer_pub.publish(msg)
-        self.block_states_pub.publish(self._build_block_states_msg(tower_data))
-
-    def _build_block_states_msg(self, tower_data) -> JengaBlockStates:
-        out = JengaBlockStates()
-        out.header.stamp = self.get_clock().now().to_msg()
-        out.header.frame_id = BLOCK_POSE_WORLD_FRAME
-
-        blocks: list[JengaBlockState] = []
-        for layer in tower_data:
-            layer_idx = int(layer.get("layer", -1))
-            for pos_idx, block in enumerate(layer.get("blocks", [])):
-                if not block.get("present"):
-                    continue
-                pose_global_mm = block.get("pose_global_mm")
-                if not pose_global_mm:
-                    continue
-                pos = pose_global_mm.get("position", {})
-                ori = pose_global_mm.get("orientation", {})
-
-                b = JengaBlockState()
-                b.block_id = int(block.get("block_index", -1))
-                b.colour = str(block.get("colour", "unknown"))
-                b.layer = max(layer_idx, 0)
-                b.layer_position = max(0, min(2, int(pos_idx)))
-
-                pose = Pose()
-                pose.position.x = float(pos.get("x", 0.0)) / 1000.0
-                pose.position.y = float(pos.get("y", 0.0)) / 1000.0
-                pose.position.z = float(pos.get("z", 0.0)) / 1000.0
-                pose.orientation.x = float(ori.get("x", 0.0))
-                pose.orientation.y = float(ori.get("y", 0.0))
-                pose.orientation.z = float(ori.get("z", 0.0))
-                pose.orientation.w = float(ori.get("w", 1.0))
-                b.pose = pose
-                blocks.append(b)
-
-        blocks.sort(key=lambda item: item.block_id)
-        out.blocks = blocks
-        return out
-
+        self.block_states_pub.publish(
+            build_block_states_msg(
+                tower_data,
+                stamp=self.get_clock().now().to_msg(),
+                absence_streaks=absence_streaks,
+                cache=block_states_cache,
+            )
+        )
 
 # ---------------------------------------------------------------------------
 # Executor helpers
