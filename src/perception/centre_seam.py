@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import numpy as np
 
+from camera_image_geometry import seam_x_from_near_pixels
 from perception_config import (
     COLOUR_BGR,
     CENTRE_SEAM_CLOSEST_PCT,
@@ -45,6 +46,7 @@ from perception_config import (
     CENTRE_SEAM_MIN_COLOUR_PX,
     CENTRE_SEAM_ROW_MERGE_PX,
     CENTRE_SEAM_MIN_BAND_PX,
+    CENTRE_SEAM_X_STAT,
 )
 
 
@@ -106,8 +108,12 @@ def closest_depth_column(
     near = dv <= thr
     if not np.any(near):
         return None, None
-    fn = np.median if str(stat).strip().lower() == "median" else np.mean
-    return float(fn(xv[near])), min_d
+    stat_name = str(stat).strip().lower()
+    if stat_name in ("min", "max", "mean", "median"):
+        column_x = seam_x_from_near_pixels(xv[near], stat=stat_name)
+    else:
+        column_x = seam_x_from_near_pixels(xv[near])
+    return float(column_x), min_d
 
 
 def _cluster_sorted_values(values: list[float], merge_px: float) -> list[float]:
@@ -209,7 +215,7 @@ def _robust_closest_x(
         depth_roi,
         mask,
         closest_pct=closest_pct,
-        stat="median",
+        stat=CENTRE_SEAM_X_STAT,
         min_valid_px=min_valid_px,
     )
     return seam_x

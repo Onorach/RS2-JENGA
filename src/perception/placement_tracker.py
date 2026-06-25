@@ -21,6 +21,11 @@ from box_percentages import (
     compute_percentages,
 )
 from block_centroids import blob_area_at_xy, recover_colour_centroid
+from camera_image_geometry import (
+    outer_edge_x_on_endon_face,
+    penetration_from_outer_edge_px,
+    penetration_span_px,
+)
 from colour_identification import frame_colour_mask
 from layer_analysis import _count_extrapolated_layers
 from perception_config import (
@@ -145,9 +150,7 @@ def _outer_edge_x_on_endon_face(
     orientation: str,
 ) -> float:
     """Outermost x among end-on-face pixels (toward the tower outside edge)."""
-    if orientation == "left":
-        return float(np.min(xs_side))
-    return float(np.max(xs_side))
+    return outer_edge_x_on_endon_face(xs_side, orientation)
 
 
 def _slot_threshold_label(penetration_pct: float) -> str:
@@ -180,10 +183,7 @@ def _format_blob_slot_reason(
     endon_px: int,
     full_px: int,
 ) -> str:
-    if orientation == "left":
-        span = float(centre_seam_x - outside_x)
-    else:
-        span = float(outside_x - centre_seam_x)
+    span = penetration_span_px(centre_seam_x, outside_x, orientation)
     return (
         f"slot={SLOT_NAMES[slot_idx]} ({_slot_threshold_label(penetration_pct)}); "
         f"orient={orientation} seam_x={centre_seam_x:.1f} outside_x={outside_x:.1f} "
@@ -198,16 +198,13 @@ def measure_slot_from_outer_edge(
     outside_edge_x: float,
     orientation: str,
 ) -> tuple[int, float]:
-    if orientation == "left":
-        span = float(centre_seam_x - outside_edge_x)
-        if span <= 1.0:
-            return 1, 50.0
-        penetration = (float(centre_seam_x - outer_edge_x) / span) * 100.0
-    else:
-        span = float(outside_edge_x - centre_seam_x)
-        if span <= 1.0:
-            return 1, 50.0
-        penetration = (float(outer_edge_x - centre_seam_x) / span) * 100.0
+    span = penetration_span_px(centre_seam_x, outside_edge_x, orientation)
+    if span <= 1.0:
+        return 1, 50.0
+    penetration = (
+        penetration_from_outer_edge_px(outer_edge_x, centre_seam_x, orientation)
+        / span
+    ) * 100.0
 
     penetration = float(np.clip(penetration, 0.0, 100.0))
     if penetration < float(PLACEMENT_SLOT_FRONT_MAX_PCT):

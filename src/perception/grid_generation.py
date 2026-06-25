@@ -278,9 +278,34 @@ def draw_lines(base_img: np.ndarray, lines: list[tuple]) -> np.ndarray:
     return draw_classified_lines(base_img, horiz_lines, vert_lines)
 
 
+def _x_band_limits(
+    roi_width: int,
+    *,
+    center_x_px: float | None = None,
+) -> tuple[float, float, float]:
+    """Return (side_frac, center_lo_frac, center_hi_frac) for x-band filters."""
+    side_frac = max(0.0, min(0.5, POINT_VALID_SIDE_BAND_PCT / 100.0))
+    half_center = max(0.0, POINT_VALID_CENTER_BAND_PCT / 100.0) * 0.5
+    if center_x_px is not None and roi_width > 1:
+        center_frac = float(center_x_px) / float(max(1, roi_width - 1))
+    else:
+        center_frac = 0.5
+    center_frac = max(half_center, min(1.0 - half_center, center_frac))
+    return side_frac, center_frac - half_center, center_frac + half_center
+
+
+def _median_seam_x_px(vert_centre: list[tuple]) -> float | None:
+    if not vert_centre:
+        return None
+    xs = [0.5 * (float(x1) + float(x2)) for x1, _y1, x2, _y2 in vert_centre]
+    return float(np.median(xs))
+
+
 def filter_vertical_lines_by_x_bands(
     vert_lines: list[tuple],
     roi_width: int,
+    *,
+    center_x_px: float | None = None,
 ) -> list[tuple]:
     """
     Keep only vertical lines in the left/right outer bands or the centre band.
@@ -294,11 +319,10 @@ def filter_vertical_lines_by_x_bands(
     if roi_width <= 0 or not vert_lines:
         return []
 
-    side_frac   = max(0.0, min(0.5, POINT_VALID_SIDE_BAND_PCT   / 100.0))
-    half_center = max(0.0, POINT_VALID_CENTER_BAND_PCT / 100.0) * 0.5
-    center_lo   = 0.5 - half_center
-    center_hi   = 0.5 + half_center
-    denom       = float(max(1, roi_width - 1))
+    side_frac, center_lo, center_hi = _x_band_limits(
+        roi_width, center_x_px=center_x_px,
+    )
+    denom = float(max(1, roi_width - 1))
 
     kept: list[tuple] = []
     for x1, y1, x2, y2 in vert_lines:
@@ -315,7 +339,7 @@ def filter_vertical_lines_by_x_bands(
 def build_edge_display(
     colour_img: np.ndarray,
     depth_roi: np.ndarray | None = None,
-) -> tuple[np.ndarray, list[tuple], np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, list[tuple], np.ndarray, np.ndarray, float | None]:
     """
     Full pipeline: edges → lines → combined display.
 
@@ -337,6 +361,7 @@ def build_edge_display(
     edges_colour : single-channel Canny from the colour mask.
     edges_seam   : single-channel image of the detected depth-seam columns,
                    rendered for the centre-seam preview window.
+    seam_center_x: median depth-seam x in ROI pixels, or None if unavailable.
     """
     edges_colour = compute_edges(colour_img)
     # Colour-mask edges run on the full ROI.
@@ -350,12 +375,14 @@ def build_edge_display(
     )
     horiz_colour, vert_colour = classify_lines(lines_colour_all)
 
-    # Drop the interior colour-boundary verticals (block-to-block seams between
-    # different colours): only the outer tower edges and the centre matter.
-    vert_colour = filter_vertical_lines_by_x_bands(vert_colour, colour_img.shape[1])
-
     # Per-layer depth seam: one vertical segment per layer band drives the grid.
     vert_centre = detect_centre_seam_lines(colour_img, depth_roi, horiz_colour)
+    seam_center_x = _median_seam_x_px(vert_centre)
+
+    # Drop interior colour-boundary verticals; anchor the centre band on the seam.
+    vert_colour = filter_vertical_lines_by_x_bands(
+        vert_colour, colour_img.shape[1], center_x_px=seam_center_x,
+    )
 
     # Render the detected seams into a single-channel image for the preview window.
     edges_seam = np.zeros(colour_img.shape[:2], dtype=np.uint8)
@@ -371,7 +398,7 @@ def build_edge_display(
         horiz_lines,
         vert_lines,
     )
-    return disp_grey, lines_all, edges_colour_search, edges_seam
+    return disp_grey, lines_all, edges_colour_search, edges_seam, seam_center_x
 
 
 # ---------------------------------------------------------------------------
@@ -381,16 +408,17 @@ def build_edge_display(
 def filter_points_by_x_bands(
     points_roi: list[tuple[int, int]],
     roi_width: int,
+    *,
+    center_x_px: float | None = None,
 ) -> list[tuple[int, int]]:
     """Keep only points in the left/right outer bands and the centre band."""
     if roi_width <= 0 or not points_roi:
         return []
 
-    side_frac   = max(0.0, min(0.5, POINT_VALID_SIDE_BAND_PCT   / 100.0))
-    half_center = max(0.0, POINT_VALID_CENTER_BAND_PCT / 100.0) * 0.5
-    center_lo   = 0.5 - half_center
-    center_hi   = 0.5 + half_center
-    denom       = float(max(1, roi_width - 1))
+    side_frac, center_lo, center_hi = _x_band_limits(
+        roi_width, center_x_px=center_x_px,
+    )
+    denom = float(max(1, roi_width - 1))
 
     return [
         (ix, iy) for ix, iy in points_roi

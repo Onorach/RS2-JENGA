@@ -63,10 +63,17 @@ import cv2
 
 from colour_identification import frame_colour_mask
 from centre_seam import closest_depth_column
+from camera_image_geometry import (
+    clamp_centroid_to_endon_side,
+    clamp_centroid_to_near_face_side,
+    endon_side_x_mask,
+    near_face_x_mask,
+)
 from perception_config import (
     HSV_RANGES,
     CENTROID_HINT_SEARCH_RADIUS_PX,
     BLOCK_CENTROID_MIN_BLOB_PX,
+    NEAR_FACE_SEAM_X_STAT,
 )
 
 # Minimum pixels for a colour blob to be considered valid.
@@ -217,7 +224,9 @@ def _split_x_and_min_depth(
     min_depth_mm is exposed so callers can compare across cells to decide which
     cell is seeing the true near face (see _combined_split_x_per_colour).
     """
-    return closest_depth_column(depth, mask, depth_tol_mm=1.0, stat="mean")
+    return closest_depth_column(
+        depth, mask, depth_tol_mm=1.0, stat=NEAR_FACE_SEAM_X_STAT,
+    )
 
 
 def _split_x_from_closest_pixels(
@@ -240,9 +249,7 @@ def _endon_side_x_mask(
     orientation: str,
 ) -> np.ndarray:
     """True where x lies on the end-on side of the layer centre seam."""
-    if orientation == "left":
-        return x_grid <= float(centre_seam_x)
-    return x_grid >= float(centre_seam_x)
+    return endon_side_x_mask(x_grid, centre_seam_x, orientation)
 
 
 def _enforce_centroid_endon_side(
@@ -251,9 +258,7 @@ def _enforce_centroid_endon_side(
     orientation: str,
 ) -> float:
     """Clamp centroid x to the end-on half of the layer (correct side of seam)."""
-    if orientation == "left":
-        return min(cx, float(centre_seam_x))
-    return max(cx, float(centre_seam_x))
+    return clamp_centroid_to_endon_side(cx, centre_seam_x, orientation)
 
 
 def _finalize_centroid_x(
@@ -271,17 +276,8 @@ def _finalize_centroid_x(
 def _enforce_centroid_face_side(cx: float, split_x: float, orientation: str) -> float:
     """
     Clamp a centroid x so it always sits on the near-face side of the split line.
-
-    For a right-facing layer the near face is at HIGH x (cx >= split_x).
-    For a left-facing layer the near face is at LOW x  (cx <= split_x).
-
-    This must be applied to every path that returns a centroid so the position
-    never drifts to the far-face side regardless of which fallback path ran.
     """
-    if orientation == "left":
-        return min(cx, float(split_x))
-    else:
-        return max(cx, float(split_x))
+    return clamp_centroid_to_near_face_side(cx, split_x, orientation)
 
 
 def _combined_split_info_per_colour(
@@ -397,10 +393,7 @@ def _compute_combined_centroid(
     x_grid = np.broadcast_to(np.arange(iw, dtype=np.float32), (ih, iw))
     endon_side = _endon_side_x_mask(x_grid, centre_seam_x, orientation)
 
-    if orientation == "left":
-        face_mask = endon_mask & endon_side & (x_grid <= float(split_x))
-    else:
-        face_mask = endon_mask & endon_side & (x_grid >= float(split_x))
+    face_mask = endon_mask & endon_side & near_face_x_mask(x_grid, split_x, orientation)
 
     ys, xs = np.where(face_mask)
     if len(xs) < max(10, MIN_COLOUR_PIXELS // 5):
@@ -482,12 +475,7 @@ def _centroids_in_one_cell(
             else:
                 split_x = _split_x_from_closest_pixels(depth, active)
             if split_x is not None:
-                if orientation == "left":
-                    # Left-facing: near face is at LOW x (outside = left of split)
-                    face_mask = active & (x_grid <= float(split_x))
-                else:
-                    # Right-facing: near face is at HIGH x (outside = right of split)
-                    face_mask = active & (x_grid >= float(split_x))
+                face_mask = active & near_face_x_mask(x_grid, float(split_x), orientation)
 
                 ys, xs = np.where(face_mask)
                 if len(xs) >= max(10, MIN_COLOUR_PIXELS // 5):

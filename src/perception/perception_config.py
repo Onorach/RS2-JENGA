@@ -10,7 +10,7 @@ TOWER_ANALYSIS = False
 BLOCK_ANALYSIS = True
 
 # Search area centre and fraction of the full frame
-SEARCH_AREA = (0.542, 0.621, 0.402, 0.650)
+SEARCH_AREA = (0.502, 0.510, 0.347, 0.602)
 
 # Crop margin around the search area
 SEARCH_AREA_MARGIN     = 0.10
@@ -20,16 +20,22 @@ CAMERA_HFOV_DEG = 69.0
 
 # Camera origin in the global/world frame (mm).
 # Block global positions are computed as:
-#   block_global = block_camera_local + CAMERA_GLOBAL_POSITION_MM
-CAMERA_GLOBAL_POSITION_MM = (-318.5, 301.5, 0.0)
+#   global = CAMERA_GLOBAL_POSITION_MM + CAMERA_LOCAL_AXIS_SIGN * local
+# Local frame: +X = depth along optical axis, +Y = left in image, +Z = up.
+# Camera is mounted flipped 180° about world Z vs the original rig: it faces
+# global -X and image-left maps to global -Y.
+CAMERA_GLOBAL_POSITION_MM = (318.5, 301.5, 0.0)
+CAMERA_LOCAL_AXIS_SIGN = (-1.0, -1.0, 1.0)
+# Image-space left/right seam heuristics are unchanged unless the sensor image
+# itself is mirrored (set True only if near-face side tests need inverting).
+CAMERA_MOUNT_FLIPPED = False
 BLOCK_POSE_WORLD_FRAME = "world"
 
-# Camera rotation in global frame is currently treated as zero (identity).
-# If a non-identity camera rotation is needed later, add a full transform here.
+# Camera rotation in global frame is applied via CAMERA_LOCAL_AXIS_SIGN for
+# position and BLOCK_YAW_DEG_ASSUMED for block orientation (+180° vs original).
 
-# Current temporary assumption: each block is rotated 45 degrees about +Z
-# relative to the camera frame.
-BLOCK_YAW_DEG_ASSUMED = 45.0
+# Block yaw about +Z in the global frame (45° original assumption + 180° mount flip).
+BLOCK_YAW_DEG_ASSUMED = 225.0
 
 
 GRID_LOCK_EDGE_ACCUMULATION_FRAMES = 40
@@ -64,20 +70,20 @@ CENTROID_ABORT_SHIFT_PCT = 99.0
 # HSV ranges for colour identification
 HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
     "red": [
-        ((  0, 208, 182), (  5, 255, 255)),
-        ((165, 208, 182), (179, 255, 255)),
+        ((  0, 171, 170), ( 11, 255, 255)),
+        ((165, 171, 170), (179, 255, 255)),
     ],
     "yellow": [
-        (( 11, 212, 180), ( 32, 255, 255)),
+        (( 20,  98, 133), ( 48, 255, 255)),
     ],
     "green": [
-        (( 30,  58,  61), ( 95, 255, 255)),
+        (( 44, 139,  61), ( 90, 255, 255)),
     ],
     "blue": [
-        (( 75,  98, 113), (123, 255, 255)),
+        (( 75, 213, 161), (107, 255, 255)),
     ],
     "purple": [
-        ((108, 151,  40), (163, 255, 255)),
+        ((108, 217,  97), (163, 255, 255)),
     ],
 }
 
@@ -105,17 +111,17 @@ COLOUR_BGR: dict[str, tuple[int, int, int]] = {
 # Tower mask
 # ---------------------------------------------------------------------------
 
-TOWER_MASK_SAT_MIN                 = 125   # Min HSV saturation for tower foreground.
-TOWER_MASK_BRIGHTNESS_MIN          = 78    # Min HSV value (brightness) for tower foreground.
+TOWER_MASK_SAT_MIN                 = 196   # Min HSV saturation for tower foreground.
+TOWER_MASK_BRIGHTNESS_MIN          = 150    # Min HSV value (brightness) for tower foreground.
 TOWER_MASK_MORPH_CLOSE_PX          = 2    # Close kernel size — fills small mask holes. 0 = disabled.
-TOWER_MASK_MORPH_OPEN_PX           = 27    # Open kernel size — removes noise blobs. 0 = disabled.
+TOWER_MASK_MORPH_OPEN_PX           = 18    # Open kernel size — removes noise blobs. 0 = disabled.
 
 # ---------------------------------------------------------------------------
 # Edge detection
 # ---------------------------------------------------------------------------
 
 # Valid-point x-bands (percent of ROI width): outer-left, centre, outer-right.
-POINT_VALID_SIDE_BAND_PCT   = 8.0
+POINT_VALID_SIDE_BAND_PCT   = 11.0
 POINT_VALID_CENTER_BAND_PCT = 15.0
 
 # Canny thresholds used on the colour-mask image.
@@ -145,8 +151,13 @@ MAX_VERT_DEG     = 5.0   # Max deviation from 90° to classify as vertical.
 # need not be perfectly vertical.
 #
 # Robust closest-depth estimate: take the closest this-% of valid depth pixels
-# in the blob and use their median x as the seam. Lower = stricter (nearer the
-# true corner), but fewer pixels and noisier.
+# in the blob and use CENTRE_SEAM_X_STAT as the seam column. Median targets the
+# near corner between faces; min/max hit an outer blob edge and break the grid.
+CENTRE_SEAM_X_STAT = "median"
+
+# Per-colour near-face split line for centroids (mean of closest-depth pixels).
+NEAR_FACE_SEAM_X_STAT = "mean"
+
 CENTRE_SEAM_CLOSEST_PCT = 20.0
 
 # Minimum valid (non-zero, finite) depth pixels in a layer's blob before the
@@ -204,6 +215,11 @@ CENTROID_HINT_SEARCH_RADIUS_PX = 60
 # Consecutive frames a slot must read absent before it is labeled "missing"
 # in layer analysis and before placement search begins.
 BLOCK_MISSING_CONFIRM_FRAMES = 4
+
+# Consecutive absent frames before a block is dropped from /jenga/block_states.
+# Until then the last published pose is held so brief detection gaps do not
+# flicker the GUI.
+BLOCK_STATE_PUBLISH_MISSING_CONFIRM_FRAMES = 5
 
 # Backward-compatible alias for placement_tracker.
 PLACEMENT_MISSING_CONFIRM_FRAMES = BLOCK_MISSING_CONFIRM_FRAMES
