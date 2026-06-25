@@ -70,8 +70,8 @@ CENTROID_ABORT_SHIFT_PCT = 99.0
 # HSV ranges for colour identification
 HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] = {
     "red": [
-        ((  0, 171, 170), ( 11, 255, 255)),
-        ((165, 171, 170), (179, 255, 255)),
+        ((  0, 175, 149), ( 11, 255, 255)),
+        ((165, 175, 149), (179, 255, 255)),
     ],
     "yellow": [
         (( 20,  98, 133), ( 48, 255, 255)),
@@ -83,7 +83,7 @@ HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] =
         (( 75, 213, 161), (107, 255, 255)),
     ],
     "purple": [
-        ((110, 210, 124), (160, 255, 255)),
+        ((110, 187, 108), (160, 255, 255)),
     ],
 }
 
