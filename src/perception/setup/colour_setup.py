@@ -190,32 +190,12 @@ def _action_button_at(panel_x: int, panel_y: int, panel_w: int) -> str | None:
     return None
 
 
-def _info_line_for_colour(
-    colour: str,
-    ranges: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]],
-) -> str:
-    if colour == "red":
-        (lo0, hi0), (lo1, _hi1) = ranges["red"][0], ranges["red"][1]
-        return (
-            f"H min {lo1[0]} (wrap {lo1[0]}-{_RED_H_WRAP_MAX})  "
-            f"H max {hi0[0]} (wrap 0-{hi0[0]})  "
-            f"S[{lo0[1]}-{hi0[1]}]  V[{lo0[2]}-{hi0[2]}]"
-        )
-    lo, hi = ranges[colour][0]
-    return f"H[{lo[0]}-{hi[0]}]   S[{lo[1]}-{hi[1]}]   V[{lo[2]}-{hi[2]}]"
-
-
-def _draw_control_strip(panel: np.ndarray, info_line: str) -> None:
+def _draw_control_strip(panel: np.ndarray) -> None:
     panel[:] = (42, 42, 42)
-    hsv_line = info_line
-    cv2.putText(
-        panel, hsv_line, (12, 22),
-        cv2.FONT_HERSHEY_SIMPLEX, 0.48, (220, 220, 220), 1, cv2.LINE_AA,
-    )
     cv2.putText(
         panel,
         "Back/Next navigate setup  |  Finish saves all setup configs",
-        (12, 44),
+        (12, 26),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.42,
         (150, 150, 150),
@@ -414,16 +394,14 @@ def run_colour_setup(
             roi_bgr = bgr_full[ry : ry + rh, rx : rx + rw]
             colour_img, _ = classify_roi_bgr(roi_bgr, current_ranges)
 
-            colour = _active_colour()
-            mask_label = colour
-            info_line = _info_line_for_colour(colour, current_ranges)
+            mask_label = _active_colour()
 
             layout_w = max(colour_img.shape[1], _MIN_WIDTH)
             header = np.zeros((_HEADER_H, layout_w, 3), dtype=np.uint8)
             _draw_mask_header(header, mask_label, mask_index[0])
             colour_disp = _center_image_width(colour_img, layout_w)
             panel = np.zeros((_PANEL_H, layout_w, 3), dtype=np.uint8)
-            _draw_control_strip(panel, info_line)
+            _draw_control_strip(panel)
 
             composite = np.vstack([header, colour_disp, panel])
             colour_h = colour_disp.shape[0]

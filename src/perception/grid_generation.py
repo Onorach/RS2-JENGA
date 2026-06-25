@@ -15,20 +15,13 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from colour_identification import compute_roi
+from centre_seam import detect_centre_seam_lines
 from perception_config import (
     CANNY_MASK_LOW,
     CANNY_MASK_HIGH,
-    CANNY_ORIGINAL_LOW,
-    CANNY_ORIGINAL_HIGH,
-    CANNY_CENTRE_BAND_PCT,
-    CANNY_CENTRE_BAND_OFFSET_PCT,
     HOUGH_MASK_THRESHOLD,
     HOUGH_MASK_MIN_LENGTH,
     HOUGH_MASK_MAX_GAP,
-    HOUGH_ORIGINAL_THRESHOLD,
-    HOUGH_ORIGINAL_MIN_LENGTH,
-    HOUGH_ORIGINAL_MAX_GAP,
     MAX_HORIZ_DEG,
     MAX_VERT_DEG,
     CLEAN_MASK_KERNEL_PX,
@@ -37,6 +30,8 @@ from perception_config import (
     CLUSTER_MERGE_RADIUS_PX,
     POINT_VALID_SIDE_BAND_PCT,
     POINT_VALID_CENTER_BAND_PCT,
+    GRID_EXTRA_LAYERS_ON_TOP,
+    GRID_EXTRAPOLATED_CENTER_HEIGHT_EXTEND_PCT,
 )
 
 
@@ -58,27 +53,6 @@ def clean_colour_mask(colour_img: np.ndarray) -> np.ndarray:
 # Edge and line detection
 # ---------------------------------------------------------------------------
 
-def apply_centre_band_mask(
-    img: np.ndarray,
-    centre_band_pct: float | None = None,
-    centre_band_offset_pct: float | None = None,
-) -> np.ndarray:
-    """Zero pixels outside the configured horizontal band on the ROI."""
-    pct = float(CANNY_CENTRE_BAND_PCT if centre_band_pct is None else centre_band_pct)
-    offset_pct = float(
-        CANNY_CENTRE_BAND_OFFSET_PCT
-        if centre_band_offset_pct is None
-        else centre_band_offset_pct
-    )
-    if pct >= 100.0 or pct <= 0.0:
-        return img
-    h, w = img.shape[:2]
-    x_lo, x_hi = centre_band_x_bounds(w, pct, offset_pct)
-    masked = np.zeros_like(img)
-    masked[:, x_lo:x_hi] = img[:, x_lo:x_hi]
-    return masked
-
-
 def compute_edges(
     colour_img: np.ndarray,
     *,
@@ -97,94 +71,6 @@ def preview_mask_canny(colour_img: np.ndarray, *, canny_low: int | None = None, 
     """BGR preview of Canny edges from the colour-classification image."""
     edges = compute_edges(colour_img, canny_low=canny_low, canny_high=canny_high)
     return cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-
-
-def centre_band_x_bounds(
-    width: int,
-    centre_band_pct: float,
-    centre_band_offset_pct: float = 0.0,
-) -> tuple[int, int]:
-    """Return (x_lo, x_hi) for horizontal band in pixel coordinates."""
-    pct = float(centre_band_pct)
-    if pct >= 100.0 or pct <= 0.0:
-        return 0, width
-    band_w = max(1, int(round(width * pct / 100.0)))
-    centre_x = (width / 2.0) + (float(centre_band_offset_pct) / 100.0) * width
-    x_lo = int(round(centre_x - (band_w / 2.0)))
-    x_hi = x_lo + band_w
-    if x_lo < 0:
-        x_hi -= x_lo
-        x_lo = 0
-    if x_hi > width:
-        shift = x_hi - width
-        x_lo = max(0, x_lo - shift)
-        x_hi = width
-    return x_lo, x_hi
-
-
-def compute_original_edges(
-    original_bgr_img: np.ndarray,
-    target_shape: tuple[int, int],
-    *,
-    canny_low: int | None = None,
-    canny_high: int | None = None,
-) -> np.ndarray:
-    """
-    Canny edges from the original image in ROI space.
-
-    If original_bgr_img already matches target_shape, it is treated as a
-    pre-cropped ROI. Otherwise, ROI is extracted via compute_roi.
-    """
-    th, tw = target_shape
-    if original_bgr_img.shape[:2] == (th, tw):
-        original_roi = original_bgr_img
-    else:
-        roi_x, roi_y, roi_w, roi_h = compute_roi(
-            int(original_bgr_img.shape[1]), int(original_bgr_img.shape[0]),
-        )
-        original_roi = original_bgr_img[roi_y:roi_y + roi_h, roi_x:roi_x + roi_w]
-    if original_roi.shape[:2] != (th, tw):
-        original_roi = cv2.resize(
-            original_roi, (int(tw), int(th)), interpolation=cv2.INTER_LINEAR,
-        )
-    low = int(CANNY_ORIGINAL_LOW if canny_low is None else canny_low)
-    high = int(CANNY_ORIGINAL_HIGH if canny_high is None else canny_high)
-    return cv2.Canny(cv2.cvtColor(original_roi, cv2.COLOR_BGR2GRAY), low, high)
-
-
-def preview_original_canny_views(
-    roi_bgr: np.ndarray,
-    *,
-    canny_low: int | None = None,
-    canny_high: int | None = None,
-    centre_band_pct: float | None = None,
-    centre_band_offset_pct: float | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Return BGR previews: full Canny on ROI, then centre-band masked edges."""
-    th, tw = roi_bgr.shape[:2]
-    edges = compute_original_edges(
-        roi_bgr, (th, tw), canny_low=canny_low, canny_high=canny_high,
-    )
-    banded = apply_centre_band_mask(
-        edges,
-        centre_band_pct=centre_band_pct,
-        centre_band_offset_pct=centre_band_offset_pct,
-    )
-    full_bgr = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-    band_bgr = cv2.cvtColor(banded, cv2.COLOR_GRAY2BGR)
-    return full_bgr, band_bgr
-
-
-def compute_combined_edges(
-    colour_img: np.ndarray,
-    original_bgr_img: np.ndarray | None = None,
-) -> np.ndarray:
-    """OR-combine Canny from the colour mask and (optionally) the original BGR frame."""
-    mask_edges = compute_edges(colour_img)
-    if original_bgr_img is None:
-        return mask_edges
-    original_edges = compute_original_edges(original_bgr_img, colour_img.shape[:2])
-    return cv2.bitwise_or(mask_edges, original_edges)
 
 
 def find_lines(
@@ -392,37 +278,69 @@ def draw_lines(base_img: np.ndarray, lines: list[tuple]) -> np.ndarray:
     return draw_classified_lines(base_img, horiz_lines, vert_lines)
 
 
+def filter_vertical_lines_by_x_bands(
+    vert_lines: list[tuple],
+    roi_width: int,
+) -> list[tuple]:
+    """
+    Keep only vertical lines in the left/right outer bands or the centre band.
+
+    The colour mask produces a vertical Hough line wherever two differently
+    coloured blocks meet, which clutters the interior of the tower with edges we
+    do not use: the grid only cares about the two outer tower edges and the
+    central seam.  This mirrors filter_points_by_x_bands but at the line level so
+    the interior verticals are dropped before display AND intersection.
+    """
+    if roi_width <= 0 or not vert_lines:
+        return []
+
+    side_frac   = max(0.0, min(0.5, POINT_VALID_SIDE_BAND_PCT   / 100.0))
+    half_center = max(0.0, POINT_VALID_CENTER_BAND_PCT / 100.0) * 0.5
+    center_lo   = 0.5 - half_center
+    center_hi   = 0.5 + half_center
+    denom       = float(max(1, roi_width - 1))
+
+    kept: list[tuple] = []
+    for x1, y1, x2, y2 in vert_lines:
+        x_frac = (0.5 * (float(x1) + float(x2))) / denom
+        if (
+            x_frac <= side_frac
+            or x_frac >= 1.0 - side_frac
+            or center_lo <= x_frac <= center_hi
+        ):
+            kept.append((x1, y1, x2, y2))
+    return kept
+
+
 def build_edge_display(
     colour_img: np.ndarray,
-    original_bgr_img: np.ndarray | None = None,
+    depth_roi: np.ndarray | None = None,
 ) -> tuple[np.ndarray, list[tuple], np.ndarray, np.ndarray]:
     """
-    Full pipeline: Canny on each source → Hough lines → combined display.
+    Full pipeline: edges → lines → combined display.
 
     Behaviour:
-      - Colour-mask Canny contributes BOTH horizontal and vertical Hough lines.
-      - Original-image Canny contributes ONLY vertical Hough lines.
-      - The two line sets are concatenated; the overlay shows them on top of
-        the OR of both Canny edge images.
+      - Colour-mask Canny contributes BOTH horizontal and vertical Hough lines
+        (layer boundaries + outer tower edges).
+      - The tower's centre seam (the vertical line down its near corner) is the
+        per-layer depth seam from centre_seam.detect_centre_seam_lines: for each
+        layer band the largest colour blob's closest-to-camera column. Needs
+        depth_roi; on the recoloured image the seam has no colour edge, which is
+        why depth is used instead of Canny on the original frame.
+      - The line sets are concatenated; the overlay shows them on top of the
+        colour-mask edges with the detected seam.
 
     Returns
     -------
-    disp_grey      : BGR image — OR of both Canny edges with combined lines drawn.
-    lines_all      : union of Hough lines used for intersection detection.
-    edges_colour   : single-channel Canny from the colour mask.
-    edges_original : single-channel Canny from the original BGR frame
-                     (zeros if original_bgr_img was not provided).
+    disp_grey    : BGR image — edges with combined lines drawn.
+    lines_all    : union of lines used for intersection detection.
+    edges_colour : single-channel Canny from the colour mask.
+    edges_seam   : single-channel image of the detected depth-seam columns,
+                   rendered for the centre-seam preview window.
     """
     edges_colour = compute_edges(colour_img)
-    edges_original = (
-        compute_original_edges(original_bgr_img, colour_img.shape[:2])
-        if original_bgr_img is not None
-        else np.zeros_like(edges_colour)
-    )
     # Colour-mask edges run on the full ROI.
     edges_colour_search = edges_colour
-    # Original-image edges are restricted to the configured centre band.
-    edges_original_search = apply_centre_band_mask(edges_original)
 
     lines_colour_all = find_lines(
         edges_colour_search,
@@ -430,28 +348,30 @@ def build_edge_display(
         HOUGH_MASK_MIN_LENGTH,
         HOUGH_MASK_MAX_GAP,
     )
-    if original_bgr_img is not None:
-        _, vert_original = classify_lines(
-            find_lines(
-                edges_original_search,
-                HOUGH_ORIGINAL_THRESHOLD,
-                HOUGH_ORIGINAL_MIN_LENGTH,
-                HOUGH_ORIGINAL_MAX_GAP,
-            )
-        )
-    else:
-        vert_original = []
+    horiz_colour, vert_colour = classify_lines(lines_colour_all)
 
-    lines_all = list(lines_colour_all) + list(vert_original)
+    # Drop the interior colour-boundary verticals (block-to-block seams between
+    # different colours): only the outer tower edges and the centre matter.
+    vert_colour = filter_vertical_lines_by_x_bands(vert_colour, colour_img.shape[1])
 
-    combined = cv2.bitwise_or(edges_colour_search, edges_original_search)
+    # Per-layer depth seam: one vertical segment per layer band drives the grid.
+    vert_centre = detect_centre_seam_lines(colour_img, depth_roi, horiz_colour)
+
+    # Render the detected seams into a single-channel image for the preview window.
+    edges_seam = np.zeros(colour_img.shape[:2], dtype=np.uint8)
+    for x1, y1, x2, y2 in vert_centre:
+        cv2.line(edges_seam, (x1, y1), (x2, y2), 255, 1)
+
+    lines_all = list(horiz_colour) + list(vert_colour) + list(vert_centre)
+
+    combined = cv2.bitwise_or(edges_colour_search, edges_seam)
     horiz_lines, vert_lines = classify_lines(lines_all)
     disp_grey = draw_classified_lines(
         cv2.cvtColor(combined, cv2.COLOR_GRAY2BGR),
         horiz_lines,
         vert_lines,
     )
-    return disp_grey, lines_all, edges_colour_search, edges_original_search
+    return disp_grey, lines_all, edges_colour_search, edges_seam
 
 
 # ---------------------------------------------------------------------------
@@ -480,6 +400,56 @@ def filter_points_by_x_bands(
     ]
 
 
+def _median_row_step_y(mapped_grid: list[list[tuple[int, int]]]) -> float | None:
+    """Typical vertical spacing between grid rows (image y increases downward)."""
+    if len(mapped_grid) < 2:
+        return None
+    dys: list[float] = []
+    for r in range(len(mapped_grid) - 1):
+        dy = float(mapped_grid[r + 1][0][1] - mapped_grid[r][0][1])
+        if dy > 0.0:
+            dys.append(dy)
+    if not dys:
+        return None
+    return float(np.median(dys))
+
+
+def _extrapolate_rows_above(
+    mapped_grid: list[list[tuple[int, int]]],
+    extra_layers: int,
+    center_height_extend_pct: float = GRID_EXTRAPOLATED_CENTER_HEIGHT_EXTEND_PCT,
+) -> list[list[tuple[int, int]]]:
+    """
+    Prepend ``extra_layers`` synthetic grid rows above the detected top row.
+
+    Left/right x and y use the median row step.  Centre x is unchanged; centre
+    y uses the same step extended by ``center_height_extend_pct`` (perspective).
+    """
+    if extra_layers <= 0 or len(mapped_grid) < 2:
+        return mapped_grid
+
+    step_y = _median_row_step_y(mapped_grid)
+    if step_y is None or step_y <= 0.0:
+        return mapped_grid
+
+    centre_scale = 1.0 + max(0.0, float(center_height_extend_pct)) / 100.0
+    top_row = mapped_grid[0]
+    extra_rows: list[list[tuple[int, int]]] = []
+    for i in range(extra_layers, 0, -1):
+        left_x, left_y = top_row[0]
+        centre_x, centre_y = top_row[1]
+        right_x, right_y = top_row[2]
+        edge_y = int(round(left_y - step_y * i))
+        centre_y_out = int(round(centre_y - step_y * i * centre_scale))
+        right_y_out = int(round(right_y - step_y * i))
+        extra_rows.append([
+            (left_x, edge_y),
+            (centre_x, centre_y_out),
+            (right_x, right_y_out),
+        ])
+    return extra_rows + mapped_grid
+
+
 def build_layer_cells_from_points(
     points_roi: list[tuple[int, int]],
     roi_xywh: tuple[int, int, int, int],
@@ -489,6 +459,8 @@ def build_layer_cells_from_points(
 
     Points are expected in ROI-space; returned cells use full-frame coordinates.
     Assumes a 3-column grid; derives the number of layers from the point count.
+    After mapping detected points, ``GRID_EXTRA_LAYERS_ON_TOP`` empty layer bands
+    are extrapolated above the tower for blocks placed during live play.
     """
     if not points_roi:
         return []
@@ -519,6 +491,10 @@ def build_layer_cells_from_points(
         row_x_ord = np.argsort(row_pts[:, 0])
         mapped_grid.append([(int(px), int(py)) for px, py in row_pts[row_x_ord]])
 
+    extra_layers = max(0, int(GRID_EXTRA_LAYERS_ON_TOP))
+    detected_layer_count = len(mapped_grid) - 1
+    mapped_grid = _extrapolate_rows_above(mapped_grid, extra_layers)
+
     dynamic_layers: list[list[dict]] = []
     for r in range(len(mapped_grid) - 1):
         top, bot = mapped_grid[r], mapped_grid[r + 1]
@@ -528,8 +504,23 @@ def build_layer_cells_from_points(
         right_corners = [top[1], top[2], bot[1], bot[2]]
         if any(c is None for c in left_corners + right_corners):
             continue
+        extrapolated = r < extra_layers
         dynamic_layers.append([
-            {"name": f"left_cell_r{r}",  "corners": left_corners},
-            {"name": f"right_cell_r{r}", "corners": right_corners},
+            {
+                "name": f"left_cell_r{r}",
+                "corners": left_corners,
+                "extrapolated": extrapolated,
+            },
+            {
+                "name": f"right_cell_r{r}",
+                "corners": right_corners,
+                "extrapolated": extrapolated,
+            },
         ])
+    if extra_layers > 0 and dynamic_layers:
+        print(
+            f"[grid] locked {detected_layer_count} detected layer(s), "
+            f"added {extra_layers} extrapolated on top "
+            f"({len(dynamic_layers)} total layers)"
+        )
     return dynamic_layers

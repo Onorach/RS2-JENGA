@@ -17,7 +17,7 @@ from std_msgs.msg import String
 from geometry_msgs.msg import Pose
 from jenga_interfaces.msg import JengaBlockState, JengaBlockStates
 
-from colour_identification import classify_roi_bgr, compute_roi
+from colour_identification import classify_roi_bgr, compute_roi, compute_display_crop
 from box_percentages import compute_percentages, build_debug_image
 from layer_analysis import (
     analyse_tower,
@@ -25,6 +25,7 @@ from layer_analysis import (
     build_tower_image,
     block_id_from_tower_image_point,
     print_tower_state,
+    SlotAbsenceStreakTracker,
 )
 from grid_generation import (
     build_edge_display,
@@ -50,9 +51,9 @@ from tower_analysis import (
 from perception_config import (
     TOWER_ANALYSIS,
     BLOCK_ANALYSIS,
-    SEARCH_AREA_MARGIN,
     BLOCK_POSE_WORLD_FRAME,
     GRID_LOCK_EDGE_ACCUMULATION_FRAMES,
+    BLOCK_MISSING_CONFIRM_FRAMES,
 )
 from probe_response import (
     ProbeResponseMonitor,
@@ -61,6 +62,7 @@ from probe_response import (
     recompute_tower_centroids_strict,
 )
 from block_identity_tracker import BlockIdentityTracker
+from placement_tracker import PlacementTracker
 
 import rclpy
 from rclpy.executors import SingleThreadedExecutor
@@ -72,6 +74,13 @@ from cv_bridge import CvBridge
 # ---------------------------------------------------------------------------
 # Display helpers
 # ---------------------------------------------------------------------------
+
+def _anchor_layer_idx(extrapolated_layers: list[int]) -> int | None:
+    """Layer index of the topmost detected row below extrapolated bands."""
+    if not extrapolated_layers:
+        return None
+    return min(extrapolated_layers) - 1
+
 
 def _ensure_window_open(name: str) -> None:
     """Create or re-create an OpenCV window if it has been closed."""
@@ -93,7 +102,7 @@ GRID_POINTS_MAX_INPUT_LINES = 500
 _GRID_DETECTION_WINDOWS = (
     "Colour mask",
     "Canny (colour mask)",
-    "Canny (original)",
+    "Centre seam (depth)",
     "Edges",
 )
 
@@ -136,7 +145,6 @@ def _run_loop(
     grid_detection_started = False
     grid_frame_n           = 0
     frame_n          = 0
-    roi_margin       = SEARCH_AREA_MARGIN
     grey_line_history: deque[list[tuple]] = deque(maxlen=EDGE_HISTORY_FRAMES)
     points_locked    = False
     locked_layer_cells: list[list[dict]] = []
@@ -144,9 +152,12 @@ def _run_loop(
     accumulated_grid_points: list[tuple[int, int]] = []
     _last_pct_results: list[dict] = []
     _last_tower_img:   np.ndarray | None = None
+    _last_debug_img:   np.ndarray | None = None
     _last_tower_state: list[dict] = []
     _selected_probe_block_id: int | None = None
     identity_tracker = BlockIdentityTracker()
+    placement_tracker = PlacementTracker()
+    slot_absence_streaks = SlotAbsenceStreakTracker(BLOCK_MISSING_CONFIRM_FRAMES)
     _last_tower_finder_print: float = 0.0
     if probe_monitor is None:
         probe_monitor = ProbeResponseMonitor()
@@ -155,6 +166,8 @@ def _run_loop(
 
     TOWER_PRINT_INTERVAL_S = 8.0
     _last_layer_print_time_s: float = 0.0
+    PROBE_UI_EVERY_N = 3
+    _probe_ui_frame_n = 0
 
     def _on_layer_analysis_mouse(event: int, x: int, y: int, _flags: int, _userdata) -> None:
         nonlocal _selected_probe_block_id
@@ -195,6 +208,7 @@ def _run_loop(
         _selected_probe_block_id = None
         probe_monitor.set_target_block_id(None)
         identity_tracker.reset()
+        placement_tracker.reset()
         _destroy_windows(_GRID_DETECTION_WINDOWS + _POST_LOCK_WINDOWS)
 
     while True:
@@ -208,12 +222,8 @@ def _run_loop(
         frame_n += 1
         last_grid_points: list[tuple[int, int]] = []
 
-        # --- Crop setup (search area + margin) ---
-        rx, ry, rw, rh = compute_roi(iw, ih)
-        mx, my  = int(rw * roi_margin), int(rh * roi_margin)
-        dx1 = max(0, rx - mx);  dy1 = max(0, ry - my)
-        dx2 = min(iw, rx + rw + mx); dy2 = min(ih, ry + rh + my)
-        roi_x, roi_y = rx - dx1, ry - dy1
+        # --- Crop setup (search area horizontal margin, full height to frame top) ---
+        dx1, dy1, dx2, dy2, roi_x, roi_y, rw, rh = compute_display_crop(iw, ih)
 
         bgr = bgr_full[dy1:dy2, dx1:dx2]
         depth_mm = None if depth_mm_full is None else depth_mm_full[dy1:dy2, dx1:dx2]
@@ -256,6 +266,13 @@ def _run_loop(
                     for px, py in live_valid_points_crop:
                         if 0 <= px < live_disp.shape[1] and 0 <= py < live_disp.shape[0]:
                             cv2.circle(live_disp, (int(px), int(py)), 2, (0, 0, 255), -1)
+                if points_locked and locked_layer_cells:
+                    for layer_pair in locked_layer_cells:
+                        for cell in layer_pair:
+                            tl, tr, bl, br = cell["corners"]
+                            poly = np.array([tl, tr, br, bl], dtype=np.int32)
+                            colour = (255, 180, 0) if cell.get("extrapolated") else (0, 255, 255)
+                            cv2.polylines(live_disp, [poly], True, colour, 1, cv2.LINE_AA)
                 cx = int(round(camera_centre_x_crop))
                 if 0 <= cx < live_disp.shape[1]:
                     cv2.line(live_disp, (cx, 0), (cx, live_disp.shape[0] - 1), (0, 255, 255), 1, cv2.LINE_AA)
@@ -267,11 +284,16 @@ def _run_loop(
             colour_img, _ = classify_roi_bgr(roi_bgr)
             cv2.imshow("Colour mask", colour_img)
             grid_frame_n += 1
-            disp_grey, lines_grey, edges_colour, edges_original = build_edge_display(
-                colour_img, roi_bgr,
+            depth_roi = (
+                None
+                if depth_mm is None
+                else depth_mm[roi_y:roi_y + rh, roi_x:roi_x + rw]
+            )
+            disp_grey, lines_grey, edges_colour, edges_seam = build_edge_display(
+                colour_img, depth_roi=depth_roi,
             )
             cv2.imshow("Canny (colour mask)", edges_colour)
-            cv2.imshow("Canny (original)",    edges_original)
+            cv2.imshow("Centre seam (depth)", edges_seam)
 
             grey_line_history.append(lines_grey)
             line_cap = max(1, int(GRID_POINTS_MAX_INPUT_LINES))
@@ -315,12 +337,13 @@ def _run_loop(
             )
             if locked_layer_cells:
                 points_locked = True
+                placement_tracker.configure_layers(locked_layer_cells)
+                slot_absence_streaks.reset()
                 _destroy_windows(_GRID_DETECTION_WINDOWS)
                 if on_points_locked is not None:
                     on_points_locked()
 
         # --- Tower analysis ---
-                # --- Tower analysis ---
         if TOWER_ANALYSIS:
 
             _hex_frame_n += 1
@@ -439,46 +462,74 @@ def _run_loop(
             row_cells = [(layer[0], layer[1]) for layer in locked_layer_cells]
             probe_active = probe_monitor.is_active()
             placing_active = probe_monitor.is_robot_placing()
-            if (
-                _last_tower_img is None
-                or probe_active
-                or placing_active
-            ):
-                active_cells = [cell for layer in locked_layer_cells for cell in layer]
-                _last_pct_results = compute_percentages(bgr, cells=active_cells)
-                depth_for_layers = (
-                    depth_mm
-                    if depth_mm is not None
-                    else np.zeros(bgr.shape[:2], dtype=np.uint16)
-                )
-                # When a probe is active, skip centroid/depth work for layers
-                # below the target — they cannot move and recomputing them
-                # wastes CPU every frame.
-                probe_min_layer = probe_monitor.monitoring_min_layer()
-                tower = analyse_tower(
+            active_cells = [cell for layer in locked_layer_cells for cell in layer]
+            _last_pct_results = compute_percentages(bgr, cells=active_cells)
+            depth_for_layers = (
+                depth_mm
+                if depth_mm is not None
+                else np.zeros(bgr.shape[:2], dtype=np.uint16)
+            )
+            # When a probe is active, skip centroid/depth work for layers
+            # below the target — they cannot move and recomputing them
+            # wastes CPU every frame.
+            probe_min_layer = probe_monitor.monitoring_min_layer()
+            tower = analyse_tower(
+                bgr,
+                depth_for_layers,
+                row_cells,
+                frame_centre_x_px=camera_centre_x_crop,
+                frame_width_px=float(iw),
+                print_enabled=False,
+                min_centroid_layer=probe_min_layer,
+                skip_centroid_layers_from=probe_min_layer if probe_active else None,
+                identity_tracker=identity_tracker,
+                precomputed_pct=_last_pct_results,
+            )
+            if placing_active and not probe_active:
+                tower = recompute_tower_centroids_strict(
                     bgr,
                     depth_for_layers,
                     row_cells,
-                    frame_centre_x_px=camera_centre_x_crop,
-                    frame_width_px=float(iw),
-                    print_enabled=False,
-                    min_centroid_layer=probe_min_layer,
-                    identity_tracker=identity_tracker,
+                    tower,
+                    min_layer=0,
                 )
-                if placing_active and not probe_active:
-                    tower = recompute_tower_centroids_strict(
-                        bgr,
-                        depth_for_layers,
-                        row_cells,
-                        tower,
-                        min_layer=0,
-                    )
-                identity_tracker.apply(tower)
-                _last_tower_state = tower
-                if tower and publish_top_layer:
-                    # Bottom-first (L0 at index 0) so GUI L1 = bottom, L6 = top.
-                    tower_bottom_up = sorted(tower, key=lambda layer: layer["layer"])
-                    publish_top_layer(tower_bottom_up)
+            if not probe_active:
+                identity_tracker.restore_absent_canonical_centroids(
+                    bgr,
+                    depth_mm,
+                    row_cells,
+                    tower,
+                    skip_layer_indices=set(placement_tracker.extrapolated_layers()),
+                    skip_block_ids=placement_tracker.blocks_skip_restore(),
+                )
+                identity_tracker.apply(
+                    tower,
+                    anchor_layer_idx=_anchor_layer_idx(
+                        placement_tracker.extrapolated_layers(),
+                    ),
+                )
+                placement_tracker.note_absences(tower, identity_tracker)
+                slot_absence_streaks.update(tower)
+            _last_tower_state = tower
+            if placement_tracker.update(
+                bgr,
+                _last_tower_state,
+                row_cells,
+                identity_tracker,
+                depth_frame=depth_mm,
+            ):
+                identity_tracker.apply(
+                    _last_tower_state,
+                    anchor_layer_idx=_anchor_layer_idx(
+                        placement_tracker.extrapolated_layers(),
+                    ),
+                )
+            if tower and publish_top_layer:
+                # Bottom-first (L0 at index 0) so GUI L1 = bottom, L6 = top.
+                tower_bottom_up = sorted(
+                    _last_tower_state, key=lambda layer: layer["layer"],
+                )
+                publish_top_layer(tower_bottom_up)
 
             if probe_bridge is not None:
                 probe_bridge.sync_probe_from_robot(_last_tower_state)
@@ -490,7 +541,15 @@ def _run_loop(
                     depth_frame=depth_mm,
                     row_cells=row_cells,
                 )
-            if _last_tower_state:
+            if probe_active:
+                slot_absence_streaks.update(_last_tower_state)
+                identity_tracker.apply(
+                    _last_tower_state,
+                    anchor_layer_idx=_anchor_layer_idx(
+                        placement_tracker.extrapolated_layers(),
+                    ),
+                )
+            if _last_tower_state and not probe_active:
                 monitor_min_layer = probe_monitor.active_session_min_layer()
                 annotate_depth_split_lines_for_tower(
                     bgr,
@@ -504,34 +563,42 @@ def _run_loop(
                 and _last_tower_state
                 and (time.monotonic() - _last_layer_print_time_s) >= TOWER_PRINT_INTERVAL_S
             ):
-                print_tower_state(_last_tower_state)
+                print_tower_state(_last_tower_state, slot_absence_streaks)
                 _last_layer_print_time_s = time.monotonic()
             robot_target = probe_monitor.robot_target_block_id()
             if robot_target is not None:
                 _selected_probe_block_id = int(robot_target)
             elif not probe_monitor.is_active():
                 _selected_probe_block_id = None
-            if _last_tower_state:
+            if probe_active:
+                _probe_ui_frame_n += 1
+                refresh_probe_ui = (_probe_ui_frame_n % PROBE_UI_EVERY_N == 0)
+            else:
+                _probe_ui_frame_n = 0
+                refresh_probe_ui = True
+
+            if _last_tower_state and refresh_probe_ui:
                 _last_tower_img = build_tower_image(
                     _last_tower_state,
                     selected_block_id=_selected_probe_block_id,
                     probe_status_text=probe_monitor.status_text(),
                 )
 
-            if _last_pct_results:
+            if _last_pct_results and refresh_probe_ui:
                 active_cells = [cell for layer in locked_layer_cells for cell in layer]
                 _ensure_window_open("Box percentages")
-                cv2.imshow(
-                    "Box percentages",
-                    build_debug_image(
-                        bgr,
-                        _last_pct_results,
-                        cells=active_cells,
-                        tower=_last_tower_state,
-                        row_cells=row_cells,
-                        frame_centre_x_px=camera_centre_x_crop,
-                    ),
+                _last_debug_img = build_debug_image(
+                    bgr,
+                    _last_pct_results,
+                    cells=active_cells,
+                    tower=_last_tower_state,
+                    row_cells=row_cells,
+                    frame_centre_x_px=camera_centre_x_crop,
                 )
+
+            if _last_debug_img is not None:
+                _ensure_window_open("Box percentages")
+                cv2.imshow("Box percentages", _last_debug_img)
             if _last_tower_img is not None:
                 _ensure_window_open("Layer Analysis")
                 cv2.setMouseCallback("Layer Analysis", _on_layer_analysis_mouse)

@@ -14,6 +14,7 @@ from box_percentages import (
 )
 from block_centroids import (
     compute_layer_centroids,
+    compute_layer_blob_centroids,
     compute_split_x_per_colour,
 )
 from block_pose_global import build_block_pose_mm
@@ -76,9 +77,168 @@ def _detect_orientation(left_pcts: dict[str, float], right_pcts: dict[str, float
     return "left" if left_max <= right_max else "right"
 
 
+def _flip_orientation(orientation: str) -> str:
+    if orientation == "left":
+        return "right"
+    if orientation == "right":
+        return "left"
+    return orientation
+
+
+def _count_extrapolated_layers(row_cells: list[tuple[dict, dict]]) -> int:
+    """Number of consecutive extrapolated layer bands at the top of the grid."""
+    count = 0
+    for left_def, right_def in row_cells:
+        if left_def.get("extrapolated") or right_def.get("extrapolated"):
+            count += 1
+        else:
+            break
+    return count
+
+
+def _orientation_alternating_above(anchor: str, steps_above: int) -> str:
+    """
+    Jenga layers alternate end-on direction. Given the orientation of the
+    highest detected layer, return the orientation ``steps_above`` layers higher.
+    """
+    if anchor not in ("left", "right") or steps_above <= 0:
+        return anchor
+    return anchor if steps_above % 2 == 0 else _flip_orientation(anchor)
+
+
 # ---------------------------------------------------------------------------
 # Block detection from end-on face
 # ---------------------------------------------------------------------------
+
+def _lane_index_for_x(mx: float, cell: dict) -> int:
+    corners = cell["corners"]
+    x_left_bound = (corners[0][0] + corners[2][0]) / 2.0
+    x_right_bound = (corners[1][0] + corners[3][0]) / 2.0
+    lane_w = max(1.0, (x_right_bound - x_left_bound) / 3.0)
+    return max(0, min(2, int((mx - x_left_bound) // lane_w)))
+
+
+def _assign_blobs_to_lanes(
+    blobs: list[dict],
+    cell: dict,
+    orientation: str,
+) -> list[dict | None]:
+    """Map each blob to at most one front/mid/back lane by x, largest blob first."""
+    if not blobs:
+        return [None, None, None]
+
+    corners = cell["corners"]
+    x_left = (corners[0][0] + corners[2][0]) / 2.0
+    x_right = (corners[1][0] + corners[3][0]) / 2.0
+    lane_w = max(1.0, (x_right - x_left) / 3.0)
+    lane_centers = [x_left + lane_w * (i + 0.5) for i in range(3)]
+
+    lane_blobs: list[dict | None] = [None, None, None]
+    for blob in sorted(blobs, key=lambda item: -int(item.get("area", 0))):
+        preferred = _lane_index_for_x(float(blob["mean_x_px"]), cell)
+        if lane_blobs[preferred] is None:
+            lane_blobs[preferred] = blob
+            continue
+        for lane in sorted(
+            range(3),
+            key=lambda idx: abs(lane_centers[idx] - float(blob["mean_x_px"])),
+        ):
+            if lane_blobs[lane] is None:
+                lane_blobs[lane] = blob
+                break
+
+    if orientation == "left":
+        lane_blobs = lane_blobs[::-1]
+    return lane_blobs
+
+
+def _present_block_from_blob(blob: dict, colour: str) -> dict:
+    return {
+        "colour": colour,
+        "present": True,
+        "mean_x_px": float(blob["mean_x_px"]),
+        "mean_y_px": float(blob["mean_y_px"]),
+    }
+
+
+def _blocks_from_colour_blobs(
+    pcts: dict[str, float],
+    mean_xy: dict[str, tuple[float, float]],
+    cell: dict,
+    orientation: str,
+    colour_blobs: list[dict],
+    known_colours: list[str | None] | None = None,
+) -> list[dict]:
+    """Assign disconnected same-colour blobs to front/mid/back lanes."""
+    lane_blobs = _assign_blobs_to_lanes(colour_blobs, cell, orientation)
+    absent = {"colour": "unknown", "present": False, "depth_mm": None}
+
+    if known_colours is not None:
+        LOW_PCT = BLOCK_PRESENT_MIN_PCT / 2.0
+        res: list[dict] = [dict(absent) for _ in range(3)]
+        used_blob_ids: set[int] = set()
+
+        for slot_idx, slot_colour in enumerate(known_colours):
+            if slot_colour in (None, "", "unknown"):
+                res[slot_idx] = dict(absent)
+                continue
+            res[slot_idx]["colour"] = str(slot_colour)
+
+            blob = lane_blobs[slot_idx]
+            if (
+                blob is not None
+                and blob["colour"] == slot_colour
+                and id(blob) not in used_blob_ids
+            ):
+                res[slot_idx] = _present_block_from_blob(blob, str(slot_colour))
+                used_blob_ids.add(id(blob))
+                continue
+
+            pct = pcts.get(slot_colour, 0.0)
+            xy = mean_xy.get(slot_colour)
+            if pct >= LOW_PCT or xy is not None:
+                block: dict = {"colour": str(slot_colour), "present": True}
+                if xy is not None:
+                    block["mean_x_px"] = xy[0]
+                    block["mean_y_px"] = xy[1]
+                res[slot_idx] = block
+
+        # Same colour in multiple slots: assign leftover blobs by x order.
+        slots_by_colour: dict[str, list[int]] = {}
+        for slot_idx, slot_colour in enumerate(known_colours):
+            if slot_colour in (None, "", "unknown"):
+                continue
+            if res[slot_idx].get("present"):
+                continue
+            slots_by_colour.setdefault(str(slot_colour), []).append(slot_idx)
+
+        for colour, slot_indices in slots_by_colour.items():
+            available = [
+                blob for blob in colour_blobs
+                if blob["colour"] == colour and id(blob) not in used_blob_ids
+            ]
+            if not available:
+                continue
+            slot_indices.sort(
+                key=lambda idx: idx if orientation == "right" else -idx,
+            )
+            available.sort(key=lambda blob: float(blob["mean_x_px"]))
+            for slot_idx, blob in zip(slot_indices, available):
+                res[slot_idx] = _present_block_from_blob(blob, colour)
+                used_blob_ids.add(id(blob))
+
+        return res
+
+    res = [dict(absent) for _ in range(3)]
+    for slot_idx, blob in enumerate(lane_blobs):
+        if blob is None:
+            continue
+        colour = str(blob["colour"])
+        if pcts.get(colour, 0.0) < BLOCK_PRESENT_MIN_PCT:
+            continue
+        res[slot_idx] = _present_block_from_blob(blob, colour)
+    return res
+
 
 def _blocks_from_endon(
     pcts: dict[str, float],
@@ -86,11 +246,12 @@ def _blocks_from_endon(
     cell: dict,
     orientation: str = "left",
     known_colours: list[str | None] | None = None,
+    colour_blobs: list[dict] | None = None,
 ) -> list[dict]:
     """
-    One centroid per colour across the full end-on layer side (all pixels of
-    that colour in the cell). Assign each colour to a front/mid/back lane by
-    its mean x, then reorder lanes for tower orientation.
+    Detect blocks on the end-on face. When colour_blobs is supplied, each
+    disconnected blob is assigned to a front/mid/back lane by x so two blocks
+    of the same colour on one layer can both be found.
 
     known_colours
     -------------
@@ -103,7 +264,17 @@ def _blocks_from_endon(
     A half-height percentage threshold is used so blocks with reduced coverage
     (pushed far in depth) are still marked as present.
     """
-    if known_colours is not None and any(c is not None for c in known_colours):
+    if colour_blobs:
+        return _blocks_from_colour_blobs(
+            pcts, mean_xy, cell, orientation, colour_blobs, known_colours,
+        )
+
+    if known_colours is not None:
+        if not any(c is not None for c in known_colours):
+            return [
+                {"colour": "unknown", "present": False, "depth_mm": None}
+                for _ in range(3)
+            ]
         LOW_PCT = BLOCK_PRESENT_MIN_PCT / 2.0
         res: list[dict] = []
         for slot_colour in known_colours:
@@ -112,13 +283,12 @@ def _blocks_from_endon(
                 continue
             xy  = mean_xy.get(slot_colour)
             pct = pcts.get(slot_colour, 0.0)
-            if xy is not None and pct >= LOW_PCT:
-                res.append({
-                    "colour":    slot_colour,
-                    "present":   True,
-                    "mean_x_px": xy[0],
-                    "mean_y_px": xy[1],
-                })
+            if pct >= LOW_PCT or xy is not None:
+                block: dict = {"colour": slot_colour, "present": True}
+                if xy is not None:
+                    block["mean_x_px"] = xy[0]
+                    block["mean_y_px"] = xy[1]
+                res.append(block)
             else:
                 # Block not visible enough this frame: mark absent but keep
                 # canonical colour so downstream can still name the slot.
@@ -170,10 +340,16 @@ def analyse_layer(
     frame_centre_x_px: float | None = None,
     frame_width_px: float | None = None,
     known_block_colours: list[str | None] | None = None,
+    skip_centroid_compute: bool = False,
+    forced_orientation: str | None = None,
+    centroid_hints: dict[str, tuple[float, float]] | None = None,
 ) -> dict:
     left_pcts   = _colour_pcts(left_result)
     right_pcts  = _colour_pcts(right_result)
-    orientation = _detect_orientation(left_pcts, right_pcts)
+    if forced_orientation in ("left", "right"):
+        orientation = forced_orientation
+    else:
+        orientation = _detect_orientation(left_pcts, right_pcts)
 
     endon_pcts, endon_cell = (
         (left_pcts, left_cell) if orientation == "left"
@@ -189,23 +365,36 @@ def analyse_layer(
             required_colours = rc
 
     # Compute near-face centroids for all colours in this layer.
-    # Searches both cells so the front block's split (which may fall in the
-    # opposite/side-on cell) is always found. Falls back to depth-gated mean
-    # when no split is available (e.g. depth stream absent).
-    mean_xy = compute_layer_centroids(
-        bgr_frame,
-        depth_frame,
-        left_cell,
-        right_cell,
-        orientation,
-        robust_stat="mean",
-        require_split=False,
-        required_colours=required_colours,
-    )
+    # Skipped during probe monitoring for layers the probe path recomputes
+    # with stricter split-based centroids on the same frame.
+    if skip_centroid_compute:
+        mean_xy = {}
+        colour_blobs: list[dict] = []
+    else:
+        mean_xy = compute_layer_centroids(
+            bgr_frame,
+            depth_frame,
+            left_cell,
+            right_cell,
+            orientation,
+            robust_stat="mean",
+            require_split=False,
+            required_colours=required_colours,
+            centroid_hints=centroid_hints,
+        )
+        colour_blobs = compute_layer_blob_centroids(
+            bgr_frame,
+            depth_frame,
+            left_cell,
+            right_cell,
+            orientation,
+            robust_stat="mean",
+        )
     endon_blocks = _blocks_from_endon(
         endon_pcts, mean_xy, endon_cell,
         orientation=orientation,
         known_colours=known_block_colours,
+        colour_blobs=colour_blobs,
     )
 
     frame_width    = float(frame_width_px) if frame_width_px is not None else float(bgr_frame.shape[1])
@@ -218,7 +407,7 @@ def analyse_layer(
             lateral_px = frame_centre_x - block["mean_x_px"]
             mx = block.get("mean_x_px")
             my = block.get("mean_y_px")
-            if mx is not None and my is not None:
+            if depth_frame is not None and mx is not None and my is not None:  # ← add depth_frame guard
                 centroid_face = _centroid_face_depth_mm(depth_frame, mx, my)
                 if centroid_face is not None and centroid_face > 0:
                     block["centroid_face_depth_mm"] = round(centroid_face, 1)
@@ -295,7 +484,51 @@ def _block_abs_global_y(block: dict) -> float:
         return float("inf")
 
 
-def _print_tower(tower: list[dict]) -> None:
+class SlotAbsenceStreakTracker:
+    """Per (layer, slot) consecutive absent-frame counts for confirmed missing."""
+
+    def __init__(self, confirm_frames: int) -> None:
+        self._confirm = max(1, int(confirm_frames))
+        self._streaks: dict[tuple[int, int], int] = {}
+
+    def reset(self) -> None:
+        self._streaks.clear()
+
+    def update(self, tower: list[dict]) -> None:
+        active: set[tuple[int, int]] = set()
+        for layer in tower:
+            layer_idx = int(layer.get("layer", -1))
+            for slot_idx, block in enumerate(layer.get("blocks", [])):
+                key = (layer_idx, slot_idx)
+                active.add(key)
+                if block.get("present"):
+                    self._streaks.pop(key, None)
+                else:
+                    self._streaks[key] = self._streaks.get(key, 0) + 1
+        for key in list(self._streaks.keys()):
+            if key not in active:
+                self._streaks.pop(key, None)
+
+    def absent_streak(self, layer_idx: int, slot_idx: int) -> int:
+        return int(self._streaks.get((int(layer_idx), int(slot_idx)), 0))
+
+    def is_confirmed_missing(self, layer_idx: int, slot_idx: int) -> bool:
+        return self.absent_streak(layer_idx, slot_idx) >= self._confirm
+
+
+def _slot_absent_label(block: dict, *, confirmed_missing: bool) -> str:
+    if confirmed_missing:
+        return "missing"
+    colour = block.get("colour", "unknown")
+    if colour not in (None, "", "unknown"):
+        return str(colour)
+    return "—"
+
+
+def _print_tower(
+    tower: list[dict],
+    absence_streaks: SlotAbsenceStreakTracker | None = None,
+) -> None:
     print(
         f"── Layer Analysis (L0 = bottom, blocks: front → mid → back, "
         f"{BLOCK_POSE_WORLD_FRAME} x/y/z mm) ────"
@@ -307,22 +540,31 @@ def _print_tower(tower: list[dict]) -> None:
         labels      = ["front", " mid ", " back"]
         parts = []
 
-        for label, block in zip(labels, layer["blocks"]):
+        for slot_idx, (label, block) in enumerate(zip(labels, layer["blocks"])):
             if block["present"]:
                 xyz_str = _format_global_pose_xyz(block)
                 parts.append(f"{label}: {block['colour']}{xyz_str}")
             else:
-                parts.append(f"{label}: missing")
+                confirmed = (
+                    absence_streaks is None
+                    or absence_streaks.is_confirmed_missing(idx, slot_idx)
+                )
+                parts.append(
+                    f"{label}: {_slot_absent_label(block, confirmed_missing=confirmed)}"
+                )
 
         print(f"  L{idx} {arrow}  " + "  |  ".join(parts))
     print()
 
 
-def print_tower_state(tower: list[dict]) -> None:
+def print_tower_state(
+    tower: list[dict],
+    absence_streaks: SlotAbsenceStreakTracker | None = None,
+) -> None:
     """Print an already-computed tower state without recomputing analysis."""
     if not tower:
         return
-    _print_tower(tower)
+    _print_tower(tower, absence_streaks=absence_streaks)
 
 
 def analyse_tower(
@@ -333,10 +575,19 @@ def analyse_tower(
     frame_width_px: float | None = None,
     print_enabled: bool = True,
     min_centroid_layer: int | None = None,
+    skip_centroid_layers_from: int | None = None,
     identity_tracker=None,
+    precomputed_pct: list[dict] | None = None,
 ) -> list[dict]:
     """
     Analyse the full tower layer by layer.
+
+    precomputed_pct : optional list of per-cell colour-percentage dicts (as
+        returned by compute_percentages) already computed for this frame's cells.
+        When supplied, the per-cell percentages are looked up by cell name
+        instead of being recomputed here — this avoids classifying the same
+        cells twice in one frame (the caller already computes them for the
+        Box-percentages view).  Falls back to computing on miss.
 
     identity_tracker : BlockIdentityTracker | None
         When provided and already initialized, the canonical colour-per-slot
@@ -348,32 +599,116 @@ def analyse_tower(
     global _last_print_time
     tower = []
     n_layers = len(row_cells)
+    pct_by_name = (
+        {entry["name"]: entry for entry in precomputed_pct}
+        if precomputed_pct is not None
+        else None
+    )
+    extra_layers = _count_extrapolated_layers(row_cells)
+    use_frozen_orientations = (
+        identity_tracker is not None
+        and identity_tracker.is_initialized()
+    )
+    frozen_anchor = (
+        identity_tracker.frozen_anchor_orientation()
+        if use_frozen_orientations
+        else None
+    )
+    anchor_orientation: str | None = None
+    if extra_layers > 0 and extra_layers < n_layers:
+        if frozen_anchor in ("left", "right"):
+            anchor_orientation = frozen_anchor
+        else:
+            anchor_left, anchor_right = row_cells[extra_layers]
+            if (
+                pct_by_name is not None
+                and anchor_left["name"] in pct_by_name
+                and anchor_right["name"] in pct_by_name
+            ):
+                anchor_pct = [
+                    pct_by_name[anchor_left["name"]],
+                    pct_by_name[anchor_right["name"]],
+                ]
+            else:
+                anchor_pct = compute_percentages(
+                    bgr_frame, cells=[anchor_left, anchor_right],
+                )
+            anchor_orientation = _detect_orientation(
+                _colour_pcts(anchor_pct[0]),
+                _colour_pcts(anchor_pct[1]),
+            )
+
     for row_idx, (left_def, right_def) in enumerate(row_cells):
-        pct_results = compute_percentages(bgr_frame, cells=[left_def, right_def])
+        if (
+            pct_by_name is not None
+            and left_def["name"] in pct_by_name
+            and right_def["name"] in pct_by_name
+        ):
+            pct_results = [pct_by_name[left_def["name"]], pct_by_name[right_def["name"]]]
+        else:
+            pct_results = compute_percentages(bgr_frame, cells=[left_def, right_def])
         # layer index: row_cells[0] is topmost in image → highest layer index
         layer_idx = (n_layers - 1) - row_idx
 
         # When monitoring a probe, skip all centroid/depth work for layers
         # below the target layer — they cannot move during a probe so there
-        # is no need to recompute them, saving significant CPU per frame.
+        # is no need to recompute them, saving significant CPU every frame.
         skip_centroid = (
             min_centroid_layer is not None
             and layer_idx < int(min_centroid_layer)
+        )
+        # Layers at/above the probe target get strict centroids from the probe
+        # path on the same frame — skip the duplicate mean-centroid pass here.
+        skip_centroid_compute = (
+            skip_centroid_layers_from is not None
+            and layer_idx >= int(skip_centroid_layers_from)
         )
 
         # Fetch canonical colour assignments for this layer when available.
         # On the first frame (tracker not yet initialized) this returns all
         # None and _blocks_from_endon falls back to x-lane detection.
+        # Extrapolated top layers stay empty until placement_tracker registers
+        # a block there — never free-detect new blocks on those bands.
+        is_extrapolated = extra_layers > 0 and row_idx < extra_layers
         known_colours: list[str | None] | None = None
+        centroid_hints: dict[str, tuple[float, float]] | None = None
         if identity_tracker is not None and identity_tracker.is_initialized():
             known_colours = identity_tracker.canonical_colours_for_layer(layer_idx)
-            # If all None (e.g. layer not yet seen), fall back to free detection.
+            centroid_hints = identity_tracker.centroid_hints_for_layer(layer_idx)
             if not any(c is not None for c in known_colours):
-                known_colours = None
+                known_colours = [None, None, None] if is_extrapolated else None
+                if not is_extrapolated:
+                    centroid_hints = None
+        elif is_extrapolated:
+            known_colours = [None, None, None]
+
+        forced_orientation = None
+        if use_frozen_orientations:
+            frozen_layer_orient = identity_tracker.frozen_orientation_for_layer(
+                layer_idx,
+            )
+            if frozen_layer_orient in ("left", "right"):
+                forced_orientation = frozen_layer_orient
+            elif (
+                row_idx < extra_layers
+                and frozen_anchor in ("left", "right")
+            ):
+                forced_orientation = _orientation_alternating_above(
+                    frozen_anchor,
+                    extra_layers - row_idx,
+                )
+        elif (
+            row_idx < extra_layers
+            and anchor_orientation in ("left", "right")
+        ):
+            forced_orientation = _orientation_alternating_above(
+                anchor_orientation,
+                extra_layers - row_idx,
+            )
 
         layer = analyse_layer(
             bgr_frame,
-            depth_frame if not skip_centroid else None,
+            depth_frame if not (skip_centroid or skip_centroid_compute) else None,
             pct_results[0],
             pct_results[1],
             left_def,
@@ -381,6 +716,9 @@ def analyse_tower(
             frame_centre_x_px=frame_centre_x_px,
             frame_width_px=frame_width_px,
             known_block_colours=known_colours,
+            skip_centroid_compute=skip_centroid_compute,
+            forced_orientation=forced_orientation,
+            centroid_hints=centroid_hints,
         )
         layer["layer"] = layer_idx
         tower.append(layer)
@@ -467,25 +805,15 @@ def annotate_depth_split_lines_for_tower(
             right_cell,
             orientation,
         )
-        # Only annotate the NEAREST (front) block per layer.
-        # Multiple blocks can have split lines computed, but displaying all of
-        # them clutters the overlay.  The front block (smallest face_depth_mm)
-        # is the only one whose split line is meaningful for monitoring.
-        nearest_block = None
-        nearest_depth = float("inf")
+        # Annotate every present block whose colour has a computed split line,
+        # so the white seam is drawn for any block, not just the front one.
         for block in layer.get("blocks", []):
             if not block.get("present"):
                 continue
-            d = block.get("face_depth_mm") or block.get("depth_mm")
-            if d is not None and float(d) < nearest_depth:
-                nearest_depth = float(d)
-                nearest_block = block
-
-        if nearest_block is not None:
-            colour   = str(nearest_block.get("colour", ""))
-            split_x  = split_x_by_colour.get(colour)
+            colour  = str(block.get("colour", ""))
+            split_x = split_x_by_colour.get(colour)
             if split_x is not None:
-                nearest_block["depth_split_x_px"] = float(split_x)
+                block["depth_split_x_px"] = float(split_x)
 
     return tower
 

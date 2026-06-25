@@ -18,6 +18,7 @@ from perception_config import (
     HSV_RANGES,
     COLOUR_BGR,
     SEARCH_AREA,
+    SEARCH_AREA_MARGIN,
     COLOUR_MIN_BLOB_AREA_PX,
     COLOUR_MASK_MEDIAN_PX,
     COLOUR_MASK_MORPH_CLOSE_PX,
@@ -47,6 +48,31 @@ def compute_roi(
     x = max(0, min(int(iw * cx_f) - cw // 2, iw - cw))
     y = max(0, min(int(ih * cy_f) - ch // 2, ih - ch))
     return x, y, cw, ch
+
+
+def compute_display_crop(
+    iw: int,
+    ih: int,
+    search_area: tuple[float, float, float, float] | None = None,
+    margin: float = SEARCH_AREA_MARGIN,
+) -> tuple[int, int, int, int, int, int, int, int]:
+    """
+    Full-frame crop for live / box-percentages views.
+
+    Horizontal: search area plus margin on left and right.
+    Vertical: from the top of the camera frame down through the search area
+    plus margin below.
+    """
+    rx, ry, rw, rh = compute_roi(iw, ih, search_area=search_area)
+    mx = int(rw * margin)
+    my = int(rh * margin)
+    dx1 = max(0, rx - mx)
+    dy1 = 0
+    dx2 = min(iw, rx + rw + mx)
+    dy2 = min(ih, ry + rh + my)
+    roi_x = rx - dx1
+    roi_y = ry - dy1
+    return dx1, dy1, dx2, dy2, roi_x, roi_y, rw, rh
 
 
 def _odd(k: int) -> int:
@@ -106,6 +132,72 @@ def classify_hsv(
     combined = _remove_small_components(combined, min_blob)
 
     return combined.astype(bool)
+
+
+# ---------------------------------------------------------------------------
+# Per-frame colour cache
+# ---------------------------------------------------------------------------
+# The analysis pipeline (percentages, centroids, depth splits, seam detection)
+# repeatedly needs the full-frame HSV image and the per-colour boolean masks for
+# the SAME frame.  Recomputing cv2.cvtColor + classify_hsv inside every helper is
+# what dominates per-frame CPU during probe monitoring.  This caches both for the
+# current frame so each is computed exactly once and shared everywhere.
+#
+# The cache is keyed on the identity of the bgr array AND keeps a reference to it.
+# Holding the reference guarantees the array stays alive while cached, so its
+# id() cannot be reused by a different array — an id() match is therefore a true
+# identity match (no stale-cache risk across frames).  A new frame is a new array
+# (new id), which transparently invalidates and rebuilds the cache.
+
+class _FrameColourCache:
+    def __init__(self) -> None:
+        self._frame_ref: np.ndarray | None = None
+        self._frame_id: int | None = None
+        self._hsv: np.ndarray | None = None
+        self._masks: dict[str, np.ndarray] = {}
+
+    def _ensure(self, bgr: np.ndarray) -> None:
+        if self._frame_id == id(bgr) and self._frame_ref is bgr:
+            return
+        self._frame_ref = bgr           # keep alive so its id() stays unique
+        self._frame_id = id(bgr)
+        self._hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+        self._masks = {}
+
+    def hsv(self, bgr: np.ndarray) -> np.ndarray:
+        self._ensure(bgr)
+        return self._hsv  # type: ignore[return-value]
+
+    def mask(self, bgr: np.ndarray, colour: str) -> np.ndarray:
+        self._ensure(bgr)
+        cached = self._masks.get(colour)
+        if cached is None:
+            cached = classify_hsv(self._hsv, colour)
+            self._masks[colour] = cached
+        return cached
+
+
+_FRAME_COLOUR_CACHE = _FrameColourCache()
+
+
+def frame_hsv(bgr: np.ndarray) -> np.ndarray:
+    """Full-frame HSV for bgr, computed once per frame and cached."""
+    return _FRAME_COLOUR_CACHE.hsv(bgr)
+
+
+def frame_colour_mask(bgr: np.ndarray, colour: str) -> np.ndarray:
+    """
+    Boolean H×W mask of `colour` over the full frame, cached per frame.
+
+    Equivalent to classify_hsv(cv2.cvtColor(bgr, BGR2HSV), colour) with default
+    config params — but the HSV conversion and the per-colour classification are
+    each computed only once per frame and reused across the whole pipeline.
+
+    The returned array is the cached object; callers must treat it as read-only
+    (use it in non-mutating expressions like `quad & mask`).  All current callers
+    do this.
+    """
+    return _FRAME_COLOUR_CACHE.mask(bgr, colour)
 
 
 def classify_roi_bgr(

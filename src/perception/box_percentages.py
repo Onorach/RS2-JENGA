@@ -25,7 +25,8 @@ except ImportError:
     _ROS_AVAILABLE = False
     Node = object
 
-from colour_identification import classify_hsv
+from colour_identification import frame_colour_mask
+from centre_seam import closest_depth_column
 from perception_config import HSV_RANGES, COLOUR_BGR
 
 DOMINANT_PCT      = 55.0   # Above this → side-on face.
@@ -81,13 +82,12 @@ def _lane_strip_masks(shape: tuple[int, int], cell: dict) -> list[np.ndarray]:
 def compute_percentages(bgr_frame: np.ndarray, cells: list[dict]) -> list[dict]:
     """Return per-cell colour percentage dicts for each cell."""
     ih, iw = bgr_frame.shape[:2]
-    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
 
     label_img    = np.full((ih, iw), "none", dtype=object)
     unclassified = np.ones((ih, iw), dtype=bool)
 
     for colour in HSV_RANGES:
-        matched = classify_hsv(hsv, colour) & unclassified
+        matched = frame_colour_mask(bgr_frame, colour) & unclassified
         label_img[matched] = colour
         unclassified &= ~matched
 
@@ -136,7 +136,6 @@ def colour_mean_x_in_cell(
     visible back blocks are not inadvertently rejected.
     """
     ih, iw = bgr_frame.shape[:2]
-    hsv    = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
     quad   = _quad_mask((ih, iw), cell["corners"])
     total  = int(quad.sum())
     if total == 0:
@@ -155,7 +154,7 @@ def colour_mean_x_in_cell(
     out: dict[str, float] = {}
 
     for colour in HSV_RANGES:
-        colour_mask = quad & classify_hsv(hsv, colour)
+        colour_mask = quad & frame_colour_mask(bgr_frame, colour)
 
         n_colour = int(colour_mask.sum())
         if n_colour < MIN_COLOUR_PIXELS:
@@ -178,7 +177,7 @@ def colour_mean_x_in_cell(
 
 
 def _colour_mean_xy_in_region(
-    hsv: np.ndarray,
+    bgr_frame: np.ndarray,
     region_mask: np.ndarray,
     depth_gate: np.ndarray | None,
 ) -> dict[str, tuple[float, float]]:
@@ -189,7 +188,7 @@ def _colour_mean_xy_in_region(
 
     out: dict[str, tuple[float, float]] = {}
     for colour in HSV_RANGES:
-        colour_mask = region_mask & classify_hsv(hsv, colour)
+        colour_mask = region_mask & frame_colour_mask(bgr_frame, colour)
         n_colour = int(colour_mask.sum())
         if n_colour < MIN_COLOUR_PIXELS:
             continue
@@ -215,23 +214,14 @@ def _depth_split_x_from_closest_pixels(
 ) -> float | None:
     """
     Estimate split x for a colour blob using the closest (smallest) depth.
+
+    Delegates to centre_seam.closest_depth_column, the single shared
+    closest-to-camera-column primitive (here gated to exactly the minimum depth).
     """
-    ys, xs = np.where(mask)
-    if len(xs) == 0:
-        return None
-
-    depths = depth_frame[ys, xs].astype(np.float32)
-    valid = (depths > 0) & np.isfinite(depths)
-    if not np.any(valid):
-        return None
-
-    xs_valid = xs[valid]
-    depths_valid = depths[valid]
-    min_depth = float(np.min(depths_valid))
-    near = depths_valid <= min_depth
-    if not np.any(near):
-        return None
-    return float(np.mean(xs_valid[near]))
+    split_x, _ = closest_depth_column(
+        depth_frame, mask, depth_tol_mm=0.0, stat="mean",
+    )
+    return split_x
 
 
 def colour_mean_xy_in_cell(
@@ -252,7 +242,6 @@ def colour_mean_xy_in_cell(
     markers match the pixels used for depth/offset estimates.
     """
     ih, iw = bgr_frame.shape[:2]
-    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
     quad = _quad_mask((ih, iw), cell["corners"])
     if int(quad.sum()) == 0:
         return {}
@@ -274,7 +263,7 @@ def colour_mean_xy_in_cell(
     ):
         if use_outside_of_split and require_split_for_output:
             return {}
-        return _colour_mean_xy_in_region(hsv, quad, depth_gate)
+        return _colour_mean_xy_in_region(bgr_frame, quad, depth_gate)
 
     total = int(quad.sum())
     out: dict[str, tuple[float, float]] = {}
@@ -282,7 +271,7 @@ def colour_mean_xy_in_cell(
     x_grid = np.broadcast_to(np.arange(iw, dtype=np.float32), (ih, iw))
 
     for colour in HSV_RANGES:
-        colour_mask = quad & classify_hsv(hsv, colour)
+        colour_mask = quad & frame_colour_mask(bgr_frame, colour)
         n_colour = int(colour_mask.sum())
         if n_colour < MIN_COLOUR_PIXELS:
             continue
@@ -334,7 +323,6 @@ def colour_depth_split_x_in_cell(
         return {}
 
     ih, iw = bgr_frame.shape[:2]
-    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
     quad = _quad_mask((ih, iw), cell["corners"])
     total = int(quad.sum())
     if total == 0:
@@ -342,7 +330,7 @@ def colour_depth_split_x_in_cell(
 
     out: dict[str, float] = {}
     for colour in HSV_RANGES:
-        colour_mask = quad & classify_hsv(hsv, colour)
+        colour_mask = quad & frame_colour_mask(bgr_frame, colour)
         n_colour = int(colour_mask.sum())
         if n_colour < MIN_COLOUR_PIXELS:
             continue
@@ -367,7 +355,6 @@ def colour_mean_xy_per_lane_in_cell(
     inside each front/mid/back lane strip of the end-on cell.
     """
     ih, iw = bgr_frame.shape[:2]
-    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
     lane_masks = _lane_strip_masks((ih, iw), cell)
     if not any(int(m.sum()) > 0 for m in lane_masks):
         return [{}, {}, {}]
@@ -382,199 +369,7 @@ def colour_mean_xy_per_lane_in_cell(
     else:
         depth_gate = None
 
-    return [_colour_mean_xy_in_region(hsv, lane_mask, depth_gate) for lane_mask in lane_masks]
-
-
-def colour_mean_xy_in_cell(
-    bgr_frame: np.ndarray,
-    cell: dict,
-    depth_frame: np.ndarray | None = None,
-    target_depth_mm: float | None = None,
-    depth_tolerance_mm: float = 40.0,
-    orientation: str | None = None,
-    use_outside_of_split: bool = False,
-    robust_stat: str = "mean",
-    require_split_for_output: bool = False,
-) -> dict[str, tuple[float, float]]:
-    """
-    Mean image-space centroid (x, y) per colour inside cell.
-
-    Uses the same mask/depth-gating logic as colour_mean_x_in_cell so centroid
-    markers match the pixels used for depth/offset estimates.
-    """
-    ih, iw = bgr_frame.shape[:2]
-    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
-    quad = _quad_mask((ih, iw), cell["corners"])
-    if int(quad.sum()) == 0:
-        return {}
-
-    if depth_frame is not None and target_depth_mm is not None:
-        df = depth_frame.astype(np.float32)
-        depth_gate: np.ndarray | None = (
-            (df > 0)
-            & np.isfinite(df)
-            & (np.abs(df - target_depth_mm) <= depth_tolerance_mm)
-        )
-    else:
-        depth_gate = None
-
-    return _colour_mean_xy_in_region(hsv, quad, depth_gate)
-
-
-def colour_mean_xy_per_lane_in_cell(
-    bgr_frame: np.ndarray,
-    cell: dict,
-    depth_frame: np.ndarray | None = None,
-    target_depth_mm: float | None = None,
-    depth_tolerance_mm: float = 40.0,
-) -> list[dict[str, tuple[float, float]]]:
-    """
-    Per-lane colour blob centroids: mean (x, y) of all pixels of each colour
-    inside each front/mid/back lane strip of the end-on cell.
-    """
-    ih, iw = bgr_frame.shape[:2]
-    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
-    lane_masks = _lane_strip_masks((ih, iw), cell)
-    if not any(int(m.sum()) > 0 for m in lane_masks):
-        return [{}, {}, {}]
-
-    if depth_frame is not None and target_depth_mm is not None:
-        df = depth_frame.astype(np.float32)
-        depth_gate: np.ndarray | None = (
-            (df > 0)
-            & np.isfinite(df)
-            & (np.abs(df - target_depth_mm) <= depth_tolerance_mm)
-        )
-    else:
-        depth_gate = None
-
-    return [_colour_mean_xy_in_region(hsv, lane_mask, depth_gate) for lane_mask in lane_masks]
-
-
-def colour_depth_split_x_in_cell(
-    bgr_frame: np.ndarray,
-    depth_frame: np.ndarray | None,
-    cell: dict,
-) -> dict[str, float]:
-    """
-    Vertical split x per colour blob in a cell, using closest depth pixels.
-    """
-    if depth_frame is None:
-        return {}
-
-    ih, iw = bgr_frame.shape[:2]
-    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
-    quad = _quad_mask((ih, iw), cell["corners"])
-    total = int(quad.sum())
-    if total == 0:
-        return {}
-
-    out: dict[str, float] = {}
-    for colour in HSV_RANGES:
-        colour_mask = quad & classify_hsv(hsv, colour)
-        n_colour = int(colour_mask.sum())
-        if n_colour < MIN_COLOUR_PIXELS:
-            continue
-        if n_colour / total * 100.0 < MIN_COLOUR_PCT:
-            continue
-
-        split_x = _depth_split_x_from_closest_pixels(depth_frame, colour_mask)
-        if split_x is not None:
-            out[colour] = float(split_x)
-    return out
-
-
-def colour_mean_xy_per_lane_in_cell(
-    bgr_frame: np.ndarray,
-    cell: dict,
-    depth_frame: np.ndarray | None = None,
-    target_depth_mm: float | None = None,
-    depth_tolerance_mm: float = 40.0,
-) -> list[dict[str, tuple[float, float]]]:
-    """
-    Per-lane colour blob centroids: mean (x, y) of all pixels of each colour
-    inside each front/mid/back lane strip of the end-on cell.
-    """
-    ih, iw = bgr_frame.shape[:2]
-    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
-    lane_masks = _lane_strip_masks((ih, iw), cell)
-    if not any(int(m.sum()) > 0 for m in lane_masks):
-        return [{}, {}, {}]
-
-    if depth_frame is not None and target_depth_mm is not None:
-        df = depth_frame.astype(np.float32)
-        depth_gate: np.ndarray | None = (
-            (df > 0)
-            & np.isfinite(df)
-            & (np.abs(df - target_depth_mm) <= depth_tolerance_mm)
-        )
-    else:
-        depth_gate = None
-
-    return [_colour_mean_xy_in_region(hsv, lane_mask, depth_gate) for lane_mask in lane_masks]
-
-
-def colour_depth_split_x_in_cell(
-    bgr_frame: np.ndarray,
-    depth_frame: np.ndarray | None,
-    cell: dict,
-) -> dict[str, float]:
-    """
-    Vertical split x per colour blob in a cell, using closest depth pixels.
-    """
-    if depth_frame is None:
-        return {}
-
-    ih, iw = bgr_frame.shape[:2]
-    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
-    quad = _quad_mask((ih, iw), cell["corners"])
-    total = int(quad.sum())
-    if total == 0:
-        return {}
-
-    out: dict[str, float] = {}
-    for colour in HSV_RANGES:
-        colour_mask = quad & classify_hsv(hsv, colour)
-        n_colour = int(colour_mask.sum())
-        if n_colour < MIN_COLOUR_PIXELS:
-            continue
-        if n_colour / total * 100.0 < MIN_COLOUR_PCT:
-            continue
-
-        split_x = _depth_split_x_from_closest_pixels(depth_frame, colour_mask)
-        if split_x is not None:
-            out[colour] = float(split_x)
-    return out
-
-
-def colour_mean_xy_per_lane_in_cell(
-    bgr_frame: np.ndarray,
-    cell: dict,
-    depth_frame: np.ndarray | None = None,
-    target_depth_mm: float | None = None,
-    depth_tolerance_mm: float = 40.0,
-) -> list[dict[str, tuple[float, float]]]:
-    """
-    Per-lane colour blob centroids: mean (x, y) of all pixels of each colour
-    inside each front/mid/back lane strip of the end-on cell.
-    """
-    ih, iw = bgr_frame.shape[:2]
-    hsv = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
-    lane_masks = _lane_strip_masks((ih, iw), cell)
-    if not any(int(m.sum()) > 0 for m in lane_masks):
-        return [{}, {}, {}]
-
-    if depth_frame is not None and target_depth_mm is not None:
-        df = depth_frame.astype(np.float32)
-        depth_gate: np.ndarray | None = (
-            (df > 0)
-            & np.isfinite(df)
-            & (np.abs(df - target_depth_mm) <= depth_tolerance_mm)
-        )
-    else:
-        depth_gate = None
-
-    return [_colour_mean_xy_in_region(hsv, lane_mask, depth_gate) for lane_mask in lane_masks]
+    return [_colour_mean_xy_in_region(bgr_frame, lane_mask, depth_gate) for lane_mask in lane_masks]
 
 
 def colour_mean_depth_in_cell(
@@ -586,7 +381,6 @@ def colour_mean_depth_in_cell(
     if depth_frame is None:
         return {}
     ih, iw = bgr_frame.shape[:2]
-    hsv    = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
     quad   = _quad_mask((ih, iw), cell["corners"])
     total  = int(quad.sum())
     if total == 0:
@@ -596,7 +390,7 @@ def colour_mean_depth_in_cell(
     out: dict[str, float] = {}
 
     for colour in HSV_RANGES:
-        mask = quad & classify_hsv(hsv, colour)
+        mask = quad & frame_colour_mask(bgr_frame, colour)
         mask = cv2.erode(mask.astype(np.uint8), kernel, iterations=2).astype(bool)
 
         if float(mask.sum()) / total * 100.0 < MIN_COLOUR_PCT:
@@ -626,14 +420,12 @@ def build_debug_image(
     frame_centre_x_px: float | None = None,
 ) -> np.ndarray:
     ih, iw = bgr_frame.shape[:2]
-    hsv    = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2HSV)
 
-    all_corners = [c for cell in cells for c in cell["corners"]]
-    margin = 40
-    min_x = max(0,  min(c[0] for c in all_corners) - margin)
-    min_y = max(0,  min(c[1] for c in all_corners) - margin)
-    max_x = min(iw, max(c[0] for c in all_corners) + margin)
-    max_y = min(ih, max(c[1] for c in all_corners) + margin)
+    # Use the full input crop (caller sets horizontal margin + top-of-frame height).
+    min_x = 0
+    min_y = 0
+    max_x = iw
+    max_y = ih
     cw, ch = max_x - min_x, max_y - min_y
     canvas = np.full((ch, cw, 3), 255, dtype=np.uint8)
 
@@ -642,7 +434,7 @@ def build_debug_image(
         unclassified = quad.copy()
 
         for colour in HSV_RANGES:
-            matched = quad & classify_hsv(hsv, colour) & unclassified
+            matched = quad & frame_colour_mask(bgr_frame, colour) & unclassified
             unclassified &= ~matched
             canvas[matched[min_y:max_y, min_x:max_x]] = COLOUR_BGR[colour]
 

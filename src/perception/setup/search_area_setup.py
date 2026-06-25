@@ -32,11 +32,6 @@ from setup.mask_canny_setup import (
     run_mask_canny_setup,
     save_mask_canny_to_config,
 )
-from setup.original_canny_setup import (
-    load_original_canny_from_config,
-    run_original_canny_setup,
-    save_original_canny_to_config,
-)
 from setup.tower_setup import (
     load_tower_mask_from_config,
     run_tower_setup,
@@ -121,27 +116,9 @@ def _btn_x0(panel_w: int) -> int:
     return (panel_w - (3 * _BTN_W + 2 * _BTN_GAP)) // 2
 
 
-def _draw_control_strip(
-    panel: np.ndarray,
-    cx_px: int,
-    cy_px: int,
-    rw_px: int,
-    rh_px: int,
-    iw: int,
-    ih: int,
-) -> None:
+def _draw_control_strip(panel: np.ndarray) -> None:
     panel[:] = (42, 42, 42)
     pw = panel.shape[1]
-    info = (
-        f"centre x={cx_px}px  centre y={cy_px}px  "
-        f"width={rw_px}px  height={rh_px}px  "
-        f"(frame {iw}x{ih})"
-    )
-    cv2.putText(
-        panel, info, (12, 26),
-        cv2.FONT_HERSHEY_SIMPLEX, 0.52, (220, 220, 220), 1, cv2.LINE_AA,
-    )
-
     bx0 = _btn_x0(pw)
     for i, (label, colour) in enumerate(
         (("Back", (80, 140, 200)), ("Next", (80, 180, 80)), ("Finish", (80, 180, 80)))
@@ -287,7 +264,7 @@ def _run_search_area_step(
 
             panel_w = live_disp.shape[1]
             panel = np.zeros((_PANEL_H, panel_w, 3), dtype=np.uint8)
-            _draw_control_strip(panel, cx_px, cy_px, rw_px, rh_px, iw, ih)
+            _draw_control_strip(panel)
 
             composite = np.vstack([live_disp, panel])
             if trackbars_ready:
@@ -328,14 +305,12 @@ def _save_all_setup_values(
     search_area: tuple[float, float, float, float],
     hsv_ranges: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]],
     colour_mask: tuple[int, int, int, int],
-    original_canny: tuple[int, int, float, float],
     mask_canny: tuple[int, int],
     tower_mask: tuple[int, int, int, int],
 ) -> None:
     save_search_area_to_config(search_area)
     save_hsv_ranges_to_config(hsv_ranges)
     save_colour_mask_to_config(*colour_mask)
-    save_original_canny_to_config(*original_canny)
     save_mask_canny_to_config(*mask_canny)
     save_tower_mask_to_config(*tower_mask)
 
@@ -345,12 +320,11 @@ def run_search_area_setup(get_frame_pair: Callable[[], tuple[np.ndarray | None, 
     staged_search_area = load_search_area_from_config()
     staged_hsv = load_hsv_ranges_from_config()
     staged_colour_mask = load_colour_mask_from_config()
-    staged_original_canny = load_original_canny_from_config()
     staged_mask_canny = load_mask_canny_from_config()
     staged_tower_mask = load_tower_mask_from_config()
 
     step_idx = 0
-    max_idx = 6
+    max_idx = 5
     while True:
         if step_idx == 0:
             action, staged_search_area = _run_search_area_step(get_frame_pair, staged_search_area)
@@ -368,12 +342,6 @@ def run_search_area_setup(get_frame_pair: Callable[[], tuple[np.ndarray | None, 
                 hsv_ranges=staged_hsv,
             )
         elif step_idx == 3:
-            action, staged_original_canny = run_original_canny_setup(
-                get_frame_pair,
-                search_area=staged_search_area,
-                initial_values=staged_original_canny,
-            )
-        elif step_idx == 4:
             action, staged_mask_canny = run_mask_canny_setup(
                 get_frame_pair,
                 search_area=staged_search_area,
@@ -381,7 +349,7 @@ def run_search_area_setup(get_frame_pair: Callable[[], tuple[np.ndarray | None, 
                 hsv_ranges=staged_hsv,
                 colour_mask_values=staged_colour_mask,
             )
-        elif step_idx == 5:
+        elif step_idx == 4:
             action, staged_tower_mask = run_tower_setup(
                 get_frame_pair,
                 search_area=staged_search_area,
@@ -403,7 +371,6 @@ def run_search_area_setup(get_frame_pair: Callable[[], tuple[np.ndarray | None, 
                 staged_search_area,
                 staged_hsv,
                 staged_colour_mask,
-                staged_original_canny,
                 staged_mask_canny,
                 staged_tower_mask,
             )

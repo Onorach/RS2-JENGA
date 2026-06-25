@@ -108,29 +108,12 @@ def _action_button_at(panel_x: int, panel_y: int, panel_w: int) -> str | None:
     return None
 
 
-def _draw_control_strip(
-    panel: np.ndarray,
-    median_px: int,
-    fill_gaps: int,
-    reduce_noise: int,
-    min_blob: int,
-) -> None:
+def _draw_control_strip(panel: np.ndarray) -> None:
     panel[:] = (42, 42, 42)
     cv2.putText(
         panel,
-        f"median {median_px}  |  fill gaps {fill_gaps}  |  "
-        f"reduce noise {reduce_noise}  |  min blob {min_blob}  (0 = off)",
-        (12, 22),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.45,
-        (220, 220, 220),
-        1,
-        cv2.LINE_AA,
-    )
-    cv2.putText(
-        panel,
         "Live colour mask preview  |  b=Back  n=Next  f=Finish",
-        (12, 44),
+        (12, 26),
         cv2.FONT_HERSHEY_SIMPLEX,
         0.42,
         (150, 150, 150),
@@ -285,7 +268,7 @@ def run_colour_mask_setup(
             layout_w = max(colour_img.shape[1], _MIN_WIDTH)
             view_disp = _center_image_width(colour_img, layout_w)
             panel = np.zeros((_PANEL_H, layout_w, 3), dtype=np.uint8)
-            _draw_control_strip(panel, median_px, fill_gaps, reduce_noise, min_blob)
+            _draw_control_strip(panel)
             composite = np.vstack([view_disp, panel])
             view_h = view_disp.shape[0]
             cv2.setMouseCallback(_WINDOW, _on_mouse, (view_h, layout_w))
