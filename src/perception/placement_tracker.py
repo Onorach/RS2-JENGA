@@ -222,6 +222,8 @@ def colour_blobs_in_layer(
     layer_idx: int,
     orientation: str,
     colour: str,
+    *,
+    min_endon_px: int | None = None,
 ) -> list[dict]:
     """
     Find separate colour blobs on the end-on face and assign each to one slot.
@@ -239,13 +241,15 @@ def colour_blobs_in_layer(
     ih, iw = bgr_frame.shape[:2]
     quad = _quad_mask((ih, iw), cell["corners"])
     mask = (quad & frame_colour_mask(bgr_frame, colour)).astype(np.uint8)
-    if int(mask.sum()) < max(1, int(BLOCK_CENTROID_MIN_BLOB_PX)):
+    min_area = int(
+        min_endon_px if min_endon_px is not None else BLOCK_CENTROID_MIN_BLOB_PX
+    )
+    if int(mask.sum()) < max(1, min_area):
         return []
 
     n_labels, labels, stats, _centroids = cv2.connectedComponentsWithStats(
         mask, connectivity=8,
     )
-    min_area = int(BLOCK_CENTROID_MIN_BLOB_PX)
     blobs: list[dict] = []
 
     for label in range(1, n_labels):
@@ -924,6 +928,8 @@ class PlacementTracker:
         layer_idx: int,
         orientation: str,
         colour: str,
+        *,
+        min_blob_px: int | None = None,
     ) -> dict:
         cell = _endon_cell_for_layer(row_cells, layer_idx, orientation)
         if cell is None:
@@ -935,7 +941,11 @@ class PlacementTracker:
         n_labels, _labels, stats, _ = cv2.connectedComponentsWithStats(
             mask, connectivity=8,
         )
-        min_area = int(BLOCK_CENTROID_MIN_BLOB_PX)
+        min_area = int(
+            min_blob_px
+            if min_blob_px is not None
+            else BLOCK_CENTROID_MIN_BLOB_PX
+        )
         components = []
         for label in range(1, n_labels):
             area = int(stats[label, cv2.CC_STAT_AREA])
@@ -946,6 +956,7 @@ class PlacementTracker:
         return {
             "total_px": total_px,
             "min_blob_px": min_area,
+            "min_endon_px": min_area,
             "components": components,
         }
 
@@ -975,16 +986,29 @@ class PlacementTracker:
         if orientation not in ("left", "right"):
             return None, f"orientation={orientation!r}"
 
+        extrapolated = int(target_layer) in self._extrapolated_layers
+        min_endon_px = int(PLACEMENT_MIN_COLOUR_PX) if extrapolated else None
         blobs = colour_blobs_in_layer(
-            bgr_frame, row_cells, int(target_layer), orientation, colour,
+            bgr_frame,
+            row_cells,
+            int(target_layer),
+            orientation,
+            colour,
+            min_endon_px=min_endon_px,
         )
         if not blobs:
             mask_stats = self._colour_mask_stats_in_layer(
-                bgr_frame, row_cells, int(target_layer), orientation, colour,
+                bgr_frame,
+                row_cells,
+                int(target_layer),
+                orientation,
+                colour,
+                min_blob_px=min_endon_px,
             )
             return None, (
                 f"no accepted {colour} blobs "
                 f"(mask_px={mask_stats.get('total_px')}, "
+                f"min_endon_px={mask_stats.get('min_endon_px')}, "
                 f"components={mask_stats.get('components')})"
             )
 

@@ -10,7 +10,7 @@ TOWER_ANALYSIS = False
 BLOCK_ANALYSIS = True
 
 # Search area centre and fraction of the full frame
-SEARCH_AREA = (0.502, 0.510, 0.347, 0.602)
+SEARCH_AREA = (0.502, 0.510, 0.347, 0.600)
 
 # Crop margin around the search area
 SEARCH_AREA_MARGIN     = 0.10
@@ -83,7 +83,7 @@ HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] =
         (( 75, 213, 161), (107, 255, 255)),
     ],
     "purple": [
-        ((108, 217,  97), (163, 255, 255)),
+        ((110, 210, 124), (160, 255, 255)),
     ],
 }
 
@@ -192,7 +192,7 @@ GRID_EXTRA_LAYERS_ON_TOP = 3
 
 # Extrapolated rows: extend centre-column vertical step by this % over the
 # standard median row height (edges unchanged). Set to 0 to disable.
-GRID_EXTRAPOLATED_CENTER_HEIGHT_EXTEND_PCT = 20.0
+GRID_EXTRAPOLATED_CENTER_HEIGHT_EXTEND_PCT = 21.0
 
 # ---------------------------------------------------------------------------
 # Robot placement on extrapolated layers
@@ -202,11 +202,14 @@ GRID_EXTRAPOLATED_CENTER_HEIGHT_EXTEND_PCT = 20.0
 # span on the end-on face. Thresholds assign front / mid / back slots.
 PLACEMENT_SLOT_FRONT_MAX_PCT = 50.0   # below → front (~33% nominal)
 PLACEMENT_SLOT_MID_MAX_PCT = 83.0     # below → mid (~66% nominal), else back
-PLACEMENT_MIN_COLOUR_PX = 120         # min pixels to accept a placed block blob
+# Min end-on-face pixels to accept a block as placed on an extrapolated layer.
+# Lower-layer colour bleeding into the empty cell above is usually much smaller
+# than a real block face; raise this if false placements still occur.
+PLACEMENT_MIN_COLOUR_PX = 250
 
 # Minimum connected-component area (px) for a colour blob in a grid cell to
 # count as a block centroid. Filters thin slithers at slot boundaries.
-BLOCK_CENTROID_MIN_BLOB_PX = 120
+BLOCK_CENTROID_MIN_BLOB_PX = 240
 
 # When a block centroid is lost, search this radius (px) around the last known
 # position before falling back to a full-cell colour search.
