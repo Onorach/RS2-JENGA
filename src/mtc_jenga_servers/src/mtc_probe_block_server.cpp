@@ -60,13 +60,13 @@ class MtcProbeBlockServer : public rclcpp::Node {
     box_z_ = mtc_jenga::param<double>(this, "block_box_z", 0.015);
 
     plan_max_attempts_ = static_cast<uint32_t>(mtc_jenga::param<int>(this, "plan_max_attempts", 1));
-    plan_time_ = mtc_jenga::param<double>(this, "plan_time", 7.5);
+    plan_time_ = mtc_jenga::param<double>(this, "plan_time", 10.0);
     vel_scale_ = mtc_jenga::param<double>(this, "max_velocity_scaling_factor", 0.1);
     acc_scale_ = mtc_jenga::param<double>(this, "max_acceleration_scaling_factor", 0.1);
-    cart_step_ = mtc_jenga::param<double>(this, "cartesian_step", 0.001);
+    cart_step_ = mtc_jenga::param<double>(this, "cartesian_step", 0.002);
 
-    approach_min_ = mtc_jenga::param<double>(this, "approach_distance_min", 0.005);
-    approach_max_ = mtc_jenga::param<double>(this, "approach_distance_max", 0.03);
+    approach_min_ = mtc_jenga::param<double>(this, "approach_distance_min", 0.01);
+    approach_max_ = mtc_jenga::param<double>(this, "approach_distance_max", 0.05);
     retreat_distance_ = mtc_jenga::param<double>(this, "retreat_distance", 0.02);
 
     probe_r_ = mtc_jenga::param<double>(this, "probe_frame_roll", -M_PI / 1.0);
@@ -82,17 +82,6 @@ class MtcProbeBlockServer : public rclcpp::Node {
     protrusion_target_m_ = mtc_jenga::param<double>(this, "protrusion_target_m", 0.02);
     push_velocity_m_s_ = mtc_jenga::param<double>(this, "push_velocity_m_s", 0.005);
     push_step_m_ = mtc_jenga::param<double>(this, "push_step_m", 0.001);
-
-    push_cartesian_min_fraction_ =
-        mtc_jenga::param<double>(this, "push_cartesian_min_fraction", 0.95);
-    push_cartesian_max_consecutive_failures_ =
-        static_cast<int>(mtc_jenga::param<int>(this, "push_cartesian_max_consecutive_failures", 3));
-    push_cartesian_target_pos_tol_m_ =
-        mtc_jenga::param<double>(this, "push_cartesian_target_pos_tol_m", 0.002);
-    push_cartesian_retry_wait_s_ =
-        mtc_jenga::param<double>(this, "push_cartesian_retry_wait_s", 0.05);
-    push_cartesian_step_scales_ = mtc_jenga::param<std::vector<double>>(
-        this, "push_cartesian_step_scales", std::vector<double>{1.0, 0.5, 0.25});
 
     push_timeout_s_ = mtc_jenga::param<double>(this, "push_timeout_s", 5.0);
 
@@ -438,8 +427,9 @@ class MtcProbeBlockServer : public rclcpp::Node {
 
     const double push_vel_scale = std::clamp(push_velocity_m_s_ / 0.1, 0.01, 0.05);
     int stuck_count = 0;
-    int consecutive_cartesian_failures = 0;
 
+    auto start_pose_msg = move_group_->getCurrentPose(probe_frame_);
+    geometry_msgs::msg::Pose target_pose = start_pose_msg.pose;
     const Eigen::Vector3d push_dir = probeAxisInWorld();
 
     RCLCPP_INFO(get_logger(),
@@ -453,69 +443,24 @@ class MtcProbeBlockServer : public rclcpp::Node {
         break;
       }
 
-      const auto current_pose_msg = move_group_->getCurrentPose(probe_frame_);
-      const geometry_msgs::msg::Pose& current_pose = current_pose_msg.pose;
+      target_pose.position.x += push_dir.x() * push_step_m_;
+      target_pose.position.y += push_dir.y() * push_step_m_;
+      target_pose.position.z += push_dir.z() * push_step_m_;
 
-      bool planned = false;
-      double used_step_m = 0.0;
-      double best_fraction = 0.0;
+      std::vector<geometry_msgs::msg::Pose> waypoints;
+      waypoints.push_back(target_pose);
+
+      move_group_->setStartStateToCurrentState();
+
       moveit_msgs::msg::RobotTrajectory trajectory_msg;
-      geometry_msgs::msg::Pose target_pose = current_pose;
+      const double fraction = move_group_->computeCartesianPath(
+          waypoints, cart_step_, 0.0 /* jump_threshold */, trajectory_msg);
 
-      for (const double scale : push_cartesian_step_scales_) {
-        if (!std::isfinite(scale) || scale <= 0.0) continue;
-        used_step_m = push_step_m_ * scale;
-        target_pose = current_pose;
-        target_pose.position.x += push_dir.x() * used_step_m;
-        target_pose.position.y += push_dir.y() * used_step_m;
-        target_pose.position.z += push_dir.z() * used_step_m;
-
-        RCLCPP_DEBUG(get_logger(),
-                     "Cartesian attempt: disp=%.4f m, step=%.5f m (scale=%.2f)",
-                     result.displacement_m, used_step_m, scale);
-
-        std::vector<geometry_msgs::msg::Pose> waypoints;
-        waypoints.push_back(target_pose);
-
-        move_group_->setStartStateToCurrentState();
-
-        trajectory_msg = moveit_msgs::msg::RobotTrajectory{};
-        const double fraction = move_group_->computeCartesianPath(
-            waypoints, cart_step_, 0.0 /* jump_threshold */, trajectory_msg,
-            false /* avoid_collisions */);
-        best_fraction = std::max(best_fraction, fraction);
-
-        RCLCPP_DEBUG(get_logger(), "Cartesian result: fraction=%.2f points=%zu",
-                     fraction, trajectory_msg.joint_trajectory.points.size());
-
-        const auto& pts = trajectory_msg.joint_trajectory.points;
-        if (fraction >= push_cartesian_min_fraction_ && pts.size() >= 2) {
-          planned = true;
-          break;
-        }
+      if (fraction < 0.95) {
+        RCLCPP_ERROR(get_logger(), "Cartesian path planning failed (fraction=%.2f)", fraction);
+        result.outcome = PROBE_ERROR;
+        break;
       }
-
-      if (!planned) {
-        ++consecutive_cartesian_failures;
-        RCLCPP_WARN(get_logger(),
-                    "Cartesian path planning failed (best_fraction=%.2f, "
-                    "consecutive_failures=%d/%d)",
-                    best_fraction, consecutive_cartesian_failures,
-                    push_cartesian_max_consecutive_failures_);
-        if (consecutive_cartesian_failures > push_cartesian_max_consecutive_failures_) {
-          RCLCPP_ERROR(get_logger(),
-                       "Cartesian planning repeatedly failed; aborting Phase 2 push");
-          result.outcome = PROBE_ERROR;
-          break;
-        }
-        if (push_cartesian_retry_wait_s_ > 0.0) {
-          std::this_thread::sleep_for(
-              std::chrono::duration<double>(push_cartesian_retry_wait_s_));
-        }
-        continue;
-      }
-
-      consecutive_cartesian_failures = 0;
 
       auto& points = trajectory_msg.joint_trajectory.points;
       for (auto& pt : points) {
@@ -538,19 +483,7 @@ class MtcProbeBlockServer : public rclcpp::Node {
         break;
       }
 
-      result.displacement_m += used_step_m;
-
-      const auto achieved_pose_msg = move_group_->getCurrentPose(probe_frame_);
-      const auto& achieved = achieved_pose_msg.pose.position;
-      const auto& desired = target_pose.position;
-      const double pos_err_m = std::hypot(
-          std::hypot(achieved.x - desired.x, achieved.y - desired.y), achieved.z - desired.z);
-      if (pos_err_m > push_cartesian_target_pos_tol_m_) {
-        RCLCPP_WARN(get_logger(),
-                    "Cartesian push achieved pose differs from target "
-                    "(err=%.4f m > tol=%.4f m)",
-                    pos_err_m, push_cartesian_target_pos_tol_m_);
-      }
+      result.displacement_m += push_step_m_;
 
       auto wrench = getLatestWrench();
       if (wrench) {
@@ -758,12 +691,6 @@ class MtcProbeBlockServer : public rclcpp::Node {
   double protrusion_target_m_{0.02};
   double push_velocity_m_s_{0.005};
   double push_step_m_{0.001};
-
-  double push_cartesian_min_fraction_{0.95};
-  int push_cartesian_max_consecutive_failures_{3};
-  double push_cartesian_target_pos_tol_m_{0.002};
-  double push_cartesian_retry_wait_s_{0.05};
-  std::vector<double> push_cartesian_step_scales_{1.0, 0.5, 0.25};
 
   double push_timeout_s_{10.0};
 
