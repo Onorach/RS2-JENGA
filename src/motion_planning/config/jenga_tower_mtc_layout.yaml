@@ -8,7 +8,7 @@ parametric:
   platform_offset: {x: 0.00, y: -0.005, z: 0.00}
   # tower first so stock can alias layer_dz / slot_dx (stack spacing matches tower slot/layer pitch)
   tower:
-    base: {x: 0.000, y: 0.302, z: 0.0138}
+    base: {x: 0.000, y: 0.302, z: 0.0141}
     # base: {x: 0.000, y: 0.35, z: 0.03}
     # base: {x: 0.000, y: 0.247, z: 0.0138}
     # Rotate the entire tower footprint about +Z of goal_frame (yaw, in degrees).
@@ -24,11 +24,11 @@ parametric:
     rows:
       # - {x: 0.2125, dz: *layer_dz}
       # - {x: 0.2125, dz: 0.0}
-      - {x: 0.19, dz: *layer_dz_x2}
-      - {x: 0.19, dz: *layer_dz}
-      - {x: 0.19, dz: 0.0}
-    y_centre: 0.297 # 0.25375 
-    z: 0.0138
+      - {x: -0.19, dz: *layer_dz_x2}
+      - {x: -0.19, dz: *layer_dz}
+      - {x: -0.19, dz: 0.003}
+    y_centre: 0.302 # 0.25375 
+    z: 0.0141
     step_along_y: *slot_dx
     blocks_per_row: 9
   orientation_pick: {x: 0.0, y: 0.0, z: 0.0, w: 1.0}
