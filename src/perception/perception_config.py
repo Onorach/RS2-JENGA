@@ -10,7 +10,7 @@ TOWER_ANALYSIS = False
 BLOCK_ANALYSIS = True
 
 # Search area centre and fraction of the full frame
-SEARCH_AREA = (0.502, 0.510, 0.347, 0.600)
+SEARCH_AREA = (0.502, 0.519, 0.347, 0.600)
 
 # Crop margin around the search area
 SEARCH_AREA_MARGIN     = 0.10
@@ -83,7 +83,7 @@ HSV_RANGES: dict[str, list[tuple[tuple[int, int, int], tuple[int, int, int]]]] =
         (( 75, 213, 161), (107, 255, 255)),
     ],
     "purple": [
-        ((110, 187, 108), (160, 255, 255)),
+        ((110, 156,  70), (160, 255, 255)),
     ],
 }
 

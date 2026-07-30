@@ -30,15 +30,15 @@ source install/setup.bash
 ## Nodes
 
 
-| Node                   | Description                                                              |
-| ---------------------- | ------------------------------------------------------------------------ |
-| `pose_goal_node`       | MoveIt2 pose goals; plans and executes via `/move_action`                |
-| `rmrc_planning_node`   | RMRC Cartesian planner; no MoveIt; uses PyKDL Jacobian + repulsion       |
-| `exclusion_zones_node` | Loads exclusion zones from YAML into the MoveIt planning scene           |
-| `test_rmrc_pose`       | Test script that publishes sample goal poses                             |
-| `robot_gui`            | GUI for robot interaction                                                |
+| Node                      | Description                                                                             |
+| ------------------------- | --------------------------------------------------------------------------------------- |
+| `pose_goal_node`          | MoveIt2 pose goals; plans and executes via `/move_action`                               |
+| `rmrc_planning_node`      | RMRC Cartesian planner; no MoveIt; uses PyKDL Jacobian + repulsion                      |
+| `exclusion_zones_node`    | Loads exclusion zones from YAML into the MoveIt planning scene                          |
+| `test_rmrc_pose`          | Test script that publishes sample goal poses                                            |
+| `robot_gui`               | GUI for robot interaction                                                               |
 | `robot_state_bridge_node` | Publishes `/robot_state` from MTC busy flags; gripper override via `/ee_override_array` |
-| `jenga_blocks_scene`   | Publishes Jenga block boxes to the MoveIt planning scene (MTC workflows) |
+| `jenga_blocks_scene`      | Publishes Jenga block boxes to the MoveIt planning scene (MTC workflows)                |
 
 
 ### `jenga_blocks_scene` services
@@ -210,7 +210,7 @@ flowchart LR
 - `**move_group`** on the same `ROS_DOMAIN_ID`, with **ExecuteTaskSolutionCapability** loaded (`/execute_task_solution` must exist).
 - Planning groups and frames match your SRDF (defaults assume ur_onrobot-style names; override via server parameters if needed).
 - `**joint_trajectory_action`** passed into `motion_planning_bringup.launch.py` must match the active arm trajectory action (e.g. scaled vs non-scaled controller) for `estop_node`.
-- Set `**publish_world_to_base_tf**`, `**base_height**`, `**base_yaw**` so `world` and collision objects align with your TF tree.
+- Set `**publish_world_to_base_tf`**, `**base_height**`, `**base_yaw**` so `world` and collision objects align with your TF tree.
 
 ### Launch (full stack node)
 
