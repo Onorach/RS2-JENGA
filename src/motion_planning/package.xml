@@ -39,8 +39,8 @@
   <exec_depend>python3-yaml</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
   <exec_depend>python3-pykdl</exec_depend>
-  <exec_depend>kdl_parser_py</exec_depend>
-  <exec_depend>urdf_parser_py</exec_depend>
+  <exec_depend>kdl_parser</exec_depend>
+  <exec_depend>urdfdom_py</exec_depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
